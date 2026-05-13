@@ -1,0 +1,28 @@
+# Build artifacts
+target/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust / Cargo
+# For binary projects, Cargo.lock is generated and should be ignored.
+# For library projects, commit Cargo.lock so builds are reproducible.
+Cargo.lock
+
+# Debug / profiling
+*.rs.bk
+
+# Coverage reports
+coverage/
+tarpaulin-report*
+
+# Local development overrides
+local.properties
