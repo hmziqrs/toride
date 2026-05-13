@@ -168,8 +168,7 @@ VPS Setup
 │  ├─ Docker user permissions
 │  ├─ Docker log rotation
 │  └─ Docker daemon config
-│  └─ Docker daemon config
-
+│
 ├─ Server Managers
 │  ├─ Dokploy
 │  ├─ Coolify
@@ -256,36 +255,38 @@ Base checklist:
 
 # Important Service Grouping
 
-## JavaScript runtimes
+## Language runtimes
+
+Toride consolidates Node, Bun, Deno, Go, Rust, and Python under a single runtime manager rather than installing each via its own bespoke script. Preferred manager: **mise** (`https://mise.jdx.dev`). It is a single static binary, handles all six languages, and avoids the `.bashrc` mutation that NVM-style installers depend on.
 
 Options:
 
-* Node.js from system package manager
-* Node.js from NodeSource
-* NVM-managed Node.js
-* Bun
-* Deno
+* mise (recommended)
+* asdf (legacy compatibility)
+* Per-language scripts (NodeSource, rustup, Go tarball, etc.) — fallback only
 
 Recommended UX:
 
 ```text
-JavaScript Runtime
-[x] Node.js
-[ ] NVM
-[x] Bun
+Language Runtimes (managed by mise)
+[x] Node.js  20 LTS
+[x] Bun      latest
 [ ] Deno
+[x] Rust     stable
+[x] Go       1.22
+[x] Python   3.12
 
-Node install method:
-( ) OS package
-( ) NodeSource
-(*) NVM
+Install scope:
+( ) System-wide (mise in /usr/local/bin, runtimes under /opt/mise)
+(*) Per-user (mise under target sudo user)
 ```
 
-Important rule:
+Important rules:
 
-* Do not install both system Node and NVM Node without warning.
+* Install mise under the target sudo user, not root.
+* Warn if `/usr/bin/node` from apt is present — coexisting versions confuse `which node`.
 * If Bun is selected, still ask whether Node compatibility is needed.
-* If NVM is selected for a non-root user, install it under that user, not root.
+* `rustup` may be used in place of mise for Rust if the user prefers — mise's Rust handling is thinner than rustup's.
 
 ## Server managers
 
@@ -430,21 +431,23 @@ Security must be done carefully to avoid locking the user out.
 
 ## Safe SSH hardening flow
 
-1. Detect current SSH connection.
-2. Detect current user.
+1. Detect current SSH connection (parse `SSH_CONNECTION` and `who`).
+2. Detect current user and whether the session is over SSH.
 3. Ask for new username.
-4. Create user.
-5. Add user to sudo group.
-6. Add SSH public key.
-7. Validate authorized_keys permissions.
-8. Test whether the new user can log in.
-9. Only then offer to disable root login.
-10. Only then offer to disable password login.
-11. Validate sshd config using `sshd -t` before restart.
-12. Restart SSH safely.
-13. Show emergency rollback command.
+4. Create user with home directory.
+5. Add user to sudo group; install `/etc/sudoers.d/00-toride-<user>` with optional NOPASSWD.
+6. Add SSH public key to `/home/<user>/.ssh/authorized_keys` (file 600, dir 700, correct ownership).
+7. Validate authorized_keys permissions and SELinux context where applicable.
+8. Verify key login works: spawn `ssh -o BatchMode=yes -o StrictHostKeyChecking=no -i <key> <user>@127.0.0.1 true` and assert exit 0. Fail closed.
+9. Write hardening to `/etc/ssh/sshd_config.d/00-toride.conf` (never edit the main `sshd_config` directly — both Debian 12 and Ubuntu 24.04 ship the `Include` line).
+10. Detect `50-cloud-init.conf`. If it sets `PasswordAuthentication yes`, override it by removing the file or commenting that line — OpenSSH uses the **first** value found, so a later drop-in alone is not sufficient.
+11. Only then offer to disable root login (`PermitRootLogin no`).
+12. Only then offer to disable password login (`PasswordAuthentication no`, `KbdInteractiveAuthentication no`).
+13. Validate sshd config using `sshd -t` before applying.
+14. Reload SSH via `systemctl reload ssh` (reload, not restart — keeps the active session alive).
+15. Show emergency rollback command (path to backup + `systemctl reload ssh`).
 
-The app should never blindly disable root/password login before verifying key access.
+The app must never blindly disable root/password login before verifying key access.
 
 ---
 
@@ -466,12 +469,12 @@ Enable?
 
 Implementation notes:
 
-* Fetch Cloudflare IPv4 and IPv6 ranges.
-* Store a local copy.
-* Apply UFW rules for 80/443 from those ranges.
-* Deny other HTTP/S traffic.
-* Add update command to refresh Cloudflare ranges.
-* Add systemd timer option to refresh ranges.
+* Fetch IPv4 ranges from `https://www.cloudflare.com/ips-v4` and IPv6 from `https://www.cloudflare.com/ips-v6`. As of 2026-05 there are ~22 ranges total.
+* Alternative endpoint with JSON metadata: `https://api.cloudflare.com/client/v4/ips`.
+* Cache the result to `/var/lib/toride/cloudflare-ips.txt` with a fetch timestamp.
+* Apply UFW rules for 80/443 allowing only those ranges; deny other HTTP/S traffic.
+* Provide `toride refresh cloudflare-ips` subcommand and an optional weekly systemd timer.
+* On refresh failure (network down, endpoint change), keep prior rules — never wipe rules on failed fetch.
 
 Important warning:
 
@@ -486,6 +489,62 @@ Future support:
 
 ---
 
+# Runtime Requirements
+
+## Privilege model
+
+Toride requires root. The binary asserts `EUID == 0` at startup and exits with a clear error otherwise. It never spawns `sudo` per-command — sudo prompts corrupt Ratatui raw-mode input and produce inconsistent state across modules.
+
+Recommended invocation:
+
+```bash
+sudo -E toride
+```
+
+The `sudo` crate's `escalate_if_needed()` may re-exec under sudo before the terminal enters raw mode, never after. `pkexec` is not a fit (headless VPS has no Polkit agent).
+
+## Distribution and bootstrap
+
+Toride ships as static `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` binaries published to GitHub Releases via `cargo-dist`.
+
+Bootstrap one-liner for fresh VPSes:
+
+```bash
+curl -fsSL https://toride.dev/install.sh | sh
+```
+
+The install script verifies the release SHA256 against a published manifest before extracting. Developers may also use `cargo binstall toride` or `cargo install toride`.
+
+## Preflight gotchas
+
+Common fresh-VPS failure modes the executor must handle before module dispatch:
+
+1. **Cloud-init still running** — On Ubuntu cloud images, run `cloud-init status --wait` if `cloud-init` is present. Skip on Debian images without it.
+2. **apt-lock contention** — `unattended-upgrades` and `apt-daily.service` hold `/var/lib/dpkg/lock-frontend` for minutes after boot. Wrap all apt calls in `flock -w 600 /var/lib/dpkg/lock-frontend`.
+3. **systemd absent** — LXC/OpenVZ containers and minimal Debian may lack systemd. Fail clearly; do not silently skip service modules.
+4. **Pre-existing nftables rules** — Debian 12 defaults to nftables (empty). UFW uses the nftables backend transparently, but provider-preloaded rules are not visible via `ufw status`. Detect and warn before `ufw enable`.
+5. **Reboot required** — If `/var/run/reboot-required` exists after package operations, surface it in the summary screen.
+
+## Distro-specific module behavior
+
+Non-obvious behaviors module authors must encode:
+
+* **fail2ban on Ubuntu 24.04 / Debian 12** — SSH logs go to systemd journal, not `/var/log/auth.log`. The default backend reads nothing and silently protects no SSH. Install `python3-systemd` and write `backend = systemd` under `[DEFAULT]` in `/etc/fail2ban/jail.local` before starting the service.
+* **SSH cloud-init override** — see Security Flow step 10 above.
+* **Docker repo codename** — derive via `. /etc/os-release && echo $VERSION_CODENAME`. Never hardcode `bookworm` / `jammy` / `noble`.
+* **Tailscale install script** — pin via `TAILSCALE_VERSION` and print the script URL + SHA before piping to sh. Honor the safety rule against silent `curl|sh`.
+
+## Telemetry
+
+Toride performs no telemetry, analytics, or phone-home. Network access is limited to:
+
+* OS package repositories (apt)
+* Vendor endpoints needed by selected modules (Docker repo, Tailscale install script, Cloudflare IP list, mise plugins)
+
+Every network call is logged with URL, response status, and SHA where applicable, and is listed in the dry-run plan.
+
+---
+
 # Architecture
 
 ## Rust crates
@@ -493,18 +552,23 @@ Future support:
 Suggested stack:
 
 * `ratatui` for TUI
-* `crossterm` for terminal backend
-* `tokio` for async process handling
-* `clap` for CLI flags
+* `crossterm` with `event-stream` feature for terminal backend
+* `tokio` (full features) for async event loop and process spawning
+* `tokio-util` for `CancellationToken`
+* `futures` for `FutureExt` / `StreamExt`
+* `clap` (derive) for CLI flags
 * `serde` / `serde_json` / `toml` for config
-* `anyhow` or `eyre` for app-level errors
+* `color-eyre` for app-level errors and panic handler
 * `thiserror` for typed errors
 * `tracing` for logs
-* `tracing-subscriber` for log formatting
-* `reqwest` for downloading install scripts / IP ranges
+* `tracing-subscriber` with `env-filter` and `json` features
+* `reqwest` (rustls backend) for downloading install scripts / IP ranges
+* `sha2` / `hex` for verifying install-script and binary checksums
 * `which` for binary detection
-* `nix` for Unix helpers where useful
+* `nix` for Unix syscalls (euid, file modes, signals)
 * `dirs` for config paths
+* `sudo` for `escalate_if_needed()` at startup
+* `async-trait` for the module trait
 
 ## Internal modules
 
@@ -563,23 +627,60 @@ src/
 
 # Module Design
 
-Every installable item should be a module with the same lifecycle.
+Every installable item is a module with the same lifecycle. `apply` runs asynchronously and streams progress events back to the TUI on a tokio `mpsc` channel — it must not block the event loop.
 
 ```rust
-trait SetupModule {
+#[async_trait]
+trait SetupModule: Send + Sync {
     fn id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn description(&self) -> &'static str;
-    fn dependencies(&self) -> Vec<&'static str>;
-    fn conflicts(&self) -> Vec<&'static str>;
-    fn preflight(&self, ctx: &Context) -> Result<PreflightResult>;
-    fn plan(&self, ctx: &Context) -> Result<Vec<Action>>;
-    fn apply(&self, ctx: &Context) -> Result<()>;
-    fn verify(&self, ctx: &Context) -> Result<VerifyResult>;
+    fn dependencies(&self) -> &'static [&'static str];
+    fn conflicts(&self) -> &'static [&'static str];
+
+    async fn preflight(&self, ctx: &Context) -> Result<PreflightResult>;
+    async fn plan(&self, ctx: &Context) -> Result<Vec<Action>>;
+    async fn apply(&self, ctx: &Context, tx: ProgressTx) -> Result<ApplyOutcome>;
+    async fn verify(&self, ctx: &Context) -> Result<VerifyResult>;
+}
+
+type ProgressTx = tokio::sync::mpsc::UnboundedSender<ProgressEvent>;
+
+enum ProgressEvent {
+    StepStart { action_idx: usize, label: String },
+    StepLog   { action_idx: usize, line: String },
+    StepDone  { action_idx: usize, exit_code: i32, duration_ms: u64 },
+    StepFail  { action_idx: usize, error: String },
 }
 ```
 
-The app should generate a plan before applying anything.
+## The `Action` type
+
+`plan()` returns an ordered `Vec<Action>` so dry-run output is structured (not opaque shell strings) and rollback can be derived mechanically.
+
+```rust
+enum Action {
+    AptInstall    { packages: Vec<&'static str> },
+    AptRepoAdd    { name: &'static str, key_url: String, sources_line: String, sha256: String },
+    WriteFile     { path: PathBuf, content: String, mode: u32, backup: bool },
+    AppendLine    { path: PathBuf, line: String, marker: &'static str },
+    Systemctl     { unit: String, op: SystemctlOp }, // Enable, Start, Reload, Restart
+    UfwRule       { rule: String },
+    UserCreate    { name: String, groups: Vec<String>, shell: PathBuf },
+    UserAddKey    { user: String, key: String },
+    DownloadScript{ url: String, sha256: String, run_as: String, env: Vec<(String, String)> },
+    Exec          { cmd: String, args: Vec<String>, env: Vec<(String, String)>, as_user: Option<String> },
+}
+```
+
+Rules:
+
+* Every `Action` variant has a deterministic `to_shell_preview()` for dry-run rendering.
+* `WriteFile { backup: true }` produces a timestamped copy under `/var/backups/toride/`.
+* `DownloadScript` must include `sha256` — silent `curl|sh` is forbidden by safety rules.
+* All apt operations are serialized under a single `flock` guard on `/var/lib/dpkg/lock-frontend`.
+
+The app generates a plan before applying anything.
 
 Example:
 
@@ -842,61 +943,61 @@ Hard rules:
 
 # MVP Scope
 
-## MVP v0.1
+## v0.1 — buildable in 4–6 weeks
 
-* Ratatui interface
-* Profile selection
-* Basic profile
-* Custom checklist
-* OS detection
-* System update
-* Create user
-* Add SSH key
-* SSH hardening with validation
+Foundations:
+
+* `cargo-dist` release pipeline producing musl-static x86_64 + aarch64 binaries
+* `curl | sh` bootstrap script with SHA256 verification
+* Root assertion at startup; no sudo elevation inside raw mode
+* Ratatui async event loop using tokio + crossterm `event-stream` + `CancellationToken`
+* Executor with `Action` enum, command spawning, log streaming to TUI via `mpsc`
+* Preflight runner: OS detect, systemd present, cloud-init wait, apt-lock flock, RAM/disk check
+* JSON + text logging under `/var/log/toride/` (fallback `~/.local/state/toride/` for dry-run as non-root)
+* `toride plan --json` for AI-agent and CI consumption
+
+Modules:
+
+* System update / apt baseline packages
+* Swap file
+* Create sudo user + SSH key + drop-in sshd hardening (with `50-cloud-init` override)
 * UFW
-* Fail2Ban
-* Docker
-* Docker Compose plugin
-* Swap
-* Node via NVM
-* Bun
-* Rust
-* Go
-* Python basics
-* Tailscale
-* Dry-run mode
-* Logs
+* Docker (official repo) + Compose plugin + log rotation + user group
+* mise (single module covering Node, Bun, Deno, Go, Rust, Python)
+
+Profiles: Basic and Custom only.
+
+UX: TUI flow (Welcome → Profile → Module selection → Configure → Preflight → Apply → Summary) plus `toride apply --config toride.toml`.
+
+Out of scope for v0.1: Sandbox profile, fail2ban, Cloudflare-only HTTP/S, Tailscale, server managers, reverse proxies, monitoring, backup, unattended-upgrades, sysctl hardening.
 
 ## v0.2
 
+* Sandbox profile
+* fail2ban with `backend = systemd` baked in for Ubuntu 24.04 / Debian 12
+* unattended-upgrades
+* Tailscale (pinned version, script URL + SHA shown before exec)
+* Cloudflare-only HTTP/S with refresh timer
+* Sysctl hardening pack
+* Hostname / timezone / locale module
 * Dokploy installer
 * Coolify installer
-* Caddy installer
-* Traefik installer
-* NGINX installer
-* Docker reverse proxy mode
-* Cloudflare-only HTTP/S
-* Docker log rotation
-* Unattended upgrades
-* Export/import config
+* Reverse-proxy modules: Caddy, Traefik, NGINX (native + Docker variants)
+* Config export/import
 
 ## v0.3
 
 * Cloudflare Tunnel
-* Backup modules
-* Restic/Borg/Rclone
-* Monitoring modules
-* Uptime Kuma
-* Netdata
-* Node exporter
-* AI-agent friendly JSON output
-* Remote execution over SSH
+* WireGuard
+* Backup modules: Restic, Borg, Rclone
+* Database dump helpers
+* Monitoring modules: node_exporter, Uptime Kuma, Netdata, Prometheus, Grafana
+* `toride apply --remote user@host` (SSH-out mode)
+* RHEL-family support: AlmaLinux, Rocky, Fedora (dnf executor)
 
 ## v0.4
 
-* Plugin system
-* Multiple OS families
-* Team presets
-* Signed recipes
-* Web dashboard optional
-* Server inventory mode
+* Plugin system (recipes as TOML + signed binaries)
+* Team presets / shared profile library
+* Server inventory mode (multi-host)
+* Optional web dashboard
