@@ -69,7 +69,7 @@ Target:
 * responsive terminal sizes
 * visual regressions in rendered text
 
-Use Ratatui's `TestBackend` for this layer. Ratatui documents `TestBackend` as a backend useful for UI unit tests, while normal app runtime uses backends such as Crossterm, Termion, or Termwiz.
+Use Ratatui's `TestBackend` for this layer. Ratatui's current docs describe it as a backend that renders to an in-memory buffer and is intended for integration tests of the entire terminal UI. For lower-level widget tests, prefer rendering directly into a `Buffer` when that is enough.
 
 This layer is not full E2E because it does not run the real binary and does not exercise raw mode, alternate screen, terminal input decoding, subprocess lifetime, or panic restoration. It is still valuable because it is stable and cheap.
 
@@ -88,11 +88,11 @@ fn profile_screen_renders_at_80x24() {
 
     terminal.draw(|frame| view(frame, &model)).unwrap();
 
-    insta::assert_snapshot!(terminal.backend().buffer());
+    insta::assert_snapshot!(terminal.backend());
 }
 ```
 
-Use this for exact layout expectations, not full user journeys.
+Use this for exact layout expectations, not full user journeys. Ratatui's snapshot recipe also notes that color assertions are not supported by the simple `insta` snapshot path as of the current docs, so color-sensitive checks should use buffer/cell assertions or the PTY E2E harness.
 
 ## 3. PTY E2E Tests
 
@@ -124,7 +124,7 @@ Conceptual example:
 ```rust
 #[test]
 fn user_can_select_basic_profile_and_open_plan() {
-    let mut app = TuiSession::spawn("./target/debug/toride")
+    let mut app = TuiSession::spawn(env!("CARGO_BIN_EXE_toride"))
         .size(100, 32)
         .env("TORIDE_E2E", "1")
         .start();
@@ -145,6 +145,8 @@ fn user_can_select_basic_profile_and_open_plan() {
 ```
 
 The actual API depends on the selected harness, but this is the behavior we want.
+
+In Cargo integration tests, prefer `env!("CARGO_BIN_EXE_toride")` over a hard-coded `./target/debug/toride` path. Cargo provides that variable for built binary targets, which makes the test work across profiles, workspaces, and target directories.
 
 ---
 
@@ -182,6 +184,7 @@ Recommended use:
 * Start with 3-5 smoke workflows.
 * Run in CI on Linux.
 * Keep visual snapshots optional at first.
+* Pin the exact crate version in `Cargo.toml` after a local spike. The docs.rs index has recently shown fast-moving `0.6.x` releases, so avoid loose assumptions about API names until implementation time.
 
 ## Option B: Build a Small Harness with `portable-pty` + `vt100`
 
@@ -189,8 +192,8 @@ If `testty` is too young or too opinionated, build a thin internal harness.
 
 Pieces:
 
-* `portable-pty` to spawn Toride in a pseudo-terminal.
-* `vt100` to parse ANSI output into a screen buffer.
+* `portable-pty` to spawn Toride in a pseudo-terminal. The current `portable-pty` docs show creating a PTY with `native_pty_system()`, `openpty(PtySize { rows, cols, .. })`, spawning a command through the slave, reading from the master, and writing input to the master.
+* `vt100` to parse ANSI output into a screen buffer. The current `vt100` docs describe it as parsing a terminal byte stream into an in-memory representation of rendered contents, with cell-level access for text and colors.
 * helper methods like `press`, `type_text`, `wait_for_text`, `assert_visible`, `resize`, and `snapshot`.
 
 This is more work, but it gives us control over retries, timeouts, artifacts, and CI behavior.
@@ -203,7 +206,7 @@ Recommended only if:
 
 ## Option C: Use `expectrl` for Prompt-Like Flows
 
-`expectrl` is useful for automating interactive terminal programs. It is closer to classic `expect`/`pexpect`: spawn a process, wait for patterns, send input.
+`expectrl` is useful for automating interactive terminal programs. Its current docs describe it as an `expect`-style library for spawning, controlling, and interacting with terminal process I/O. It is closer to classic `expect`/`pexpect`: spawn a process, wait for patterns, send input.
 
 It can help for CLI prompts, but it is weaker for full-screen TUIs because full-screen apps redraw in-place, use alternate screen, and depend on layout position. For Toride, `expectrl` is acceptable for simple fallback checks, but not the primary E2E harness.
 
@@ -308,6 +311,17 @@ cargo test --test render_snapshots
 cargo test --test e2e -- --test-threads=1
 ```
 
+Use Cargo's integration-test layout deliberately:
+
+```text
+tests/render_snapshots.rs
+tests/e2e.rs
+tests/e2e/startup.rs
+tests/e2e/profiles.rs
+```
+
+`tests/e2e.rs` should declare modules from `tests/e2e/`, so `cargo test --test e2e` has one serial E2E test binary.
+
 PTY E2E tests should run serially because they depend on timing, terminal dimensions, and subprocess cleanup. They should produce artifacts on failure:
 
 * final terminal text buffer
@@ -388,7 +402,8 @@ Use snapshots when the layout itself matters.
 ## Phase 3: Add PTY E2E
 
 * Start with `testty`.
-* Add `tests/e2e/startup.rs`.
+* Add `tests/e2e.rs` as the E2E integration-test target.
+* Add journey modules under `tests/e2e/`, starting with `tests/e2e/startup.rs`.
 * Add helpers for common key flows.
 * Capture screen artifacts on failure.
 * Run E2E serially in CI.
@@ -405,19 +420,22 @@ Use snapshots when the layout itself matters.
 
 Relevant references:
 
-* Ratatui backends: `TestBackend` is documented as useful for UI unit tests, while Crossterm/Termion/Termwiz are normal runtime backends.
-* Ratatui testing recipes: official docs point to app testing and `insta` snapshots.
+* Ratatui `TestBackend`: current rustdoc describes it as an in-memory backend intended for integration tests of the entire terminal UI; for lower-level widget tests, prefer direct buffer testing.
+* Ratatui testing recipes: official docs point to app testing and `insta` snapshots, with a caveat that simple color snapshot assertions are not supported in that recipe as of now.
 * `testty`: Rust-native PTY-driven TUI E2E framework with terminal-state assertions.
-* `expectrl`: Rust automation library for interactive terminal programs.
-* `vt100`: terminal parser useful for turning ANSI output into a queryable screen buffer.
+* `portable-pty`: cross-platform PTY API for opening PTYs, spawning commands through the slave side, and reading/writing through the master side.
+* `expectrl`: Rust automation library for interactive terminal programs; useful for prompt-style flows, weaker for full-screen TUI layout assertions.
+* `vt100`: terminal parser useful for turning ANSI output into a queryable screen buffer with cell-level state.
 * Textual's testing docs are a useful comparison point: Python Textual provides a `Pilot` that presses keys, clicks, changes terminal size, pauses, and supports snapshot testing. For Ratatui we assemble the same idea with PTY tooling.
 
 Sources:
 
 * https://ratatui.rs/concepts/backends/
 * https://ratatui.rs/recipes/testing/
+* https://ratatui.rs/recipes/testing/snapshots/
 * https://docs.rs/crate/testty/0.6.12
+* https://docs.rs/testty/latest/testty/
+* https://docs.rs/portable-pty/latest/portable_pty/
 * https://docs.rs/expectrl
 * https://docs.rs/vt100/latest/vt100/
 * https://textual.textualize.io/guide/testing/
-
