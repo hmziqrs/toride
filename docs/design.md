@@ -110,7 +110,7 @@ enum Effect {
 Render is **event-driven**, not continuous. A naive 60 FPS loop consumes ~7% CPU at idle in release builds; toride targets ~0% idle. The render scheduler fires only when:
 
 1. The reducer set `model.needs_render = true`, OR
-2. `EffectManager::active_count() > 0` (tachyonfx has live effects), OR
+2. The tachyonfx manager reports live effects through the current crate API, OR
 3. A terminal resize occurred.
 
 ```rust
@@ -137,7 +137,7 @@ loop {
     let new_effects = update(&mut model, action);
     for eff in new_effects { spawn_effect(eff, action_tx.clone(), cancel.clone()); }
 
-    let active = effects.active_count() > 0;
+    let active = effect_manager_has_active_effects(&effects); // verify exact tachyonfx method name at implementation time
     if model.needs_render || active {
         let elapsed = last_frame.elapsed();
         last_frame = Instant::now();
@@ -528,17 +528,25 @@ fn spawn_signal_watcher(action_tx: UnboundedSender<Action>) {
 
 ## Confirmation dialogs
 
-Destructive or hard-to-reverse actions go through a confirmation modal screen pushed onto the stack. The modal is a `Screen::Confirm(ConfirmSpec)` overlay with explicit Yes/No buttons whose labels restate the action ("Disable password login" — not "OK") per modal best practice. No default selection.
+Destructive or hard-to-reverse actions go through a confirmation modal screen pushed onto the stack. The modal is a `Screen::Confirm(ConfirmSpec)` overlay with explicit Yes/No buttons whose labels restate the action ("Disable password login" — not "OK") per modal best practice. Initial focus should land on the safer option, usually Cancel.
 
 Actions requiring confirmation:
 
 * Quit while `RunState::Active`
 * Cancel a running plan (`Ctrl+C` during Apply)
+* Apply generated setup plan
 * Disable root SSH login
 * Disable password SSH login
+* Enable UFW
+* Change SSH port
+* Enable Cloudflare-only HTTP/S
 * Apply with unsafe-combination warnings unresolved
+* Overwrite or replace critical config
 * Overwrite an existing `toride.toml`
+* Run a remote install script
 * Reset profile defaults (discards user-made changes)
+* Delete, clean up, or remove system resources
+* Restart or reload services that may affect active access
 
 Modal implementation: a single `widgets::confirm.rs` (added to the components list) renders the spec; no external crate. The community crates `tui-confirm-dialog` / `tui-dialog` are options if scope grows.
 
@@ -567,7 +575,7 @@ Common validators (forward references in `src/tui/forms/validators.rs`):
 
 ## Error handling
 
-* `color_eyre::Result<T>` at the app boundary; `color-eyre` installed via `init_with_options`.
+* `color_eyre::Result<T>` at the app boundary; call `color_eyre::install()` before `ratatui::init()`.
 * `thiserror`-derived domain errors at module boundaries (`ModuleError`, `IoError`, `NetworkError`).
 * No `unwrap()` outside `main` and tests. `expect()` only with an `// invariant:` comment explaining why.
 * `Action::Error(AppError)` surfaces non-fatal errors as toasts; the run continues.
@@ -668,3 +676,84 @@ src/tui/
 * New module: file under `src/modules/`, register in `modules/mod.rs`, declare deps/conflicts, write a `to_shell_preview` test per `Action` variant emitted.
 * New animation: add to the catalog table here using `tachyonfx` primitives only. No ad-hoc easing curves.
 * New keybinding: register in `keymap.rs`, add to relevant section here; the help overlay reads from the registry.
+
+---
+
+# References
+
+Sources consulted while writing and validating this design. Cite when re-researching, upgrading Ratatui/tachyonfx, or onboarding a new contributor.
+
+## Ratatui core
+
+* TEA pattern — <https://ratatui.rs/concepts/application-patterns/the-elm-architecture/>
+* Component architecture — <https://ratatui.rs/concepts/application-patterns/component-architecture/>
+* State management patterns (DeepWiki) — <https://deepwiki.com/ratatui/ratatui/4.3-state-management-patterns>
+* Async event stream tutorial — <https://ratatui.rs/tutorials/counter-async-app/async-event-stream/>
+* Full async events tutorial — <https://ratatui.rs/tutorials/counter-async-app/full-async-events/>
+* `ratatui::init` — <https://docs.rs/ratatui/latest/ratatui/fn.init.html>
+* `ratatui::restore` — <https://docs.rs/ratatui/latest/ratatui/init/fn.restore.html>
+* v0.30 release highlights — <https://ratatui.rs/highlights/v030/>
+* BREAKING-CHANGES.md — <https://github.com/ratatui/ratatui/blob/main/BREAKING-CHANGES.md>
+
+## Panic / error handling
+
+* Panic hooks recipe — <https://ratatui.rs/recipes/apps/panic-hooks/>
+* Better panic hooks — <https://ratatui.rs/recipes/apps/better-panic/>
+* color-eyre with Ratatui — <https://ratatui.rs/recipes/apps/color-eyre/>
+* color-eyre PR adding default hooks — <https://github.com/ratatui/ratatui/pull/1181>
+
+## Animations / effects
+
+* tachyonfx GitHub — <https://github.com/ratatui/tachyonfx>
+* tachyonfx ecosystem page — <https://ratatui.rs/ecosystem/tachyonfx/>
+* tachyonfx docs.rs — <https://docs.rs/tachyonfx>
+* `EffectManager` — <https://docs.rs/tachyonfx/latest/tachyonfx/struct.EffectManager.html>
+* tachyonfx DSL — <https://docs.rs/tachyonfx/latest/tachyonfx/dsl/index.html>
+
+## Async subprocess streaming
+
+* `tokio::process::Command` — <https://docs.rs/tokio/latest/tokio/process/struct.Command.html>
+* tokio::process module — <https://docs.rs/tokio/latest/tokio/process/>
+* Merging stdout/stderr — <https://github.com/tokio-rs/tokio/discussions/3419>
+
+## Graceful shutdown / signals
+
+* Tokio graceful shutdown — <https://tokio.rs/tokio/topics/shutdown>
+* tokio-graceful-shutdown crate — <https://docs.rs/tokio-graceful-shutdown>
+
+## Logging
+
+* tracing-appender rolling — <https://docs.rs/tracing-appender/latest/tracing_appender/rolling/>
+* `RollingFileAppender` — <https://docs.rs/tracing-appender/latest/tracing_appender/rolling/struct.RollingFileAppender.html>
+* Structured JSON logs with tracing — <https://oneuptime.com/blog/post/2026-01-25-structured-json-logs-tracing-rust/view>
+
+## Terminal capability standards
+
+* NO_COLOR — <https://no-color.org/>
+* FORCE_COLOR — <https://force-color.org/>
+
+## Accessibility / theme
+
+* Dark mode accessibility — <https://dubbot.com/dubblog/2023/dark-mode-a11y.html>
+* Material dark theme guidance — <https://m2.material.io/design/color/dark-theme.html>
+* Ratatui colors discussion — <https://github.com/ratatui/ratatui/discussions/877>
+* InclusiveColors (APCA / WCAG) — <https://www.inclusivecolors.com/>
+
+## UX patterns
+
+* Destructive action confirmation pattern — <https://www.hashbuilds.com/patterns/what-is-confirm-dialog>
+* Designing destructive action modals — <https://uxpsychology.substack.com/p/how-to-design-better-destructive>
+* tui-dialog — <https://forum.ratatui.rs/t/announcing-tui-dialog/232>
+
+## Keybinding conventions (vim-style TUIs)
+
+* lazygit — <https://github.com/jesseduffield/lazygit>
+* k9s — <https://k9scli.io/>
+* Helix — <https://helix-editor.com/>
+* Vim keybindings everywhere — <https://github.com/erikw/vim-keybindings-everywhere-the-ultimate-list>
+
+## Performance
+
+* Ratatui rendering best practices — <https://github.com/ratatui/ratatui/discussions/579>
+* CPU usage at 60 FPS issue — <https://github.com/ratatui/ratatui/issues/1338>
+* Paragraph performance — <https://github.com/ratatui/ratatui/discussions/1880>
