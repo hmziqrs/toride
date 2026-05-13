@@ -9,9 +9,10 @@ Lima is the preferred local sandbox runner because it is CLI-first, lightweight 
 Audit status:
 
 * Lima is not installed in the current development workspace, so local command execution could not be validated here.
-* Commands and template names in this document were cross-checked against Lima's current public docs on 2026-05-14.
+* Commands, flags, template names, mounts, VZ behavior, `copy`, `validate`, and snapshot syntax in this document were cross-checked against Lima's current public docs on 2026-05-14.
 * Lima snapshots are documented but marked experimental by Lima. Scripts must support a delete-and-recreate fallback.
 * The sandbox flow is workable for the current repo state, but Toride itself is not implemented yet beyond `src/main.rs`. The destructive apply examples describe the intended CLI once Toride has apply/dry-run commands.
+* The biggest project-specific risk is SSH/firewall testing: Lima uses SSH for `limactl shell` and `limactl copy`, so a Toride run that breaks guest SSH may also break artifact collection.
 
 ---
 
@@ -102,7 +103,10 @@ Verify:
 ```bash
 limactl --version
 limactl list
+limactl start --list-templates
 ```
+
+The scripts should require Lima 2.x or newer for this plan. If `ubuntu-26.04`, `debian-13`, `rocky-10`, `--mount-none`, or `snapshot` are missing, upgrade Lima before continuing.
 
 On macOS, prefer Lima's native virtualization backend where possible:
 
@@ -119,11 +123,11 @@ vmType: qemu
 For automation, prefer non-interactive Lima commands:
 
 ```bash
-limactl start -y ...
-limactl create -y ...
+limactl start --tty=false ...
+limactl create --tty=false ...
 ```
 
-`-y` disables Lima's TUI/editor prompts.
+`--tty=false` disables Lima's TUI/editor prompts. Some Lima docs still show `-y` / `--yes`, but Lima's deprecation notes mark `--yes` as deprecated in the 2.x line, so scripts should use `--tty=false`.
 
 ---
 
@@ -184,15 +188,14 @@ dev/sandbox/lima/images/<distro>/
 
 Preferred image format:
 
-* `qcow2` cloud image
+* `qcow2` cloud image with cloud-init support
 
 Accepted with caveats:
 
 * `.img` cloud image
 * `.raw` disk image
-* `.iso` installer image
 
-Avoid ISO images for the normal test loop. ISO installation is slower and harder to automate. Cloud images are the right default because Lima can boot them with cloud-init-style provisioning.
+Do not use ISO installer images for the normal test loop. Lima distribution templates are built around cloud-style disk images. ISO installation is slower, less reproducible, harder for an agent to automate, and should be treated as a separate manual image-building task.
 
 The `SHA256SUMS` file should contain a hash for the image:
 
@@ -257,6 +260,8 @@ The important invariant:
 
 > Toride apply tests always start from the `clean` snapshot.
 
+Do not install Toride or developer build tools into the destructive test VM before creating `clean`. Build tools belong on the host or in a separate builder VM.
+
 ---
 
 # Generic Lima Template
@@ -318,12 +323,12 @@ Notes:
 If no user-supplied image exists, use Lima's templates where available:
 
 ```bash
-limactl start -y --name=toride-u2404 --mount-none template:ubuntu-24.04
-limactl start -y --name=toride-u2604 --mount-none template:ubuntu-26.04
-limactl start -y --name=toride-d12 --mount-none template:debian-12
-limactl start -y --name=toride-d13 --mount-none template:debian-13
-limactl start -y --name=toride-r9 --mount-none template:rocky-9
-limactl start -y --name=toride-r10 --mount-none template:rocky-10
+limactl start --tty=false --name=toride-u2404 --mount-none template:ubuntu-24.04
+limactl start --tty=false --name=toride-u2604 --mount-none template:ubuntu-26.04
+limactl start --tty=false --name=toride-d12 --mount-none template:debian-12
+limactl start --tty=false --name=toride-d13 --mount-none template:debian-13
+limactl start --tty=false --name=toride-r9 --mount-none template:rocky-9
+limactl start --tty=false --name=toride-r10 --mount-none template:rocky-10
 ```
 
 Template names can change by Lima version. The agent must check available templates before assuming a name:
@@ -336,6 +341,8 @@ If the exact distro template is missing, use a custom YAML with an official clou
 
 Do not use `template:ubuntu` for the Ubuntu LTS test lane. Lima's `ubuntu` alias may point at the newest interim release, not the LTS version Toride wants to validate.
 
+Do not use `template:default` for destructive Toride tests. It is convenient for general Lima use, but it includes Lima's default container tooling and defaults that are not as close to a fresh VPS as the versioned distro templates.
+
 ---
 
 # Creating a VM
@@ -343,7 +350,7 @@ Do not use `template:ubuntu` for the Ubuntu LTS test lane. Lima's `ubuntu` alias
 From the repo root:
 
 ```bash
-limactl create -y --name=toride-u2404 --mount-none dev/sandbox/lima/templates/ubuntu-24.04.yaml
+limactl create --tty=false --name=toride-u2404 --mount-none dev/sandbox/lima/templates/ubuntu-24.04.yaml
 limactl start toride-u2404
 ```
 
@@ -414,7 +421,7 @@ Because Lima snapshots are experimental, every script must support this slower f
 ```bash
 limactl stop toride-u2404 || true
 limactl delete -f toride-u2404
-limactl create -y --name=toride-u2404 --mount-none dev/sandbox/lima/templates/ubuntu-24.04.yaml
+limactl create --tty=false --name=toride-u2404 --mount-none dev/sandbox/lima/templates/ubuntu-24.04.yaml
 limactl start toride-u2404
 limactl stop toride-u2404
 limactl snapshot create toride-u2404 --tag clean
@@ -422,6 +429,8 @@ limactl start toride-u2404
 ```
 
 If snapshots prove unreliable for a given Lima version or VM driver, delete-and-recreate becomes the canonical reset path for that lane.
+
+When using delete-and-recreate as the reset path, scripts should cache downloaded images through Lima's normal cache and avoid deleting user-supplied images. The VM disk is disposable; the source image is not.
 
 ---
 
@@ -525,6 +534,44 @@ Fallback build path: if host cross-compilation is blocked, build inside a separa
 
 ---
 
+# SSH And Firewall Risk
+
+Lima controls Linux guests through SSH. That means these commands depend on a working guest SSH path:
+
+```bash
+limactl shell <instance> ...
+limactl copy <source> <instance>:<target>
+```
+
+Toride modules that touch SSH, UFW, nftables, Fail2Ban, users, or sudo can break the same control path the sandbox uses.
+
+The test flow must therefore split destructive runs into phases:
+
+1. **Smoke phase**: run modules that do not modify SSH or firewall rules.
+2. **Firewall phase**: enable firewall modules only after Toride proves SSH remains allowed.
+3. **SSH-hardening phase**: disable root/password login only after an independent reconnect command succeeds.
+4. **Recovery phase**: if Lima SSH is broken, stop using `limactl shell` for diagnosis and reset from snapshot or delete-and-recreate.
+
+For SSH-hardening tests, Toride must print and verify a reconnect command before applying irreversible changes:
+
+```bash
+SSH_CONFIG="$(limactl list --format '{{.SSHConfigFile}}' toride-u2404)"
+ssh -F "$SSH_CONFIG" lima-toride-u2404 true
+```
+
+Lima's documented SSH host alias is `lima-<instance>`, for example `lima-default` for the `default` instance. If that exact alias is not available in the installed Lima version, get the connection details from Lima and generate the equivalent command:
+
+```bash
+limactl list toride-u2404
+limactl show-ssh toride-u2404
+```
+
+`limactl show-ssh` is deprecated in current Lima docs, but it remains useful as a fallback when building a reconnect command. Prefer SSH config files under `~/.lima/<instance>/` when available.
+
+Any test profile that includes SSH or firewall modules must be allowed to break the VM. The reset mechanism is the recovery path.
+
+---
+
 # Collecting Logs
 
 Create a host artifact directory:
@@ -595,6 +642,7 @@ Expected behavior:
 
 * validates Lima is installed
 * validates the Lima version has `snapshot`, `copy`, `start --list-templates`, and `--mount-none`
+* validates the required template is present with `limactl start --list-templates`
 * validates the template exists
 * runs `limactl validate <template>`
 * validates the image checksum when using local images
@@ -631,8 +679,11 @@ dev/sandbox/lima/scripts/run.sh ubuntu-24.04 --profile sandbox
 Expected behavior:
 
 * builds or accepts a host binary path
+* rejects macOS binaries before copying to the guest
+* checks guest architecture with `uname -m`
 * resets the VM first
 * copies the binary into `/tmp/toride`
+* verifies `/tmp/toride` executes before running tests
 * runs dry-run
 * optionally runs apply
 * collects artifacts
@@ -679,6 +730,8 @@ An AI agent operating these sandboxes must follow these rules:
 * Never assume a distro from the instance name; check `/etc/os-release`.
 * Never assume `systemd` works; check it.
 * Never assume `apt` or `dnf` locks are free immediately after boot.
+* Never assume Lima SSH will survive SSH-hardening or firewall tests.
+* Never run a macOS-built Toride binary in the Linux guest.
 * Never repair a broken sandbox manually unless debugging that exact failure.
 * Never commit downloaded VM images or generated VM disks.
 * Always collect logs before destroying a failed VM when possible.
@@ -703,6 +756,7 @@ For Debian/Ubuntu:
 ```bash
 limactl shell <instance> command -v apt-get
 limactl shell <instance> sudo apt-get update
+limactl shell <instance> -- bash -lc 'test ! -e /var/lib/dpkg/lock-frontend'
 ```
 
 For Rocky:
@@ -720,6 +774,15 @@ limactl snapshot create <instance> --tag clean
 limactl snapshot apply <instance> --tag clean
 limactl start <instance>
 limactl shell <instance> cat /etc/os-release
+```
+
+Binary validation:
+
+```bash
+limactl shell <instance> uname -m
+limactl copy ./target/<linux-target>/release/toride <instance>:/tmp/toride
+limactl shell <instance> chmod +x /tmp/toride
+limactl shell <instance> /tmp/toride
 ```
 
 ---
