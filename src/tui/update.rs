@@ -623,11 +623,19 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                     model.focus = FocusId::ModuleList;
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
-                    model.profile = Some(Profile::Custom);
+                    model.profile = Some(match model.profile {
+                        Some(Profile::Basic) => Profile::Sandbox,
+                        Some(Profile::Sandbox) => Profile::Custom,
+                        _ => Profile::Custom,
+                    });
                     model.needs_render = true;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
-                    model.profile = Some(Profile::Basic);
+                    model.profile = Some(match model.profile {
+                        Some(Profile::Custom) => Profile::Sandbox,
+                        Some(Profile::Sandbox) => Profile::Basic,
+                        _ => Profile::Basic,
+                    });
                     model.needs_render = true;
                 }
                 _ => {}

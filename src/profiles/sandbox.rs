@@ -7,7 +7,6 @@ pub fn defaults() -> Vec<ModuleId> {
         ModuleId::UserSsh,
         ModuleId::Ufw,
         ModuleId::Docker,
-        ModuleId::Fail2Ban,
-        ModuleId::UnattendedUpgrades,
+        ModuleId::Mise,
     ]
 }

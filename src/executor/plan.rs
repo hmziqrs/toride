@@ -108,5 +108,49 @@ pub fn generate_preflight_warnings(module_ids: &[ModuleId]) -> Vec<PreflightWarn
         });
     }
 
+    // Cloudflare-only HTTP/S warning
+    if selected.contains(&ModuleId::CloudflareHttp) {
+        warnings.push(PreflightWarning {
+            message: "Cloudflare-only HTTP/S will restrict ports 80/443 to Cloudflare IP ranges. Ensure DNS is proxied through Cloudflare.".into(),
+            severity: WarningSeverity::Danger,
+        });
+    }
+
+    // Reverse proxy conflicts
+    let proxy_count = [&ModuleId::Caddy, &ModuleId::Nginx, &ModuleId::Traefik]
+        .iter()
+        .filter(|p| selected.contains(*p))
+        .count();
+    if proxy_count > 1 {
+        warnings.push(PreflightWarning {
+            message: "Multiple reverse proxies selected. Only one should bind ports 80/443.".into(),
+            severity: WarningSeverity::Danger,
+        });
+    }
+
+    // Server manager conflicts
+    if selected.contains(&ModuleId::Dokploy) && selected.contains(&ModuleId::Coolify) {
+        warnings.push(PreflightWarning {
+            message: "Dokploy and Coolify are both selected. They conflict — pick one.".into(),
+            severity: WarningSeverity::Danger,
+        });
+    }
+
+    // Uptime Kuma requires Docker
+    if selected.contains(&ModuleId::UptimeKuma) && !selected.contains(&ModuleId::Docker) {
+        warnings.push(PreflightWarning {
+            message: "Uptime Kuma requires Docker. Docker will be added as a dependency.".into(),
+            severity: WarningSeverity::Info,
+        });
+    }
+
+    // Tailscale install script warning
+    if selected.contains(&ModuleId::Tailscale) {
+        warnings.push(PreflightWarning {
+            message: "Tailscale will be installed via the official install script. Review the script before applying.".into(),
+            severity: WarningSeverity::Info,
+        });
+    }
+
     warnings
 }

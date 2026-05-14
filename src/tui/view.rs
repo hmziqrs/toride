@@ -110,13 +110,15 @@ fn render_profile_select(frame: &mut Frame, area: Rect, model: &Model) {
 
     let profiles = [
         ("Basic", "Secure production-ready VPS setup"),
+        ("Sandbox", "Developer playground with common runtimes"),
         ("Custom", "Manually choose every module"),
     ];
 
     let items: Vec<ListItem> = profiles.iter().enumerate().map(|(i, (name, desc))| {
         let selected = match model.profile {
             Some(crate::tui::model::Profile::Basic) => i == 0,
-            Some(crate::tui::model::Profile::Custom) => i == 1,
+            Some(crate::tui::model::Profile::Sandbox) => i == 1,
+            Some(crate::tui::model::Profile::Custom) => i == 2,
             None => i == 0,
         };
         let style = if selected {

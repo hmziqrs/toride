@@ -5,6 +5,28 @@ pub mod system_update;
 pub mod ufw;
 pub mod user_ssh;
 
+pub mod fail2ban;
+pub mod unattended_upgrades;
+pub mod tailscale;
+pub mod cloudflare_http;
+pub mod sysctl;
+pub mod hostname;
+pub mod timezone;
+pub mod dokploy;
+pub mod coolify;
+pub mod caddy;
+pub mod nginx;
+pub mod traefik;
+
+pub mod cloudflare_tunnel;
+pub mod wireguard;
+pub mod restic;
+pub mod borg;
+pub mod rclone;
+pub mod node_exporter;
+pub mod uptime_kuma;
+pub mod netdata;
+
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 
@@ -119,5 +141,25 @@ pub fn registry() -> BTreeMap<ModuleId, Box<dyn SetupModule>> {
     reg.insert(ModuleId::Ufw, Box::new(ufw::Ufw));
     reg.insert(ModuleId::Docker, Box::new(docker::Docker));
     reg.insert(ModuleId::Mise, Box::new(mise::Mise));
+    reg.insert(ModuleId::Fail2Ban, Box::new(fail2ban::Fail2Ban));
+    reg.insert(ModuleId::UnattendedUpgrades, Box::new(unattended_upgrades::UnattendedUpgrades));
+    reg.insert(ModuleId::Tailscale, Box::new(tailscale::Tailscale));
+    reg.insert(ModuleId::CloudflareHttp, Box::new(cloudflare_http::CloudflareHttp));
+    reg.insert(ModuleId::SysctlHardening, Box::new(sysctl::SysctlHardening));
+    reg.insert(ModuleId::Hostname, Box::new(hostname::Hostname));
+    reg.insert(ModuleId::Timezone, Box::new(timezone::Timezone));
+    reg.insert(ModuleId::Dokploy, Box::new(dokploy::Dokploy));
+    reg.insert(ModuleId::Coolify, Box::new(coolify::Coolify));
+    reg.insert(ModuleId::Caddy, Box::new(caddy::Caddy));
+    reg.insert(ModuleId::Nginx, Box::new(nginx::Nginx));
+    reg.insert(ModuleId::Traefik, Box::new(traefik::Traefik));
+    reg.insert(ModuleId::CloudflareTunnel, Box::new(cloudflare_tunnel::CloudflareTunnel));
+    reg.insert(ModuleId::Wireguard, Box::new(wireguard::Wireguard));
+    reg.insert(ModuleId::Restic, Box::new(restic::Restic));
+    reg.insert(ModuleId::Borg, Box::new(borg::Borg));
+    reg.insert(ModuleId::Rclone, Box::new(rclone::Rclone));
+    reg.insert(ModuleId::NodeExporter, Box::new(node_exporter::NodeExporter));
+    reg.insert(ModuleId::UptimeKuma, Box::new(uptime_kuma::UptimeKuma));
+    reg.insert(ModuleId::Netdata, Box::new(netdata::Netdata));
     reg
 }

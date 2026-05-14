@@ -227,3 +227,110 @@ fn install_action_shell_preview() {
     assert!(action.to_shell_preview().contains("docker-ce"));
     assert!(action.to_shell_preview().contains("apt install"));
 }
+
+#[test]
+fn sandbox_profile_selects_expected_modules() {
+    let defaults = profiles::profile_defaults(Profile::Sandbox);
+    assert!(defaults.contains(&ModuleId::SystemUpdate));
+    assert!(defaults.contains(&ModuleId::Swap));
+    assert!(defaults.contains(&ModuleId::UserSsh));
+    assert!(defaults.contains(&ModuleId::Ufw));
+    assert!(defaults.contains(&ModuleId::Docker));
+    assert!(defaults.contains(&ModuleId::Mise));
+}
+
+#[test]
+fn basic_profile_includes_fail2ban_and_upgrades() {
+    let defaults = profiles::profile_defaults(Profile::Basic);
+    assert!(defaults.contains(&ModuleId::Fail2Ban));
+    assert!(defaults.contains(&ModuleId::UnattendedUpgrades));
+}
+
+#[test]
+fn new_module_categories() {
+    assert_eq!(ModuleId::Tailscale.category(), Category::Networking);
+    assert_eq!(ModuleId::Dokploy.category(), Category::ServerManagers);
+    assert_eq!(ModuleId::Caddy.category(), Category::ReverseProxy);
+    assert_eq!(ModuleId::Restic.category(), Category::Backup);
+    assert_eq!(ModuleId::NodeExporter.category(), Category::Monitoring);
+    assert_eq!(ModuleId::Fail2Ban.category(), Category::FirewallAndSecurity);
+}
+
+#[test]
+fn reverse_proxy_conflicts() {
+    let reg = toride::modules::registry();
+    let caddy_conflicts = reg.get(&ModuleId::Caddy).unwrap().conflicts();
+    assert!(caddy_conflicts.contains(&ModuleId::Nginx));
+    assert!(caddy_conflicts.contains(&ModuleId::Traefik));
+}
+
+#[test]
+fn server_manager_dependencies() {
+    let reg = toride::modules::registry();
+    let dokploy_deps = reg.get(&ModuleId::Dokploy).unwrap().dependencies();
+    assert!(dokploy_deps.contains(&ModuleId::Docker));
+    let coolify_deps = reg.get(&ModuleId::Coolify).unwrap().dependencies();
+    assert!(coolify_deps.contains(&ModuleId::Docker));
+}
+
+#[test]
+fn server_manager_conflicts() {
+    let reg = toride::modules::registry();
+    let dokploy_conflicts = reg.get(&ModuleId::Dokploy).unwrap().conflicts();
+    assert!(dokploy_conflicts.contains(&ModuleId::Coolify));
+}
+
+#[test]
+fn cloudflare_http_depends_on_ufw() {
+    let reg = toride::modules::registry();
+    let deps = reg.get(&ModuleId::CloudflareHttp).unwrap().dependencies();
+    assert!(deps.contains(&ModuleId::Ufw));
+}
+
+#[test]
+fn uptime_kuma_depends_on_docker() {
+    let reg = toride::modules::registry();
+    let deps = reg.get(&ModuleId::UptimeKuma).unwrap().dependencies();
+    assert!(deps.contains(&ModuleId::Docker));
+}
+
+#[test]
+fn all_module_ids_registered() {
+    let reg = toride::modules::registry();
+    for id in ModuleId::all() {
+        assert!(reg.contains_key(id), "Module {:?} not registered", id);
+    }
+}
+
+#[test]
+fn all_categories_have_modules() {
+    let categories: std::collections::HashSet<Category> = ModuleId::all()
+        .iter().map(|id| id.category()).collect();
+    for cat in Category::all() {
+        assert!(categories.contains(cat), "Category {:?} has no modules", cat);
+    }
+}
+
+#[test]
+fn preflight_warnings_proxy_conflict() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::Caddy, ModuleId::Nginx,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("Multiple reverse proxies")));
+}
+
+#[test]
+fn preflight_warnings_server_manager_conflict() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::Dokploy, ModuleId::Coolify, ModuleId::Docker,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("Dokploy and Coolify")));
+}
+
+#[test]
+fn preflight_warnings_cloudflare() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::CloudflareHttp, ModuleId::Ufw,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("Cloudflare")));
+}

@@ -6,6 +6,7 @@ use crate::tui::theme::Theme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Profile {
     Basic,
+    Sandbox,
     Custom,
 }
 
@@ -17,6 +18,26 @@ pub enum ModuleId {
     Ufw,
     Docker,
     Mise,
+    Fail2Ban,
+    UnattendedUpgrades,
+    Tailscale,
+    CloudflareHttp,
+    SysctlHardening,
+    Hostname,
+    Timezone,
+    Dokploy,
+    Coolify,
+    Caddy,
+    Nginx,
+    Traefik,
+    CloudflareTunnel,
+    Wireguard,
+    Restic,
+    Borg,
+    Rclone,
+    NodeExporter,
+    UptimeKuma,
+    Netdata,
 }
 
 impl ModuleId {
@@ -28,6 +49,26 @@ impl ModuleId {
             ModuleId::Ufw,
             ModuleId::Docker,
             ModuleId::Mise,
+            ModuleId::Fail2Ban,
+            ModuleId::UnattendedUpgrades,
+            ModuleId::Tailscale,
+            ModuleId::CloudflareHttp,
+            ModuleId::SysctlHardening,
+            ModuleId::Hostname,
+            ModuleId::Timezone,
+            ModuleId::Dokploy,
+            ModuleId::Coolify,
+            ModuleId::Caddy,
+            ModuleId::Nginx,
+            ModuleId::Traefik,
+            ModuleId::CloudflareTunnel,
+            ModuleId::Wireguard,
+            ModuleId::Restic,
+            ModuleId::Borg,
+            ModuleId::Rclone,
+            ModuleId::NodeExporter,
+            ModuleId::UptimeKuma,
+            ModuleId::Netdata,
         ]
     }
 
@@ -39,17 +80,41 @@ impl ModuleId {
             Self::Ufw => "UFW Firewall",
             Self::Docker => "Docker",
             Self::Mise => "Language Runtimes (mise)",
+            Self::Fail2Ban => "Fail2Ban",
+            Self::UnattendedUpgrades => "Auto Security Updates",
+            Self::Tailscale => "Tailscale",
+            Self::CloudflareHttp => "Cloudflare-only HTTP/S",
+            Self::SysctlHardening => "Kernel Hardening",
+            Self::Hostname => "Hostname",
+            Self::Timezone => "Timezone",
+            Self::Dokploy => "Dokploy",
+            Self::Coolify => "Coolify",
+            Self::Caddy => "Caddy",
+            Self::Nginx => "NGINX",
+            Self::Traefik => "Traefik",
+            Self::CloudflareTunnel => "Cloudflare Tunnel",
+            Self::Wireguard => "WireGuard",
+            Self::Restic => "Restic",
+            Self::Borg => "BorgBackup",
+            Self::Rclone => "Rclone",
+            Self::NodeExporter => "Node Exporter",
+            Self::UptimeKuma => "Uptime Kuma",
+            Self::Netdata => "Netdata",
         }
     }
 
     pub fn category(&self) -> Category {
         match self {
-            Self::SystemUpdate => Category::SystemBasics,
-            Self::Swap => Category::SystemBasics,
+            Self::SystemUpdate | Self::Swap | Self::Hostname | Self::Timezone | Self::UnattendedUpgrades => Category::SystemBasics,
             Self::UserSsh => Category::UsersAndSsh,
-            Self::Ufw => Category::FirewallAndSecurity,
-            Self::Docker => Category::Containers,
+            Self::Ufw | Self::Fail2Ban | Self::CloudflareHttp | Self::SysctlHardening => Category::FirewallAndSecurity,
             Self::Mise => Category::DeveloperRuntimes,
+            Self::Docker => Category::Containers,
+            Self::Tailscale | Self::CloudflareTunnel | Self::Wireguard => Category::Networking,
+            Self::Dokploy | Self::Coolify => Category::ServerManagers,
+            Self::Caddy | Self::Nginx | Self::Traefik => Category::ReverseProxy,
+            Self::Restic | Self::Borg | Self::Rclone => Category::Backup,
+            Self::NodeExporter | Self::UptimeKuma | Self::Netdata => Category::Monitoring,
         }
     }
 }
@@ -61,6 +126,11 @@ pub enum Category {
     FirewallAndSecurity,
     DeveloperRuntimes,
     Containers,
+    Networking,
+    ServerManagers,
+    ReverseProxy,
+    Backup,
+    Monitoring,
 }
 
 impl Category {
@@ -71,6 +141,11 @@ impl Category {
             Self::FirewallAndSecurity => "Firewall & Security",
             Self::DeveloperRuntimes => "Developer Runtimes",
             Self::Containers => "Containers",
+            Self::Networking => "Networking",
+            Self::ServerManagers => "Server Managers",
+            Self::ReverseProxy => "Reverse Proxy",
+            Self::Backup => "Backup",
+            Self::Monitoring => "Monitoring",
         }
     }
 
@@ -81,6 +156,11 @@ impl Category {
             Category::FirewallAndSecurity,
             Category::DeveloperRuntimes,
             Category::Containers,
+            Category::Networking,
+            Category::ServerManagers,
+            Category::ReverseProxy,
+            Category::Backup,
+            Category::Monitoring,
         ]
     }
 }
@@ -241,6 +321,8 @@ pub enum FormField {
     SshPublicKey,
     SwapSize,
     SshPort,
+    Hostname,
+    Timezone,
 }
 
 #[derive(Debug, Clone)]

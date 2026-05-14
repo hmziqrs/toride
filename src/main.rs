@@ -94,6 +94,7 @@ async fn main() -> color_eyre::Result<()> {
 async fn run_plan(profile: Option<&str>, _config_path: Option<&str>, json: bool) -> color_eyre::Result<()> {
     let profile = match profile {
         Some("basic") => tui::model::Profile::Basic,
+        Some("sandbox") => tui::model::Profile::Sandbox,
         Some("custom") | None => tui::model::Profile::Custom,
         _ => tui::model::Profile::Custom,
     };
@@ -121,6 +122,7 @@ async fn run_plan(profile: Option<&str>, _config_path: Option<&str>, json: bool)
 async fn run_apply(profile: Option<&str>, _config_path: Option<&str>, user: Option<&str>, ssh_key: Option<&str>) -> color_eyre::Result<()> {
     let profile = match profile {
         Some("basic") => tui::model::Profile::Basic,
+        Some("sandbox") => tui::model::Profile::Sandbox,
         Some("custom") | None => tui::model::Profile::Custom,
         _ => tui::model::Profile::Custom,
     };
@@ -128,6 +130,7 @@ async fn run_apply(profile: Option<&str>, _config_path: Option<&str>, user: Opti
     if !system::users::is_root() {
         eprintln!("Apply requires root. Run: sudo toride apply --profile {}", match profile {
             tui::model::Profile::Basic => "basic",
+            tui::model::Profile::Sandbox => "sandbox",
             tui::model::Profile::Custom => "custom",
         });
         std::process::exit(1);

@@ -1,348 +1,460 @@
-# v0.1 Implementation Plan
+# Implementation Plan — v0.2 → v0.4
 
-Scope from `plan.md` MVP section. Follows `design.md` architecture.
+Extends existing v0.1 MVP. Follows `design.md` architecture and `e2e-testing.md` conventions.
 
 ---
 
-## Phase 1: Project Scaffolding & Core Types
+## Phase 2: v0.2 Modules & Features
 
-### 1.1 Cargo.toml dependencies
-- `ratatui` v0.30+
-- `crossterm` (features: `event-stream`)
-- `tachyonfx`
-- `tokio` (full)
-- `tokio-util` (features: `rt`)
-- `futures`
-- `tokio-stream` (features: `io-util`)
-- `clap` (derive)
-- `serde` / `serde_json` / `toml`
-- `color-eyre`
-- `thiserror`
-- `tracing` / `tracing-subscriber` (features: `env-filter`, `json`)
-- `tracing-appender`
-- `reqwest` (default-tls disabled, features: `rustls-tls`)
-- `sha2` / `hex`
-- `which`
-- `nix` (features: `user`, `signal`, `fs`)
-- `dirs`
-- `async-trait`
-- `insta` (dev)
+### 2.1 New modules (src/modules/)
 
-### 1.2 Directory structure
+Each module: zero-sized struct, implements `SetupModule`, registered in `registry()`.
+
+**fail2ban.rs**
+- `id()` → `ModuleId::Fail2Ban`
+- `dependencies()` → `[ModuleId::SystemUpdate]`
+- `category()` → `Category::FirewallAndSecurity`
+- `plan()`: apt install fail2ban python3-systemd, write `/etc/fail2ban/jail.local` with `backend = systemd` and `[sshd] enabled = true`, systemctl enable/start
+- `preflight()`: check if fail2ban already installed
+- `verify()`: check `fail2ban-client status`
+
+**unattended_upgrades.rs**
+- `id()` → `ModuleId::UnattendedUpgrades`
+- `dependencies()` → `[ModuleId::SystemUpdate]`
+- `category()` → `Category::SystemBasics`
+- `plan()`: apt install unattended-upgrades apt-listchanges, write `/etc/apt/apt.conf.d/50unattended-upgrades` config, dpkg-reconfigure
+- `verify()`: check unattended-upgrades active
+
+**tailscale.rs**
+- `id()` → `ModuleId::Tailscale`
+- `dependencies()` → `[]`
+- `category()` → `Category::Networking`
+- `plan()`: DownloadScript for install.sh with sha256, systemctl enable/start, `tailscale up`
+- `preflight()`: check if tailscale already installed
+- `verify()`: check `tailscale status`
+
+**cloudflare_http.rs**
+- `id()` → `ModuleId::CloudflareHttp`
+- `dependencies()` → `[ModuleId::Ufw]`
+- `category()` → `Category::FirewallAndSecurity`
+- `plan()`: fetch IPs from `https://www.cloudflare.com/ips-v4` and `ips-v6`, cache to `/var/lib/toride/cloudflare-ips.txt`, add UFW rules for each range on 80/443
+- `verify()`: check UFW rules contain cloudflare ranges
+
+**sysctl.rs**
+- `id()` → `ModuleId::SysctlHardening`
+- `dependencies()` → `[]`
+- `category()` → `Category::FirewallAndSecurity`
+- `plan()`: WriteFile `/etc/sysctl.d/99-toride.conf` with kernel hardening values, `sysctl --system`
+- `verify()`: check sysctl values applied
+
+**hostname.rs**
+- `id()` → `ModuleId::Hostname`
+- `dependencies()` → `[]`
+- `category()` → `Category::SystemBasics`
+- `plan()`: Exec hostnamectl set-hostname, WriteFile /etc/hosts update
+- `verify()`: check hostname matches
+
+**timezone.rs**
+- `id()` → `ModuleId::Timezone`
+- `dependencies()` → `[]`
+- `category()` → `Category::SystemBasics`
+- `plan()`: Exec timedatectl set-timezone, symlink /etc/localtime
+- `verify()`: check timedatectl output
+
+**dokploy.rs**
+- `id()` → `ModuleId::Dokploy`
+- `dependencies()` → `[ModuleId::Docker]`
+- `conflicts()` → `[ModuleId::Coolify]`
+- `category()` → `Category::ServerManagers`
+- `plan()`: Exec docker run dokploy/dokploy with volume mounts
+- `verify()`: check docker container running
+
+**coolify.rs**
+- `id()` → `ModuleId::Coolify`
+- `dependencies()` → `[ModuleId::Docker]`
+- `conflicts()` → `[ModuleId::Dokploy]`
+- `category()` → `Category::ServerManagers`
+- `plan()`: DownloadScript coolify install script, Exec to configure
+- `verify()`: check docker container running
+
+**caddy.rs**
+- `id()` → `ModuleId::Caddy`
+- `dependencies()` → `[]`
+- `conflicts()` → `[ModuleId::Nginx, ModuleId::Traefik]`
+- `category()` → `Category::ReverseProxy`
+- `plan()`: apt install caddy (or DownloadScript), WriteFile Caddyfile, systemctl enable/start
+- `verify()`: check caddy binary
+
+**nginx.rs**
+- `id()` → `ModuleId::Nginx`
+- `dependencies()` → `[]`
+- `conflicts()` → `[ModuleId::Caddy, ModuleId::Traefik]`
+- `category()` → `Category::ReverseProxy`
+- `plan()`: apt install nginx, WriteFile config, systemctl enable/start
+- `verify()`: check nginx binary
+
+**traefik.rs**
+- `id()` → `ModuleId::Traefik`
+- `dependencies()` → `[]`
+- `conflicts()` → `[ModuleId::Caddy, ModuleId::Nginx]`
+- `category()` → `Category::ReverseProxy`
+- `plan()`: DownloadScript traefik binary, WriteFile config, WriteFile systemd unit, systemctl enable/start
+- `verify()`: check traefik binary
+
+### 2.2 Model changes (src/tui/model.rs)
+
+New `ModuleId` variants:
 ```
-src/
-├─ main.rs              // CLI entry, dispatches TUI or non-interactive
-├─ tui/
-│  ├─ mod.rs
-│  ├─ runtime.rs        // event loop, effect spawner, EffectManager
-│  ├─ model.rs          // Model + initial state
-│  ├─ update.rs         // pure reducer
-│  ├─ effects.rs        // Effect runner (tokio tasks)
-│  ├─ view.rs           // root view fn
-│  ├─ theme.rs          // tokens, themes, palette
-│  ├─ glyphs.rs         // unicode + ascii fallbacks
-│  ├─ caps.rs           // TerminalCaps detection
-│  ├─ animation.rs      // tachyonfx wiring + effect specs
-│  ├─ keymap.rs         // KeyMap + binding registry
-│  ├─ forms/
-│  │  ├─ mod.rs
-│  │  └─ validators.rs  // username, ssh_key, port, swap_size validators
-│  └─ widgets/
-│     ├─ mod.rs
-│     ├─ header.rs
-│     ├─ sidebar.rs
-│     ├─ module_list.rs
-│     ├─ module_card.rs
-│     ├─ status_bar.rs
-│     ├─ progress_panel.rs
-│     ├─ log_view.rs
-│     ├─ toast.rs
-│     ├─ palette.rs
-│     ├─ help.rs
-│     ├─ confirm.rs
-│     └─ splash.rs
-├─ profiles/
-│  ├─ mod.rs
-│  ├─ basic.rs
-│  └─ custom.rs
-├─ modules/
-│  ├─ mod.rs            // SetupModule trait, registry
-│  ├─ system_update.rs
-│  ├─ swap.rs
-│  ├─ user_ssh.rs
-│  ├─ ufw.rs
-│  ├─ docker.rs
-│  └─ mise.rs
-├─ executor/
-│  ├─ mod.rs
-│  ├─ command.rs
-│  ├─ plan.rs
-│  ├─ dry_run.rs
-│  └─ logs.rs
-├─ system/
-│  ├─ mod.rs
-│  ├─ os_detect.rs
-│  ├─ package_manager.rs
-│  ├─ users.rs
-│  ├─ services.rs
-│  └─ ports.rs
-└─ config/
-   ├─ mod.rs
-   └─ schema.rs
+Fail2Ban, UnattendedUpgrades, Tailscale, CloudflareHttp,
+SysctlHardening, Hostname, Timezone, Dokploy, Coolify,
+Caddy, Nginx, Traefik
 ```
 
-### 1.3 Core type definitions
-- `Action` enum (design.md line 41-88)
-- `Effect` enum: DetectSystem, GeneratePlan, RunInstall, CancelInstall, WriteConfig, LoadConfig, OpenUrl, Sleep, PushFx(tachyonfx spec)
-- `Model` struct (design.md line 15-34)
-- `Screen` enum: Welcome, ProfileSelect, ModuleSelect, Configure, Preflight, Apply, Summary + overlays (Help, Palette, Search, Confirm)
-- `Profile` enum: Basic, Custom
-- `ModuleId` enum: all v0.1 module IDs
-- `ModuleState` struct
-- `SelectionState` struct
-- `Plan`, `RunState`, `ProgressEvent`, `Outcome`
-- `TerminalCaps`, `Theme`, `SemanticToken`
-- `FocusId` — tracks focused widget/element
-- `Toast`, `LogLine`
+New `Category` variants:
+```
+Networking, ServerManagers, ReverseProxy
+```
 
-### 1.4 TerminalCaps detection
-- Read COLORTERM, NO_COLOR, FORCE_COLOR, LANG/LC_*, TERM
-- Width/height from crossterm terminal size
+New `Profile` variant: `Sandbox`
 
-### 1.5 Theme + Glyphs
-- Dark palette colors (design.md line 244-258)
-- SemanticToken → Color mapping
-- Glyph set with ASCII fallbacks (design.md line 279-287)
-- `Theme::style(token) -> Style`
-- `Theme::glyph(g) -> &str`
+New `FormField` variants:
+```
+Hostname, Timezone
+```
 
-### 1.6 Logging setup
-- `tracing_subscriber` with `env-filter` + `json` features
-- Dual output: text formatter to `/var/log/toride/setup.log`, JSON formatter to `/var/log/toride/actions.jsonl`
-- `tracing_appender::rolling::RollingFileAppender` (daily rotation) + `NonBlocking` wrapper
-- Non-root fallback: `~/.local/state/toride/logs/`
-- Drop counter for overflow in non-blocking writer
+New `PaletteCmd` variants:
+```
+ExportJson, ExportToml
+```
 
----
+### 2.3 Profiles
 
-## Phase 2: TUI Runtime, Reducer, View
+**src/profiles/sandbox.rs** — new file:
+- Modules: SystemUpdate, Swap, UserSsh, Ufw, Docker, Mise
+- Less strict SSH (root login stays, password stays)
 
-### 2.1 Event loop (src/tui/runtime.rs)
-- `color_eyre::install()` → `ratatui::init()` → bracketed paste enable
-- `mpsc::unbounded_channel<Action>`
-- Spawn: terminal events (crossterm EventStream), logical tick (4 Hz), signal watcher
-- Main loop: recv action → update → spawn effects → conditional render
-- Render: `view(frame, &model)` → `effects.process_effects()`
-- AnimationTick scheduling when tachyonfx has active effects
-- Quit handling: disable bracketed paste → `ratatui::restore()`
+**src/profiles/mod.rs** — add Sandbox branch
 
-### 2.2 Update reducer (src/tui/update.rs)
-- Pure `update(&mut Model, Action) -> Vec<Effect>`
-- Navigation: Push/Pop/Replace screen stack
-- Module selection: ToggleModule, SelectAll, SelectNone, InvertSelection, ResetProfileDefaults
-- Profile: set defaults on selection
-- Forms: field changes, submit, validation
-- Overlays: OpenHelp, CloseOverlay, OpenPalette, PaletteInput, PaletteExec
-- Results: OsDetected, PlanReady, InstallProgress, InstallDone, Error, Toast
-- Set `needs_render = true` on all display-changing actions
-- Set `should_quit = true` on Quit (with confirmation guard for active RunState)
-- Confirmation guards for: Apply plan, disable root SSH, disable password SSH, enable UFW, change SSH port, overwrite toride.toml, reset profile defaults, run remote scripts
+**src/profiles/basic.rs** — add Fail2Ban, UnattendedUpgrades
 
-### 2.3 View layer (src/tui/view.rs)
-- Root `view(frame, &model)` dispatches to screen views
-- App layout: Header(1) / Body(flex) / StatusBar(1)
-- Body: Sidebar(24) + Content when width >= 100, else single column
-- Min size guard: 80x24, render "please resize" placeholder below
+### 2.4 Executor changes
 
-### 2.4 Widgets
-Each widget: `render(area, frame, &Model)` — stateless, reads from Model.
+**src/executor/command.rs** — no new InstallAction variants needed for v0.2
 
-- **header.rs**: App name "Toride", breadcrumb from screen_stack, host badge (OS + IP)
-- **sidebar.rs**: Category tree with module counts, left-edge focus indicator
-- **module_list.rs**: Virtualized checklist grouped by category, inline status icons
-- **module_card.rs**: Expanded detail with description, deps, conflicts, options form
-- **status_bar.rs**: Context-aware keybinding hints (left), mode chip (right)
-- **progress_panel.rs**: Per-step rows with spinner/progress/log tail
-- **log_view.rs**: Autoscrolling log with filter
-- **toast.rs**: Bottom-right notification stack
-- **palette.rs**: Command palette modal with fuzzy filter
-- **help.rs**: Keybinding cheat sheet modal
-- **confirm.rs**: Confirmation dialog modal with Yes/No
-- **splash.rs**: Startup logo
+**src/executor/plan.rs** — update `generate_preflight_warnings()` for:
+- Dokploy/Coolify requires Docker
+- Conflicting reverse proxies
+- Cloudflare-only without Cloudflare DNS
 
-### 2.5 Keymap (src/tui/keymap.rs)
-- Binding registry: key → Action per screen context
-- Global bindings from design.md keyboard map
-- Navigation, module selection, form, apply screen (f=follow-tail, s=skip failed, R=retry), palette sections
-- Help overlay bindings: `/` search, `j`/`k` scroll
-- Apply screen: `f` follow-tail, `s` skip failed, `R` retry
-- Palette commands: :plan, :apply, :dry-run, :save, :load, :reset, :theme, :log, :export, :quit
-- Single source of truth for status bar hints and help overlay
+### 2.5 Config changes (src/config/schema.rs)
 
-### 2.6 Animation wiring (src/tui/animation.rs)
-- tachyonfx EffectManager integration
-- Effect catalog from design.md animation table
-- Reduced motion: TORIDE_NO_ANIM=1 collapses effects to final state
+Add sections:
+```toml
+[security]
+fail2ban = true
+cloudflare_only_http = false
+auto_security_updates = true
 
-### 2.7 Effect runner (src/tui/effects.rs)
-- `spawn_effect(Effect, action_tx, cancel)` on tokio tasks
-- DetectSystem → run OS detection → post OsDetected
-- GeneratePlan → collect module plans → post PlanReady
-- RunInstall → execute plan → stream InstallProgress → post InstallDone
-- CancelInstall → cancel token
-- WriteConfig/LoadConfig → serialize/deserialize
-- OpenUrl → open URL in browser (v0.1 stub)
-- Sleep → delayed action dispatch
+[server_manager]
+manager = "none"  # none | dokploy | coolify
+
+[reverse_proxy]
+mode = "none"     # none | caddy | nginx | traefik | managed
+
+[networking]
+tailscale = false
+```
+
+### 2.6 TUI update/view changes
+
+- Profile select screen: add Sandbox option
+- Module select: handle new categories (Networking, ServerManagers, ReverseProxy)
+- Configure screen: add Hostname, Timezone fields
+- Preflight warnings for new conflict/dependency combinations
+- Apply screen: no changes needed (generic)
+
+### 2.7 E2E tests (tests/e2e/)
+
+New test files:
+- `tests/e2e/sandbox_profile.rs` — Sandbox profile flow
+- `tests/e2e/conflicts.rs` — conflicting module selection warnings
+
+New tests in existing files:
+- `profiles.rs`: sandbox_profile_shows_runtimes
+- `overlays.rs`: palette_export_command
+
+### 2.8 Unit tests (tests/unit_tests.rs)
+
+New tests:
+- fail2ban plan generates correct actions
+- tailscale plan includes sha256 verification
+- cloudflare_http depends on ufw
+- dokploy depends on docker
+- coolify conflicts with dokploy
+- reverse proxy mutual exclusion
+- sandbox profile has correct modules
+- unattended_upgrades plan generates config
+- sysctl hardening values are valid
 
 ---
 
-## Phase 3: Module System, Profiles, Executor
+## Phase 3: v0.3 Modules & Features
 
-### 3.1 SetupModule trait (src/modules/mod.rs)
+### 3.1 New modules
+
+**cloudflare_tunnel.rs**
+- `id()` → `ModuleId::CloudflareTunnel`
+- `dependencies()` → `[]`
+- `category()` → `Category::Networking`
+- `plan()`: DownloadScript cloudflared, Exec `cloudflared tunnel login`, WriteFile config, systemd unit
+- `verify()`: check cloudflared binary
+
+**wireguard.rs**
+- `id()` → `ModuleId::Wireguard`
+- `dependencies()` → `[]`
+- `category()` → `Category::Networking`
+- `plan()`: apt install wireguard, Exec wg genkey/genpubkey, WriteFile wg0.conf, systemctl enable/start
+- `verify()`: check wg interface
+
+**restic.rs**
+- `id()` → `ModuleId::Restic`
+- `dependencies()` → `[]`
+- `category()` → `Category::Backup`
+- `plan()`: apt install restic, WriteFile backup script, systemd timer
+- `verify()`: check restic binary
+
+**borg.rs**
+- `id()` → `ModuleId::Borg`
+- `dependencies()` → `[]`
+- `category()` → `Category::Backup`
+- `plan()`: apt install borgbackup, WriteFile config
+- `verify()`: check borg binary
+
+**rclone.rs**
+- `id()` → `ModuleId::Rclone`
+- `dependencies()` → `[]`
+- `category()` → `Category::Backup`
+- `plan()`: DownloadScript rclone install, Exec rclone config
+- `verify()`: check rclone binary
+
+**node_exporter.rs**
+- `id()` → `ModuleId::NodeExporter`
+- `dependencies()` → `[]`
+- `category()` → `Category::Monitoring`
+- `plan()`: DownloadScript node_exporter, WriteFile systemd unit, systemctl enable/start
+- `verify()`: check node_exporter running
+
+**uptime_kuma.rs**
+- `id()` → `ModuleId::UptimeKuma`
+- `dependencies()` → `[ModuleId::Docker]`
+- `category()` → `Category::Monitoring`
+- `plan()`: Exec docker run uptime-kuma container
+- `verify()`: check container running
+
+**netdata.rs**
+- `id()` → `ModuleId::Netdata`
+- `dependencies()` → `[]`
+- `category()` → `Category::Monitoring`
+- `plan()`: DownloadScript netdata kickstart, systemctl enable/start
+- `verify()`: check netdata service
+
+### 3.2 New InstallAction variant
+
 ```rust
-#[async_trait]
-trait SetupModule: Send + Sync {
-    fn id(&self) -> &'static str;
-    fn name(&self) -> &'static str;
-    fn description(&self) -> &'static str;
-    fn dependencies(&self) -> &[ModuleId];
-    fn conflicts(&self) -> &[ModuleId];
-    fn category(&self) -> Category;
-    async fn preflight(&self, ctx: &Context) -> Result<PreflightResult>;
-    async fn plan(&self, ctx: &Context) -> Result<Vec<InstallAction>>;
-    async fn apply(&self, ctx: &Context, tx: ProgressTx) -> Result<ApplyOutcome>;
-    async fn verify(&self, ctx: &Context) -> Result<VerifyResult>;
+DnfInstall { packages: Vec<String> }       // RHEL-family support
+DnfRepoAdd { name: String, baseurl: String, gpgkey: String }
+```
+
+### 3.3 Model changes
+
+New `ModuleId` variants:
+```
+CloudflareTunnel, Wireguard, Restic, Borg, Rclone,
+NodeExporter, UptimeKuma, Netdata
+```
+
+New `Category` variants:
+```
+Backup, Monitoring
+```
+
+### 3.4 Executor changes
+
+**src/executor/command.rs** — handle `DnfInstall`, `DnfRepoAdd`
+**src/system/os_detect.rs** — add `is_rhel_family()` helper
+**src/modules/mod.rs** — new `InstallAction` variants
+
+### 3.5 CLI changes (src/main.rs)
+
+```rust
+Commands::Apply {
+    #[arg(long)]
+    remote: Option<String>,  // user@host for SSH-out mode
 }
 ```
-- Module registry: BTreeMap<ModuleId, Box<dyn SetupModule>>
-- Dependency validation at startup
-- InstallAction enum (renamed from Action to avoid collision with TUI Action)
 
-### 3.2 InstallAction enum
+New `src/executor/remote.rs` — SSH-out executor:
+- Connect via SSH to remote host
+- Transfer binary
+- Execute toride apply remotely
+- Stream progress back
+
+### 3.6 E2E tests
+
+- `tests/e2e/monitoring.rs` — uptime kuma requires docker
+- `tests/e2e/backup.rs` — backup module selection
+
+### 3.7 Unit tests
+
+- RHEL detection logic
+- DNF action to_shell_preview
+- backup module plan generation
+- monitoring module dependencies
+
+---
+
+## Phase 4: v0.4 Features
+
+### 4.1 Plugin system
+
+**src/plugins/mod.rs** — new module:
 ```rust
-enum InstallAction {
-    AptInstall { packages: Vec<&'static str> },
-    AptRepoAdd { name: &'static str, key_url: String, sources_line: String, sha256: String },
-    WriteFile { path: PathBuf, content: String, mode: u32, backup: bool },
-    AppendLine { path: PathBuf, line: String, marker: &'static str },
-    Systemctl { unit: String, op: SystemctlOp },
-    UfwRule { rule: String },
-    UserCreate { name: String, groups: Vec<String>, shell: PathBuf },
-    UserAddKey { user: String, key: String },
-    DownloadScript { url: String, sha256: String, run_as: String, env: Vec<(String, String)> },
-    Exec { cmd: String, args: Vec<String>, env: Vec<(String, String)>, as_user: Option<String> },
+trait ToridePlugin: Send + Sync {
+    fn id(&self) -> &str;
+    fn version(&self) -> &str;
+    fn modules(&self) -> Vec<Box<dyn SetupModule>>;
 }
 ```
-- Each variant has `to_shell_preview() -> String`
 
-### 3.3 v0.1 Modules
-- **system_update.rs**: apt update + upgrade + baseline packages (git, curl, wget, unzip, jq, etc.)
-- **swap.rs**: Create swap file, validate size, swapon
-- **user_ssh.rs**: Create user, add SSH key, sshd drop-in hardening, cloud-init override
-- **ufw.rs**: Install UFW, default deny, allow SSH port, enable
-- **docker.rs**: Docker repo + engine + compose plugin + log rotation + user group
-- **mise.rs**: Install mise, configure runtimes (Node, Bun, Deno, Go, Rust, Python)
+**src/plugins/loader.rs** — load plugins from:
+- `/etc/toride/plugins/`
+- `~/.config/toride/plugins/`
+- Parse TOML recipe files
 
-### 3.4 Executor (src/executor/)
-- Sequential plan execution with progress streaming
-- Each InstallAction → shell command(s)
-- flock wrapper for apt operations
-- Backup before file modifications
-- Cancel support via CancellationToken
-- Line-by-line stdout/stderr streaming via tokio::process + LinesStream
+**src/plugins/recipe.rs** — TOML recipe format:
+```toml
+[recipe]
+name = "custom-stack"
+version = "1.0"
 
-### 3.5 Profiles (src/profiles/)
-- **basic.rs**: Preselected modules per plan.md Basic Profile
-- **custom.rs**: Empty selection, user picks everything
-
-### 3.6 System detection (src/system/)
-- OS detect: /etc/os-release parsing
-- Package manager detection (apt)
-- User detection: current user, root check
-- Service detection: systemd present?
-- Port scanning: what's in use
-- Existing tooling: docker, node, etc.
-
----
-
-## Phase 4: CLI, Config, Integration
-
-### 4.1 CLI (clap)
+[module.install]
+steps = [
+    { type = "apt", packages = ["foo"] },
+    { type = "exec", cmd = "foo-init" },
+]
 ```
-toride                        # Launch TUI (default)
-toride plan --profile basic   # Generate plan, print to stdout
-toride plan --json            # JSON plan output
-toride apply --profile basic  # Non-interactive apply (requires root)
-toride apply --config path    # Apply from config file
-```
-Flags:
-- `--profile <basic|custom>`
-- `--config <path>`
-- `--user <name>`
-- `--ssh-key <path>`
-- `--json`
-- `--no-animation`
-- `--no-color` / `--color=always`
 
-### 4.2 Config schema (src/config/schema.rs)
-- TOML-based config matching plan.md example
-- Serialize/deserialize with serde
-- Save/load from toride.toml
+### 4.2 Team presets
 
-### 4.3 main.rs integration
-- Parse CLI args
-- If no subcommand: launch TUI
-- If `plan`: generate plan, print/dry-run
-- If `apply`: non-interactive execution
-- Root check for apply mode
+**src/presets/mod.rs** — fetch shared profiles from URL or file
+- `toride preset list`
+- `toride preset apply <name>`
 
----
+### 4.3 Server inventory
 
-## Phase 5: Testing
+**src/inventory/mod.rs** — multi-host management:
+- SSH connection pool
+- Parallel execution across hosts
+- Status dashboard
 
-### 5.1 Unit tests (in-module #[cfg(test)])
-- Reducer tests: `(Model, Action) → (Model, Vec<Effect>)`
-- Profile defaults: verify basic profile selects expected modules
-- Module dependency rules: Dokploy requires Docker
-- Form validation: username, SSH key, port, swap size
-- InstallAction::to_shell_preview output
-- Plan generation from selection
+### 4.4 Model changes
 
-### 5.2 Render snapshots (tests/render_snapshots.rs)
-- `insta` + `TestBackend`
-- Snapshot each screen at 100x32
-- Snapshot at 80x24 for responsive check
-- Normalize dynamic content (time, spinner frames)
+New `Screen` variants for inventory/dashboard
+New `Category::Plugins`
+Plugin-related PaletteCmd variants
 
-### 5.3 E2E test harness (tests/e2e/)
-- Use `testty` crate for PTY-based testing
-- `tests/e2e.rs` entry point declaring modules
-- `tests/e2e/startup.rs`: launch, assert profile screen, quit
-- `tests/e2e/profiles.rs`: Basic + Custom profile selection flows
-- `tests/e2e/custom_modules.rs`: select Custom, toggle modules, assert warnings
-- `tests/e2e/help_palette.rs`: press `?`, assert help, press `Esc`, press `:`, assert palette
-- `tests/e2e/dry_run.rs`: minimal selection, run plan, assert "no changes applied"
-- `tests/e2e/responsive.rs`: startup at 80x24, 100x32, 140x40, assert no clipping
-- Test mode: `TORIDE_E2E=1`, fake system data, no real commands
+### 4.5 Web dashboard (optional)
 
-### 5.4 Test infrastructure
-- `Model::initial_for_test()` constructor
-- `TORIDE_E2E` test mode flag
-- `TORIDE_NO_ANIMATION=1`
-- `TORIDE_FAKE_SYSTEM=ubuntu-24.04`
-- `TORIDE_FAKE_APPLY=1`
-- `TORIDE_CONFIG_DIR=/tmp/toride-e2e-...` (temp config dir for E2E isolation)
+Feature-gated behind `--features web`:
+- `axum` for HTTP server
+- WebSocket for real-time status
+- Serve static assets
 
 ---
 
-## Phase 6: Audit & Commit
+## Implementation Order
 
-- Verify all v0.1 modules implemented
-- Verify all screens render
-- Verify all keybindings work
-- Verify reducer handles all actions
-- Verify executor streams progress
-- Verify config save/load
-- Run all tests
-- Fix gaps
-- Commit
+### Sprint 1: v0.2 foundation (models + categories + profiles)
+1. Add new ModuleId, Category, Profile, FormField variants to model.rs
+2. Add new Category labels and ordering
+3. Create src/profiles/sandbox.rs
+4. Update registry() in modules/mod.rs
+5. Update config schema
+6. Unit tests for new types
+
+### Sprint 2: v0.2 modules batch 1 (security + system)
+7. fail2ban.rs
+8. unattended_upgrades.rs
+9. sysctl.rs
+10. hostname.rs
+11. timezone.rs
+
+### Sprint 3: v0.2 modules batch 2 (networking + servers)
+12. tailscale.rs
+13. cloudflare_http.rs
+14. dokploy.rs
+15. coolify.rs
+
+### Sprint 4: v0.2 modules batch 3 (reverse proxy)
+16. caddy.rs
+17. nginx.rs
+18. traefik.rs
+
+### Sprint 5: v0.2 TUI + integration
+19. Profile select: add Sandbox
+20. Module select: new categories
+21. Configure screen: new fields
+22. Preflight warnings for new combinations
+23. Config export/import via palette
+
+### Sprint 6: v0.2 tests
+24. E2E: sandbox profile flow
+25. E2E: conflict warnings
+26. Unit: all new module plans
+27. Unit: dependency/conflict resolution
+28. Unit: sandbox profile defaults
+
+### Sprint 7: v0.3 foundation
+29. New ModuleId/Category variants
+30. New InstallAction variants (DnfInstall, DnfRepoAdd)
+31. RHEL detection in os_detect.rs
+32. DNF handler in command.rs
+
+### Sprint 8: v0.3 modules batch 1
+33. cloudflare_tunnel.rs
+34. wireguard.rs
+35. restic.rs
+36. borg.rs
+37. rclone.rs
+
+### Sprint 9: v0.3 modules batch 2
+38. node_exporter.rs
+39. uptime_kuma.rs
+40. netdata.rs
+
+### Sprint 10: v0.3 CLI + remote
+41. SSH-out mode (src/executor/remote.rs)
+42. CLI --remote flag
+43. Remote progress streaming
+
+### Sprint 11: v0.3 tests
+44. E2E: monitoring requires docker
+45. E2E: backup module selection
+46. Unit: DNF actions
+47. Unit: all v0.3 module plans
+
+### Sprint 12: v0.4 plugin system
+48. Plugin trait and loader
+49. TOML recipe parser
+50. Plugin registration in registry
+
+### Sprint 13: v0.4 presets + inventory
+51. Team preset fetch/apply
+52. Multi-host inventory
+53. Parallel execution
+
+### Sprint 14: v0.4 tests + polish
+54. Plugin loading tests
+55. Inventory integration tests
+56. Full regression suite
+57. Audit against plan.md

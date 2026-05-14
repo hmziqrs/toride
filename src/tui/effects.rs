@@ -81,6 +81,11 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
                     runtimes: crate::config::schema::RuntimesConfig::default(),
                     containers: crate::config::schema::ContainersConfig::default(),
                     swap: crate::config::schema::SwapConfig::default(),
+                    networking: crate::config::schema::NetworkingConfig::default(),
+                    server_manager: crate::config::schema::ServerManagerConfig::default(),
+                    reverse_proxy: crate::config::schema::ReverseProxyConfig::default(),
+                    backup: crate::config::schema::BackupConfig::default(),
+                    monitoring: crate::config::schema::MonitoringConfig::default(),
                 };
                 let content = toml::to_string_pretty(&config).unwrap_or_default();
                 match tokio::fs::write(&path, content.as_bytes()).await {

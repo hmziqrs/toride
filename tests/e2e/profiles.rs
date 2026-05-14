@@ -77,3 +77,26 @@ fn module_toggle_works() {
     session.press_key("q").expect("press q");
     let _ = session.wait_for_exit(Duration::from_secs(3));
 }
+
+#[test]
+fn sandbox_profile_shows_runtimes() {
+    let mut session = spawn_toride(100, 32);
+
+    session
+        .wait_for_text("Choose setup profile", Duration::from_secs(10))
+        .expect("should reach profile select");
+
+    session.press_key("j").expect("move to Sandbox");
+    session.press_key("enter").expect("confirm Sandbox");
+
+    session
+        .wait_for_text("Modules", Duration::from_secs(5))
+        .expect("should reach module select");
+
+    session
+        .wait_for_text("Language Runtimes", Duration::from_secs(3))
+        .expect("should show mise module");
+
+    session.press_key("q").expect("press q");
+    let _ = session.wait_for_exit(Duration::from_secs(3));
+}
