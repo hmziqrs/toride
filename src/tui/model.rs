@@ -41,6 +41,7 @@ pub enum ModuleId {
     Prometheus,
     Grafana,
     DbDump,
+    PluginRecipe,
 }
 
 impl ModuleId {
@@ -75,6 +76,7 @@ impl ModuleId {
             ModuleId::Prometheus,
             ModuleId::Grafana,
             ModuleId::DbDump,
+            ModuleId::PluginRecipe,
         ]
     }
 
@@ -109,6 +111,7 @@ impl ModuleId {
             Self::Prometheus => "Prometheus",
             Self::Grafana => "Grafana",
             Self::DbDump => "Database Dump",
+            Self::PluginRecipe => "Plugin Recipe",
         }
     }
 
@@ -124,6 +127,7 @@ impl ModuleId {
             Self::Caddy | Self::Nginx | Self::Traefik => Category::ReverseProxy,
             Self::Restic | Self::Borg | Self::Rclone | Self::DbDump => Category::Backup,
             Self::NodeExporter | Self::UptimeKuma | Self::Netdata | Self::Prometheus | Self::Grafana => Category::Monitoring,
+            Self::PluginRecipe => Category::Plugins,
         }
     }
 }
@@ -140,6 +144,7 @@ pub enum Category {
     ReverseProxy,
     Backup,
     Monitoring,
+    Plugins,
 }
 
 impl Category {
@@ -155,6 +160,7 @@ impl Category {
             Self::ReverseProxy => "Reverse Proxy",
             Self::Backup => "Backup",
             Self::Monitoring => "Monitoring",
+            Self::Plugins => "Plugins",
         }
     }
 
@@ -170,6 +176,7 @@ impl Category {
             Category::ReverseProxy,
             Category::Backup,
             Category::Monitoring,
+            Category::Plugins,
         ]
     }
 }
