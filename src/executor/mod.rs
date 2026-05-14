@@ -3,7 +3,7 @@ pub mod dry_run;
 pub mod logs;
 pub mod plan;
 
-use crate::tui::model::{ModuleId, Outcome};
+use crate::tui::model::Outcome;
 use crate::modules::registry;
 
 pub async fn execute_plan(

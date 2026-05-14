@@ -280,7 +280,7 @@ async fn run_cmd(cmd: &str, args: &[&str]) -> ModuleResult<String> {
     run_cmd_inner(command).await
 }
 
-async fn run_cmd_from(mut command: std::process::Command) -> ModuleResult<String> {
+async fn run_cmd_from(command: std::process::Command) -> ModuleResult<String> {
     let tokio_cmd: tokio::process::Command = command.into();
     run_cmd_inner(tokio_cmd).await
 }

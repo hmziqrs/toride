@@ -524,6 +524,30 @@ fn handle_screen_keys(model: &mut Model, key: KeyEvent, screen: Screen, effects:
             model.theme = Theme::new(&model.caps);
             model.needs_render = true;
         }
+        KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            model.list_scroll = model.list_scroll.saturating_add(ModuleId::all().len() / 2);
+            model.needs_render = true;
+        }
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let FocusId::Form(field) = model.focus {
+                model.forms.set(field, String::new());
+            } else {
+                model.list_scroll = model.list_scroll.saturating_sub(ModuleId::all().len() / 2);
+            }
+            model.needs_render = true;
+        }
+        KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let FocusId::Form(field) = model.focus {
+                let mut val = model.forms.get(field).to_string();
+                if let Some(pos) = val.trim_end().rfind(' ') {
+                    val.truncate(pos);
+                } else {
+                    val.clear();
+                }
+                model.forms.set(field, val);
+                model.needs_render = true;
+            }
+        }
         _ => {
             handle_screen_specific_keys(model, key, screen, effects);
         }
@@ -632,6 +656,14 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                     model.list_scroll = model.list_scroll.saturating_sub(10);
                     model.needs_render = true;
                 }
+                KeyCode::Home => {
+                    model.list_scroll = 0;
+                    model.needs_render = true;
+                }
+                KeyCode::End => {
+                    model.list_scroll = ModuleId::all().len().saturating_sub(1);
+                    model.needs_render = true;
+                }
                 _ => {}
             }
         }
@@ -688,7 +720,7 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
         Screen::Preflight => {
             match key.code {
                 KeyCode::Enter => {
-                    if let Some(ref plan) = model.plan {
+                    if model.plan.is_some() {
                         let spec = ConfirmSpec {
                             action_label: "Apply setup plan",
                             description: "This will make changes to your system. Ensure you have reviewed the plan.",

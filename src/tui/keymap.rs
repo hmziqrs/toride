@@ -1,4 +1,3 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::tui::model::Screen;
 
 #[derive(Debug, Clone)]

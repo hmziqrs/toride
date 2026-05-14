@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::tui::update::{Action, Effect};
-use crate::tui::model::{Model, ProgressEvent, SystemInfo, SshVerifyPhase};
+use crate::tui::model::{ProgressEvent, SystemInfo, SshVerifyPhase};
 
 pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: CancellationToken) {
     match effect {

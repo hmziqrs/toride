@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use crate::tui::animation::AnimationState;
 use crate::tui::caps::TerminalCaps;
 use crate::tui::model::Model;
-use crate::tui::update::{self, Action, Effect};
+use crate::tui::update::{self, Action};
 
 pub async fn run() -> color_eyre::Result<()> {
     color_eyre::install()?;
