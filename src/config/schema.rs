@@ -126,6 +126,10 @@ pub struct MonitoringConfig {
     pub uptime_kuma: bool,
     #[serde(default)]
     pub netdata: bool,
+    #[serde(default)]
+    pub prometheus: bool,
+    #[serde(default)]
+    pub grafana: bool,
 }
 
 fn default_true() -> bool { true }
@@ -139,4 +143,4 @@ impl Default for NetworkingConfig { fn default() -> Self { Self { tailscale: fal
 impl Default for ServerManagerConfig { fn default() -> Self { Self { manager: String::new() } } }
 impl Default for ReverseProxyConfig { fn default() -> Self { Self { mode: String::new() } } }
 impl Default for BackupConfig { fn default() -> Self { Self { restic: false, borg: false, rclone: false } } }
-impl Default for MonitoringConfig { fn default() -> Self { Self { node_exporter: false, uptime_kuma: false, netdata: false } } }
+impl Default for MonitoringConfig { fn default() -> Self { Self { node_exporter: false, uptime_kuma: false, netdata: false, prometheus: false, grafana: false } } }

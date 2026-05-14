@@ -26,6 +26,9 @@ pub mod rclone;
 pub mod node_exporter;
 pub mod uptime_kuma;
 pub mod netdata;
+pub mod prometheus;
+pub mod grafana;
+pub mod db_dump;
 
 use async_trait::async_trait;
 use std::collections::BTreeMap;
@@ -100,6 +103,8 @@ pub enum InstallAction {
     UserAddKey { user: String, key: String },
     DownloadScript { url: String, sha256: String, run_as: String, env: Vec<(String, String)> },
     Exec { cmd: String, args: Vec<String>, env: Vec<(String, String)>, as_user: Option<String> },
+    DnfInstall { packages: Vec<String> },
+    DnfRepoAdd { name: String, baseurl: String, gpgkey: String },
 }
 
 impl InstallAction {
@@ -128,6 +133,10 @@ impl InstallAction {
             Self::Exec { cmd, args, as_user, .. } => {
                 let user_prefix = as_user.as_ref().map(|u| format!("{}: ", u)).unwrap_or_default();
                 format!("{}{} {}", user_prefix, cmd, args.join(" "))
+            }
+            Self::DnfInstall { packages } => format!("dnf install -y {}", packages.join(" ")),
+            Self::DnfRepoAdd { name, baseurl, .. } => {
+                format!("add-dnf-repo {} ({})", name, baseurl)
             }
         }
     }
@@ -161,5 +170,8 @@ pub fn registry() -> BTreeMap<ModuleId, Box<dyn SetupModule>> {
     reg.insert(ModuleId::NodeExporter, Box::new(node_exporter::NodeExporter));
     reg.insert(ModuleId::UptimeKuma, Box::new(uptime_kuma::UptimeKuma));
     reg.insert(ModuleId::Netdata, Box::new(netdata::Netdata));
+    reg.insert(ModuleId::Prometheus, Box::new(prometheus::Prometheus));
+    reg.insert(ModuleId::Grafana, Box::new(grafana::Grafana));
+    reg.insert(ModuleId::DbDump, Box::new(db_dump::DbDump));
     reg
 }

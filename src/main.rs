@@ -60,6 +60,9 @@ enum Commands {
 
         #[arg(long)]
         ssh_key: Option<String>,
+
+        #[arg(long)]
+        remote: Option<String>,
     },
 }
 
@@ -82,8 +85,12 @@ async fn main() -> color_eyre::Result<()> {
         Some(Commands::Plan { profile, config: config_path, json }) => {
             run_plan(profile.as_deref(), config_path.as_deref(), json).await
         }
-        Some(Commands::Apply { profile, config: config_path, user, ssh_key }) => {
-            run_apply(profile.as_deref(), config_path.as_deref(), user.as_deref(), ssh_key.as_deref()).await
+        Some(Commands::Apply { profile, config: config_path, user, ssh_key, remote }) => {
+            if let Some(host) = remote {
+                run_remote(profile.as_deref(), &host, user.as_deref(), ssh_key.as_deref()).await
+            } else {
+                run_apply(profile.as_deref(), config_path.as_deref(), user.as_deref(), ssh_key.as_deref()).await
+            }
         }
         None => {
             tui::runtime::run().await
@@ -185,6 +192,33 @@ async fn run_apply(profile: Option<&str>, _config_path: Option<&str>, user: Opti
             tui::model::Outcome::Cancelled => println!("\nSetup cancelled."),
         },
         Err(e) => return Err(e),
+    }
+
+    Ok(())
+}
+
+async fn run_remote(profile: Option<&str>, host: &str, user: Option<&str>, ssh_key: Option<&str>) -> color_eyre::Result<()> {
+    let profile_str = profile.unwrap_or("basic");
+    let mut cmd = format!("toride apply --profile {}", profile_str);
+    if let Some(u) = user {
+        cmd.push_str(&format!(" --user {}", u));
+    }
+    if let Some(k) = ssh_key {
+        cmd.push_str(&format!(" --ssh-key {}", k));
+    }
+
+    println!("Connecting to {}...", host);
+    let mut child = tokio::process::Command::new("ssh")
+        .args(["-t", host, &cmd])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    let status = child.wait().await?;
+    if status.success() {
+        println!("\nRemote setup complete.");
+    } else {
+        eprintln!("\nRemote setup failed with exit code: {:?}", status.code());
     }
 
     Ok(())

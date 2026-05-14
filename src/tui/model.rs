@@ -38,6 +38,9 @@ pub enum ModuleId {
     NodeExporter,
     UptimeKuma,
     Netdata,
+    Prometheus,
+    Grafana,
+    DbDump,
 }
 
 impl ModuleId {
@@ -69,6 +72,9 @@ impl ModuleId {
             ModuleId::NodeExporter,
             ModuleId::UptimeKuma,
             ModuleId::Netdata,
+            ModuleId::Prometheus,
+            ModuleId::Grafana,
+            ModuleId::DbDump,
         ]
     }
 
@@ -100,6 +106,9 @@ impl ModuleId {
             Self::NodeExporter => "Node Exporter",
             Self::UptimeKuma => "Uptime Kuma",
             Self::Netdata => "Netdata",
+            Self::Prometheus => "Prometheus",
+            Self::Grafana => "Grafana",
+            Self::DbDump => "Database Dump",
         }
     }
 
@@ -113,8 +122,8 @@ impl ModuleId {
             Self::Tailscale | Self::CloudflareTunnel | Self::Wireguard => Category::Networking,
             Self::Dokploy | Self::Coolify => Category::ServerManagers,
             Self::Caddy | Self::Nginx | Self::Traefik => Category::ReverseProxy,
-            Self::Restic | Self::Borg | Self::Rclone => Category::Backup,
-            Self::NodeExporter | Self::UptimeKuma | Self::Netdata => Category::Monitoring,
+            Self::Restic | Self::Borg | Self::Rclone | Self::DbDump => Category::Backup,
+            Self::NodeExporter | Self::UptimeKuma | Self::Netdata | Self::Prometheus | Self::Grafana => Category::Monitoring,
         }
     }
 }

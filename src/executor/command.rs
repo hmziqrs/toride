@@ -271,6 +271,19 @@ pub async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
                 )))
             }
         }
+        InstallAction::DnfInstall { packages } => {
+            let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+            let mut cmd = std::process::Command::new("dnf");
+            cmd.args(["install", "-y"]).args(&pkg_refs);
+            run_cmd_from(cmd).await
+        }
+        InstallAction::DnfRepoAdd { name, baseurl, gpgkey } => {
+            let content = format!("[{}]\nname={}\nbaseurl={}\ngpgkey={}\nenabled=1\n", name, name, baseurl, gpgkey);
+            let path = format!("/etc/yum.repos.d/{}.repo", name);
+            tokio::fs::write(&path, content).await
+                .map_err(|e| ModuleError::Exec(format!("write {}: {}", path, e)))?;
+            Ok(String::new())
+        }
     }
 }
 

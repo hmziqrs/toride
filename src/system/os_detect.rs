@@ -30,3 +30,8 @@ fn parse_field(content: &str, field: &str) -> String {
 pub fn is_supported(os: &OsInfo) -> bool {
     matches!(os.id.as_str(), "debian" | "ubuntu")
 }
+
+pub fn is_rhel_family(os: &OsInfo) -> bool {
+    os.id_like.split_whitespace().any(|s| s == "rhel" || s == "fedora")
+        || matches!(os.id.as_str(), "rhel" | "centos" | "rocky" | "almalinux" | "fedora")
+}
