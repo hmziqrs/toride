@@ -338,36 +338,44 @@ fn handle_confirm_keys(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
     let mut effects = Vec::new();
     match key.code {
         KeyCode::Left | KeyCode::Char('h') => {
-            model.focus = FocusId::ConfirmDialog;
+            model.confirm_focused_confirm = false;
         }
         KeyCode::Right | KeyCode::Char('l') => {
-            model.focus = FocusId::ConfirmDialog;
+            model.confirm_focused_confirm = true;
+        }
+        KeyCode::Tab => {
+            model.confirm_focused_confirm = !model.confirm_focused_confirm;
         }
         KeyCode::Enter => {
             model.pop_screen();
-            match model.pending_confirm.take() {
-                Some(PendingConfirmAction::Quit) => model.should_quit = true,
-                Some(PendingConfirmAction::ApplyPlan) => {
-                    if let Some(ref plan) = model.plan {
-                        let plan = plan.clone();
-                        model.run = RunState::Active {
-                            current_step: 0,
-                            total_steps: plan.actions.len(),
-                            cancel_token_id: 0,
-                        };
-                        model.push_screen(Screen::Apply);
-                        effects.push(Effect::RunInstall(plan));
+            if model.confirm_focused_confirm {
+                match model.pending_confirm.take() {
+                    Some(PendingConfirmAction::Quit) => model.should_quit = true,
+                    Some(PendingConfirmAction::ApplyPlan) => {
+                        if model.plan.is_some() {
+                            let plan = model.plan.clone().unwrap();
+                            model.run = RunState::Active {
+                                current_step: 0,
+                                total_steps: plan.actions.len(),
+                                cancel_token_id: 0,
+                            };
+                            model.push_screen(Screen::Apply);
+                            effects.push(Effect::RunInstall(plan));
+                        }
                     }
+                    Some(PendingConfirmAction::CancelInstall) => {
+                        effects.push(Effect::CancelInstall);
+                        model.run = RunState::Done(Outcome::Cancelled);
+                    }
+                    None => model.should_quit = true,
                 }
-                Some(PendingConfirmAction::CancelInstall) => {
-                    effects.push(Effect::CancelInstall);
-                    model.run = RunState::Done(Outcome::Cancelled);
-                }
-                None => model.should_quit = true,
+            } else {
+                model.pending_confirm.take();
             }
         }
         KeyCode::Esc => {
             model.pop_screen();
+            model.pending_confirm.take();
         }
         _ => {}
     }
@@ -579,11 +587,10 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
         Screen::ModuleSelect => {
             match key.code {
                 KeyCode::Char(' ') => {
-                    let visible: Vec<ModuleId> = model.selection.selected_ids();
-                    if let Some(&id) = visible.first() {
-                        model.selection.toggle(id);
-                        model.needs_render = true;
-                    }
+                    let all = ModuleId::all();
+                    let idx = model.list_scroll.min(all.len() - 1);
+                    model.selection.toggle(all[idx]);
+                    model.needs_render = true;
                 }
                 KeyCode::Char('a') => {
                     model.selection.select_all();

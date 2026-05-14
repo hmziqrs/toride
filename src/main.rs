@@ -1,6 +1,4 @@
-use toride::config;
 use toride::executor;
-use toride::modules;
 use toride::profiles;
 use toride::system;
 use toride::tui;
@@ -101,7 +99,7 @@ async fn run_plan(profile: Option<&str>, _config_path: Option<&str>, json: bool)
     };
 
     let defaults = profiles::profile_defaults(profile);
-    let plan = executor::plan::generate_plan(&defaults).await?;
+    let plan = executor::plan::generate_plan(&defaults, "", "").await?;
 
     if json {
         let output = serde_json::to_string_pretty(&plan.actions.iter().map(|a| {
@@ -120,7 +118,7 @@ async fn run_plan(profile: Option<&str>, _config_path: Option<&str>, json: bool)
     Ok(())
 }
 
-async fn run_apply(profile: Option<&str>, config_path: Option<&str>, user: Option<&str>, ssh_key: Option<&str>) -> color_eyre::Result<()> {
+async fn run_apply(profile: Option<&str>, _config_path: Option<&str>, user: Option<&str>, ssh_key: Option<&str>) -> color_eyre::Result<()> {
     let profile = match profile {
         Some("basic") => tui::model::Profile::Basic,
         Some("custom") | None => tui::model::Profile::Custom,
@@ -135,8 +133,18 @@ async fn run_apply(profile: Option<&str>, config_path: Option<&str>, user: Optio
         std::process::exit(1);
     }
 
+    let target_user = user.unwrap_or("deploy").to_string();
+    let ssh_public_key = ssh_key.unwrap_or("").to_string();
+
     let defaults = profiles::profile_defaults(profile);
-    let plan = executor::plan::generate_plan(&defaults).await?;
+    let plan = executor::plan::generate_plan(&defaults, &target_user, &ssh_public_key).await?;
+
+    let ctx = toride::modules::Context {
+        is_dry_run: false,
+        is_test: std::env::var("TORIDE_E2E").is_ok(),
+        target_user: target_user.clone(),
+        ssh_public_key: ssh_public_key.clone(),
+    };
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let cancel = tokio_util::sync::CancellationToken::new();
@@ -144,7 +152,7 @@ async fn run_apply(profile: Option<&str>, config_path: Option<&str>, user: Optio
     let plan_clone = plan.clone();
 
     let handle = tokio::spawn(async move {
-        executor::execute_plan(&plan_clone, tx, cancel_clone).await
+        executor::execute_plan(&plan_clone, tx, cancel_clone, ctx).await
     });
 
     while let Some(event) = rx.recv().await {

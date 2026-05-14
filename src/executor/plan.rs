@@ -1,13 +1,13 @@
 use crate::tui::model::{ModuleId, Plan, PlanAction, PlanActionStatus};
 use crate::modules::registry;
 
-pub async fn generate_plan(module_ids: &[ModuleId]) -> color_eyre::Result<Plan> {
+pub async fn generate_plan(module_ids: &[ModuleId], target_user: &str, ssh_public_key: &str) -> color_eyre::Result<Plan> {
     let reg = registry();
     let ctx = crate::modules::Context {
         is_dry_run: false,
         is_test: std::env::var("TORIDE_E2E").is_ok(),
-        target_user: String::new(),
-        ssh_public_key: String::new(),
+        target_user: target_user.to_string(),
+        ssh_public_key: ssh_public_key.to_string(),
     };
 
     let resolved = resolve_dependencies(module_ids, &reg);

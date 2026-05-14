@@ -10,14 +10,9 @@ pub async fn execute_plan(
     plan: &crate::tui::model::Plan,
     tx: tokio::sync::mpsc::UnboundedSender<crate::tui::model::ProgressEvent>,
     cancel: tokio_util::sync::CancellationToken,
+    ctx: crate::modules::Context,
 ) -> color_eyre::Result<Outcome> {
     let reg = registry();
-    let ctx = crate::modules::Context {
-        is_dry_run: false,
-        is_test: std::env::var("TORIDE_E2E").is_ok(),
-        target_user: String::new(),
-        ssh_public_key: String::new(),
-    };
 
     let mut failed = Vec::new();
 

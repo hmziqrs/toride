@@ -22,8 +22,14 @@ impl SetupModule for Docker {
 
     async fn plan(&self, ctx: &Context) -> ModuleResult<Vec<InstallAction>> {
         let codename = get_codename();
+        let arch = std::env::consts::ARCH;
+        let deb_arch = match arch {
+            "aarch64" => "arm64",
+            "x86_64" => "amd64",
+            other => other,
+        };
         let key_url: String = "https://download.docker.com/linux/debian/gpg".into();
-        let sources_line = format!("deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {} stable", codename);
+        let sources_line = format!("deb [arch={} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {} stable", deb_arch, codename);
 
         Ok(vec![
             InstallAction::Exec {

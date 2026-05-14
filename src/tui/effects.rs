@@ -14,7 +14,7 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
         }
         Effect::GeneratePlan(module_ids) => {
             tokio::spawn(async move {
-                let plan = crate::executor::plan::generate_plan(&module_ids).await;
+                let plan = crate::executor::plan::generate_plan(&module_ids, "", "").await;
                 match plan {
                     Ok(p) => { let _ = tx.send(Action::PlanReady(p)); }
                     Err(e) => { let _ = tx.send(Action::Error(e.to_string())); }
@@ -28,8 +28,15 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
                 let plan_clone = plan.clone();
                 let cancel_run = cancel.clone();
 
+                let ctx = crate::modules::Context {
+                    is_dry_run: false,
+                    is_test: std::env::var("TORIDE_E2E").is_ok(),
+                    target_user: String::new(),
+                    ssh_public_key: String::new(),
+                };
+
                 let executor = tokio::spawn(async move {
-                    crate::executor::execute_plan(&plan_clone, progress_tx, cancel_run).await
+                    crate::executor::execute_plan(&plan_clone, progress_tx, cancel_run, ctx).await
                 });
 
                 while let Some(event) = progress_rx.recv().await {
@@ -49,7 +56,20 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
         Effect::WriteConfig(path) => {
             let tx = tx.clone();
             tokio::spawn(async move {
-                match tokio::fs::write(&path, b"").await {
+                let config = crate::config::schema::Config {
+                    profile: String::new(),
+                    user: crate::config::schema::UserConfig {
+                        name: String::new(),
+                        ssh_key_path: String::new(),
+                        passwordless_sudo: true,
+                    },
+                    security: crate::config::schema::SecurityConfig::default(),
+                    runtimes: crate::config::schema::RuntimesConfig::default(),
+                    containers: crate::config::schema::ContainersConfig::default(),
+                    swap: crate::config::schema::SwapConfig::default(),
+                };
+                let content = toml::to_string_pretty(&config).unwrap_or_default();
+                match tokio::fs::write(&path, content.as_bytes()).await {
                     Ok(_) => {
                         let _ = tx.send(Action::Toast {
                             message: format!("Config saved to {}", path.display()),
@@ -66,11 +86,18 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
             let tx = tx.clone();
             tokio::spawn(async move {
                 match tokio::fs::read_to_string(&path).await {
-                    Ok(_content) => {
-                        let _ = tx.send(Action::Toast {
-                            message: format!("Config loaded from {}", path.display()),
-                            kind: crate::tui::model::ToastKind::Info,
-                        });
+                    Ok(content) => {
+                        match toml::from_str::<crate::config::schema::Config>(&content) {
+                            Ok(_config) => {
+                                let _ = tx.send(Action::Toast {
+                                    message: format!("Config loaded from {}", path.display()),
+                                    kind: crate::tui::model::ToastKind::Info,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Action::Error(format!("Invalid config format: {}", e)));
+                            }
+                        }
                     }
                     Err(e) => {
                         let _ = tx.send(Action::Error(format!("Failed to load config: {}", e)));
