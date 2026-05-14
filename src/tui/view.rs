@@ -166,9 +166,29 @@ fn render_summary(frame: &mut Frame, area: Rect, model: &Model) {
     let selected: Vec<String> = model.selection.selected_ids()
         .iter().map(|id| id.label().to_string()).collect();
 
+    let reboot_line = if model.reboot_required {
+        "\n\nREBOOT REQUIRED /var/run/reboot-required is present."
+    } else {
+        ""
+    };
+
+    let outcome_line = match &model.run {
+        crate::tui::model::RunState::Done(crate::tui::model::Outcome::Success) => "All steps completed successfully.".into(),
+        crate::tui::model::RunState::Done(crate::tui::model::Outcome::PartialSuccess { failed }) => {
+            format!("Completed with {} failure(s).", failed.len())
+        }
+        crate::tui::model::RunState::Done(crate::tui::model::Outcome::Failed { error }) => {
+            format!("Setup failed: {}", error)
+        }
+        crate::tui::model::RunState::Done(crate::tui::model::Outcome::Cancelled) => "Setup was cancelled.".into(),
+        _ => String::new(),
+    };
+
     let content = format!(
-        "Setup Complete\n\nSelected modules:\n{}\n\nPress q to quit",
-        if selected.is_empty() { "  (none)".into() } else { selected.iter().map(|s| format!("  ✓ {}", s)).collect::<Vec<_>>().join("\n") }
+        "Setup Complete\n\n{}\n\nSelected modules:\n{}{}\n\nPress q to quit",
+        outcome_line,
+        if selected.is_empty() { "  (none)".into() } else { selected.iter().map(|s| format!("  + {}", s)).collect::<Vec<_>>().join("\n") },
+        reboot_line,
     );
 
     let paragraph = Paragraph::new(content)

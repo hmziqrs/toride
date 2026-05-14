@@ -60,6 +60,16 @@ impl SetupModule for Swap {
     }
 
     async fn verify(&self, _ctx: &Context) -> ModuleResult<VerifyResult> {
-        Ok(VerifyResult::Installed)
+        let output = tokio::process::Command::new("swapon")
+            .args(["--show=NAME", "--noheadings"])
+            .output()
+            .await
+            .map_err(|e| ModuleError::Exec(e.to_string()))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.lines().any(|l| l.trim() == "/swapfile") {
+            Ok(VerifyResult::Installed)
+        } else {
+            Ok(VerifyResult::NotInstalled)
+        }
     }
 }

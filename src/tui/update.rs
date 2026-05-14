@@ -1,6 +1,8 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::tui::model::*;
+use crate::tui::model::ScreenState;
+use crate::tui::model::SshVerifyPhase;
 use crate::tui::theme::Theme;
 
 #[derive(Debug)]
@@ -43,6 +45,11 @@ pub enum Action {
     InstallDone(Outcome),
     Error(String),
     Toast { message: String, kind: ToastKind },
+
+    SshVerifyProceed,
+    SshVerifyRetry,
+    SshVerifySkip,
+    SshPhaseDone(SshVerifyPhase),
 }
 
 #[derive(Debug)]
@@ -56,6 +63,7 @@ pub enum Effect {
     OpenUrl(String),
     Sleep(std::time::Duration, Box<Action>),
     PushFx(tachyonfx::Effect),
+    SshRunPhase(SshVerifyPhase),
 }
 
 pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
@@ -200,6 +208,8 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
 
         Action::OsDetected(info) => {
             model.system = info;
+            model.screen_states.insert(Screen::Welcome, ScreenState::Ready);
+            model.screen_states.insert(Screen::ProfileSelect, ScreenState::Ready);
             model.needs_render = true;
             // Auto-advance from Welcome to ProfileSelect after system detection
             if matches!(model.current_screen(), Screen::Welcome) {
@@ -210,6 +220,7 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
 
         Action::PlanReady(plan) => {
             model.plan = Some(plan);
+            model.screen_states.insert(Screen::Preflight, ScreenState::Ready);
             model.needs_render = true;
         }
 
@@ -238,11 +249,52 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
 
         Action::InstallDone(outcome) => {
             model.run = RunState::Done(outcome);
+            model.reboot_required = std::path::Path::new("/var/run/reboot-required").exists();
             model.needs_render = true;
         }
 
         Action::Error(msg) => {
+            let screen = *model.current_screen();
+            model.screen_states.insert(screen, ScreenState::Error(msg.clone()));
             model.add_toast(msg, ToastKind::Error);
+        }
+
+        Action::SshVerifyProceed => {
+            let phase = model.ssh_verify_phase.unwrap_or(SshVerifyPhase::CreateUser);
+            effects.push(Effect::SshRunPhase(phase));
+            model.needs_render = true;
+        }
+
+        Action::SshVerifyRetry => {
+            if let Some(phase) = model.ssh_verify_phase {
+                effects.push(Effect::SshRunPhase(phase));
+                model.needs_render = true;
+            }
+        }
+
+        Action::SshVerifySkip => {
+            model.ssh_verify_phase = None;
+            model.add_toast("SSH hardening skipped. Root/password login remains enabled.".into(), ToastKind::Warning);
+            model.needs_render = true;
+        }
+
+        Action::SshPhaseDone(phase) => {
+            let next = match phase {
+                SshVerifyPhase::CreateUser => Some(SshVerifyPhase::AddKey),
+                SshVerifyPhase::AddKey => Some(SshVerifyPhase::TestConnect),
+                SshVerifyPhase::TestConnect => Some(SshVerifyPhase::HardenedConfig),
+                SshVerifyPhase::HardenedConfig => Some(SshVerifyPhase::ReloadSshd),
+                SshVerifyPhase::ReloadSshd => Some(SshVerifyPhase::VerifyConnect),
+                SshVerifyPhase::VerifyConnect => Some(SshVerifyPhase::Complete),
+                SshVerifyPhase::Complete => None,
+            };
+            model.ssh_verify_phase = next;
+            if let Some(next_phase) = next {
+                if !matches!(next_phase, SshVerifyPhase::TestConnect | SshVerifyPhase::VerifyConnect) {
+                    effects.push(Effect::SshRunPhase(next_phase));
+                }
+            }
+            model.needs_render = true;
         }
 
         Action::Toast { message, kind } => {
@@ -580,6 +632,40 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                 }
                 KeyCode::BackTab => {
                     model.focus = prev_form_field(model.focus);
+                    model.needs_render = true;
+                }
+                KeyCode::Char(c) => {
+                    if let FocusId::Form(field) = model.focus {
+                        let existing = model.forms.get(field).to_string();
+                        model.forms.set(field, existing + &c.to_string());
+                        model.needs_render = true;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let FocusId::Form(field) = model.focus {
+                        let mut val = model.forms.get(field).to_string();
+                        val.pop();
+                        model.forms.set(field, val);
+                        model.needs_render = true;
+                    }
+                }
+                KeyCode::Delete => {
+                    // Cursor is at end, same as backspace
+                    if let FocusId::Form(field) = model.focus {
+                        let mut val = model.forms.get(field).to_string();
+                        val.pop();
+                        model.forms.set(field, val);
+                        model.needs_render = true;
+                    }
+                }
+                KeyCode::Home => {
+                    // Move to first field
+                    model.focus = FocusId::Form(FormField::Username);
+                    model.needs_render = true;
+                }
+                KeyCode::End => {
+                    // Move to last field
+                    model.focus = FocusId::Form(FormField::SshPort);
                     model.needs_render = true;
                 }
                 _ => {}

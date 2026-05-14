@@ -181,9 +181,33 @@ async fn run_apply(profile: Option<&str>, config_path: Option<&str>, user: Optio
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
+    use tracing_subscriber::prelude::*;
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("toride=info"));
 
+    // Try file logging in addition to stderr
+    let dir = toride::executor::logs::log_dir();
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let file_appender = tracing_appender::rolling::never(&dir, "setup.log");
+        let (file_nb, guard) = tracing_appender::non_blocking(file_appender);
+        // Leak guard to keep file writer alive for program lifetime
+        std::mem::forget(guard);
+
+        let stderr_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::io::stderr);
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(file_nb)
+            .with_ansi(false);
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+        return;
+    }
+
+    // Fallback: stderr only
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)

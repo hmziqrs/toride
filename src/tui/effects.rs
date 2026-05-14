@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use crate::tui::update::{Action, Effect};
-use crate::tui::model::{Model, ProgressEvent, SystemInfo};
+use crate::tui::model::{Model, ProgressEvent, SystemInfo, SshVerifyPhase};
 
 pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: CancellationToken) {
     match effect {
@@ -88,6 +88,15 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
         Effect::PushFx(_effect) => {
             // tachyonfx effect enqueueing handled in runtime
         }
+        Effect::SshRunPhase(phase) => {
+            tokio::spawn(async move {
+                let result = run_ssh_phase(phase).await;
+                match result {
+                    Ok(_) => { let _ = tx.send(Action::SshPhaseDone(phase)); }
+                    Err(e) => { let _ = tx.send(Action::Error(format!("SSH phase {:?} failed: {}", phase, e))); }
+                }
+            });
+        }
     }
 }
 
@@ -127,15 +136,128 @@ async fn detect_system_info() -> SystemInfo {
         }
     }
 
+    let public_ip = match reqwest::get("https://ifconfig.me").await {
+        Ok(resp) => resp.text().await.ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty()),
+        Err(_) => None,
+    };
+
+    let memory_mb = detect_memory_mb();
+    let disk_gb = detect_disk_gb();
+
     SystemInfo {
         os_name,
         os_version,
         is_root,
         current_user,
-        public_ip: None,
-        memory_mb: 0,
-        disk_gb: 0,
+        public_ip,
+        memory_mb,
+        disk_gb,
         existing_tools,
         has_systemd,
+    }
+}
+
+fn detect_memory_mb() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|c| {
+            c.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(|kb| kb / 1024)
+        })
+        .unwrap_or(0)
+}
+
+fn detect_disk_gb() -> u64 {
+    let output = std::process::Command::new("df")
+        .args(["--output=size", "-BG", "/"])
+        .output()
+        .ok();
+    output
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            s.lines()
+                .nth(1)
+                .and_then(|l| l.trim().trim_end_matches('G').parse::<u64>().ok())
+        })
+        .unwrap_or(0)
+}
+
+async fn run_ssh_phase(phase: SshVerifyPhase) -> Result<(), String> {
+    use crate::modules::{InstallAction, SetupModule};
+    match phase {
+        SshVerifyPhase::CreateUser => {
+            let ctx = crate::modules::Context {
+                is_dry_run: false,
+                is_test: std::env::var("TORIDE_E2E").is_ok(),
+                target_user: String::new(),
+                ssh_public_key: String::new(),
+            };
+            let module = crate::modules::user_ssh::UserSsh;
+            let actions = module.plan(&ctx).await.map_err(|e| e.to_string())?;
+            // Only run UserCreate
+            for action in &actions {
+                if matches!(action, InstallAction::UserCreate { .. }) {
+                    crate::executor::command::execute_single(action).await.map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        SshVerifyPhase::AddKey => {
+            let ctx = crate::modules::Context {
+                is_dry_run: false,
+                is_test: std::env::var("TORIDE_E2E").is_ok(),
+                target_user: String::new(),
+                ssh_public_key: String::new(),
+            };
+            let module = crate::modules::user_ssh::UserSsh;
+            let actions = module.plan(&ctx).await.map_err(|e| e.to_string())?;
+            for action in &actions {
+                if matches!(action, InstallAction::UserAddKey { .. } | InstallAction::WriteFile { .. }) {
+                    crate::executor::command::execute_single(action).await.map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        SshVerifyPhase::TestConnect => {
+            // User must manually verify — this phase waits for user confirmation
+            Ok(())
+        }
+        SshVerifyPhase::HardenedConfig => {
+            let ctx = crate::modules::Context {
+                is_dry_run: false,
+                is_test: std::env::var("TORIDE_E2E").is_ok(),
+                target_user: String::new(),
+                ssh_public_key: String::new(),
+            };
+            let module = crate::modules::user_ssh::UserSsh;
+            let actions = module.plan(&ctx).await.map_err(|e| e.to_string())?;
+            for action in &actions {
+                if matches!(action,
+                    InstallAction::WriteFile { path, .. } if path.contains("sshd_config"))
+                    || matches!(action, InstallAction::Exec { cmd, .. } if cmd == "rm")
+                {
+                    crate::executor::command::execute_single(action).await.map_err(|e| e.to_string())?;
+                }
+            }
+            Ok(())
+        }
+        SshVerifyPhase::ReloadSshd => {
+            let action = InstallAction::Systemctl {
+                unit: "ssh".into(),
+                op: "reload".into(),
+            };
+            crate::executor::command::execute_single(&action).await.map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        SshVerifyPhase::VerifyConnect => {
+            // User must manually verify — waits for user confirmation
+            Ok(())
+        }
+        SshVerifyPhase::Complete => Ok(()),
     }
 }

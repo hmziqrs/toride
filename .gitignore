@@ -26,3 +26,6 @@ tarpaulin-report*
 
 # Local development overrides
 local.properties
+
+#playwright
+.playwright-mcp

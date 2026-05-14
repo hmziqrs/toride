@@ -79,7 +79,15 @@ impl SetupModule for UserSsh {
         crate::executor::command::execute_actions(&actions, &tx, ctx.is_dry_run).await
     }
 
-    async fn verify(&self, _ctx: &Context) -> ModuleResult<VerifyResult> {
-        Ok(VerifyResult::Installed)
+    async fn verify(&self, ctx: &Context) -> ModuleResult<VerifyResult> {
+        let user = &ctx.target_user;
+        if crate::system::users::user_exists(user) {
+            let ssh_dir = format!("/home/{}/.ssh", user);
+            if std::path::Path::new(&format!("{}/authorized_keys", ssh_dir)).exists() {
+                return Ok(VerifyResult::Installed);
+            }
+            return Ok(VerifyResult::Partial("User exists but SSH key not found".into()));
+        }
+        Ok(VerifyResult::NotInstalled)
     }
 }

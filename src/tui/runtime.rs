@@ -38,7 +38,11 @@ pub async fn run() -> color_eyre::Result<()> {
 
         let new_effects = update::update(&mut model, action);
         for eff in new_effects {
-            crate::tui::effects::spawn_effect(eff, action_tx.clone(), cancel.clone());
+            if let crate::tui::update::Effect::PushFx(fx_effect) = eff {
+                animations.enqueue("current", fx_effect);
+            } else {
+                crate::tui::effects::spawn_effect(eff, action_tx.clone(), cancel.clone());
+            }
         }
 
         let active = animations.has_active_effects();
@@ -46,9 +50,11 @@ pub async fn run() -> color_eyre::Result<()> {
             let elapsed = last_frame.elapsed();
             last_frame = Instant::now();
             terminal.draw(|frame| {
+                let area = frame.area();
                 crate::tui::view::view(frame, &model);
+                // Process animation effects on the rendered buffer
+                animations.process(elapsed.as_millis() as u32, frame.buffer_mut(), area);
             })?;
-            animations.process(elapsed.as_millis() as u32);
             model.needs_render = false;
         }
 

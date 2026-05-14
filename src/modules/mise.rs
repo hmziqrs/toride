@@ -67,6 +67,10 @@ impl SetupModule for Mise {
     }
 
     async fn verify(&self, _ctx: &Context) -> ModuleResult<VerifyResult> {
-        Ok(VerifyResult::Installed)
+        if which::which("mise").is_ok() {
+            Ok(VerifyResult::Installed)
+        } else {
+            Ok(VerifyResult::NotInstalled)
+        }
     }
 }

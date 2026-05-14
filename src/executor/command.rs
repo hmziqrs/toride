@@ -47,7 +47,7 @@ pub async fn execute_actions(
     Ok(ApplyOutcome::Changed)
 }
 
-async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
+pub async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
     match action {
         InstallAction::AptInstall { packages } => {
             let mut args = vec!["install".to_string(), "-y".to_string()];
@@ -90,6 +90,13 @@ async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
                     tokio::fs::create_dir_all(parent).await.ok();
                 }
                 tokio::fs::copy(path, &backup_path).await.ok();
+
+                // Generate diff if original differs
+                let old_content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+                if old_content != *content {
+                    let diff = generate_diff(&old_content, content);
+                    tracing::info!("Config diff for {}:\n{}", path.display(), diff);
+                }
             }
             if let Some(parent) = path.parent() {
                 tokio::fs::create_dir_all(parent).await
@@ -301,4 +308,27 @@ async fn run_cmd(cmd: &str, args: &[&str]) -> ModuleResult<String> {
     } else {
         Err(ModuleError::Exec(format!("{} exited with {}", cmd, status)))
     }
+}
+
+fn generate_diff(old: &str, new: &str) -> String {
+    let mut diff = String::new();
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+
+    for (i, line) in old_lines.iter().enumerate() {
+        if !new_lines.contains(line) {
+            diff.push_str(&format!("- {} (line {})\n", line, i + 1));
+        }
+    }
+    for (i, line) in new_lines.iter().enumerate() {
+        if !old_lines.contains(line) {
+            diff.push_str(&format!("+ {} (line {})\n", line, i + 1));
+        }
+    }
+
+    if diff.is_empty() {
+        diff.push_str("(no content changes)");
+    }
+
+    diff
 }

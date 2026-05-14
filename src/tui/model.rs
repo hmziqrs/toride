@@ -498,6 +498,9 @@ pub struct Model {
     pub list_scroll: usize,
     pub log_panel_visible: bool,
     pub pending_confirm: Option<PendingConfirmAction>,
+    pub reboot_required: bool,
+    pub screen_states: HashMap<Screen, ScreenState>,
+    pub ssh_verify_phase: Option<SshVerifyPhase>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -505,6 +508,31 @@ pub enum PendingConfirmAction {
     Quit,
     ApplyPlan,
     CancelInstall,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenState {
+    Loading,
+    Empty,
+    Error(String),
+    Ready,
+}
+
+impl Default for ScreenState {
+    fn default() -> Self {
+        Self::Loading
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SshVerifyPhase {
+    CreateUser,
+    AddKey,
+    TestConnect,
+    HardenedConfig,
+    ReloadSshd,
+    VerifyConnect,
+    Complete,
 }
 
 impl Model {
@@ -536,6 +564,9 @@ impl Model {
             list_scroll: 0,
             log_panel_visible: false,
             pending_confirm: None,
+            reboot_required: false,
+            screen_states: HashMap::new(),
+            ssh_verify_phase: None,
         }
     }
 

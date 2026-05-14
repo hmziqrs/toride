@@ -21,6 +21,18 @@ pub async fn execute_plan(
 
     let mut failed = Vec::new();
 
+    // Wait for cloud-init to finish if present
+    if std::path::Path::new("/usr/bin/cloud-init").exists() {
+        let _ = tx.send(crate::tui::model::ProgressEvent::StepLog {
+            action_idx: 0,
+            line: "Waiting for cloud-init to complete...".into(),
+        });
+        let _ = tokio::process::Command::new("cloud-init")
+            .args(["status", "--wait"])
+            .output()
+            .await;
+    }
+
     for (idx, action) in plan.actions.iter().enumerate() {
         if cancel.is_cancelled() {
             return Ok(Outcome::Cancelled);
@@ -35,6 +47,7 @@ pub async fn execute_plan(
             let module_tx = tx.clone();
             match module.apply(&ctx, module_tx).await {
                 Ok(_) => {
+                    logs::log_action_jsonl(action.module_id.label(), &action.label, "ok");
                     let _ = tx.send(crate::tui::model::ProgressEvent::StepDone {
                         action_idx: idx,
                         exit_code: 0,
@@ -42,6 +55,7 @@ pub async fn execute_plan(
                     });
                 }
                 Err(e) => {
+                    logs::log_action_jsonl(action.module_id.label(), &action.label, &format!("failed: {}", e));
                     let _ = tx.send(crate::tui::model::ProgressEvent::StepFail {
                         action_idx: idx,
                         error: e.to_string(),

@@ -55,6 +55,16 @@ impl SetupModule for Ufw {
     }
 
     async fn verify(&self, _ctx: &Context) -> ModuleResult<VerifyResult> {
-        Ok(VerifyResult::Installed)
+        let output = tokio::process::Command::new("ufw")
+            .args(["status"])
+            .output()
+            .await
+            .map_err(|e| ModuleError::Exec(e.to_string()))?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if stdout.contains("Status: active") {
+            Ok(VerifyResult::Installed)
+        } else {
+            Ok(VerifyResult::NotInstalled)
+        }
     }
 }

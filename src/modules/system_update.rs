@@ -14,6 +14,12 @@ impl SetupModule for SystemUpdate {
     fn category(&self) -> Category { Category::SystemBasics }
 
     async fn preflight(&self, _ctx: &Context) -> ModuleResult<PreflightResult> {
+        // Check if essential packages are already present
+        let essential = ["curl", "git", "jq"];
+        let all_present = essential.iter().all(|t| which::which(t).is_ok());
+        if all_present {
+            return Ok(PreflightResult::Warning("Essential packages already installed".into()));
+        }
         Ok(PreflightResult::Ok)
     }
 
@@ -36,6 +42,11 @@ impl SetupModule for SystemUpdate {
                     "curl".into(), "wget".into(), "git".into(), "unzip".into(),
                     "jq".into(), "ca-certificates".into(), "gnupg".into(),
                     "build-essential".into(), "pkg-config".into(),
+                    "ripgrep".into(), "fd-find".into(), "tmux".into(),
+                    "htop".into(), "ncdu".into(), "lsof".into(),
+                    "tree".into(), "rsync".into(), "zip".into(),
+                    "software-properties-common".into(), "apt-transport-https".into(),
+                    "psmisc".into(), "strace".into(),
                 ],
             },
         ])
@@ -47,6 +58,12 @@ impl SetupModule for SystemUpdate {
     }
 
     async fn verify(&self, _ctx: &Context) -> ModuleResult<VerifyResult> {
-        Ok(VerifyResult::Installed)
+        let essential = ["curl", "git", "jq"];
+        let all_present = essential.iter().all(|t| which::which(t).is_ok());
+        if all_present {
+            Ok(VerifyResult::Installed)
+        } else {
+            Ok(VerifyResult::NotInstalled)
+        }
     }
 }
