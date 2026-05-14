@@ -6,6 +6,7 @@ pub mod module_card;
 pub mod module_list;
 pub mod palette;
 pub mod progress_panel;
+pub mod search;
 pub mod sidebar;
 pub mod splash;
 pub mod status_bar;

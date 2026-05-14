@@ -5,6 +5,12 @@ pub struct AnimationState {
     pub manager: EffectManager<String>,
 }
 
+impl Default for AnimationState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AnimationState {
     pub fn new() -> Self {
         Self {

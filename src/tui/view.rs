@@ -96,7 +96,7 @@ fn render_overlay(frame: &mut Frame, area: Rect, model: &Model, screen: Screen) 
         Screen::Palette => crate::tui::widgets::palette::render(overlay_area, frame, model),
         Screen::Search => {
             let search_area = Rect { x: area.x, y: area.y, width: area.width, height: 3 };
-            crate::tui::widgets::palette::render(search_area, frame, model);
+            crate::tui::widgets::search::render(search_area, frame, model);
         }
         Screen::Confirm(_) => crate::tui::widgets::confirm::render(overlay_area, frame, model),
         _ => {}

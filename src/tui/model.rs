@@ -108,6 +108,12 @@ pub struct SelectionState {
     pub modules: BTreeMap<ModuleId, ModuleState>,
 }
 
+impl Default for SelectionState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SelectionState {
     pub fn new() -> Self {
         let modules = ModuleId::all()
@@ -243,6 +249,12 @@ pub struct FormData {
     pub errors: HashMap<FormField, String>,
 }
 
+impl Default for FormData {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FormData {
     pub fn new() -> Self {
         Self {
@@ -261,22 +273,20 @@ impl FormData {
     }
 
     pub fn validate(&mut self, field: FormField, validator: fn(&str) -> Result<(), String>) {
-        if let Some(value) = self.fields.get(&field) {
-            if let Err(e) = validator(value) {
+        if let Some(value) = self.fields.get(&field)
+            && let Err(e) = validator(value) {
                 self.errors.insert(field, e);
             }
-        }
     }
 
     pub fn validate_all(&mut self) -> HashMap<FormField, String> {
         let validators = crate::tui::forms::validators();
         self.errors.clear();
         for (field, validator) in &validators {
-            if let Some(value) = self.fields.get(field) {
-                if let Err(e) = validator(value) {
+            if let Some(value) = self.fields.get(field)
+                && let Err(e) = validator(value) {
                     self.errors.insert(*field, e);
                 }
-            }
         }
         self.errors.clone()
     }
@@ -527,18 +537,15 @@ pub enum PendingConfirmAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Default)]
 pub enum ScreenState {
+    #[default]
     Loading,
     Empty,
     Error(String),
     Ready,
 }
 
-impl Default for ScreenState {
-    fn default() -> Self {
-        Self::Loading
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SshVerifyPhase {

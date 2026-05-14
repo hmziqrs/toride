@@ -38,6 +38,7 @@ pub struct SecurityConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct RuntimesConfig {
     #[serde(default)]
     pub node: bool,
@@ -74,6 +75,5 @@ fn default_swap_size() -> String { "2G".into() }
 
 impl Default for UserConfig { fn default() -> Self { Self { name: String::new(), ssh_key_path: String::new(), passwordless_sudo: true } } }
 impl Default for SecurityConfig { fn default() -> Self { Self { disable_root_login: false, disable_password_login: false, ufw: true, auto_security_updates: false } } }
-impl Default for RuntimesConfig { fn default() -> Self { Self { node: false, bun: false, deno: false, rust: false, go: false, python: false } } }
 impl Default for ContainersConfig { fn default() -> Self { Self { docker: true, docker_log_rotation: true } } }
 impl Default for SwapConfig { fn default() -> Self { Self { enabled: true, size: default_swap_size() } } }

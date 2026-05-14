@@ -134,5 +134,11 @@ fn spawn_signal_watcher(tx: mpsc::UnboundedSender<Action>) {
             _ = term.recv() => {}
         }
         let _ = tx.send(Action::Quit);
+        // Second signal: abort immediately
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => std::process::exit(1),
+            _ = term.recv() => std::process::exit(1),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+        }
     });
 }

@@ -41,6 +41,7 @@ pub enum Action {
 
     OsDetected(SystemInfo),
     PlanReady(Plan),
+    PreflightWarnings(Vec<crate::executor::plan::PreflightWarning>),
     InstallProgress(ProgressEvent),
     InstallDone(Outcome),
     Error(String),
@@ -234,6 +235,18 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
             model.needs_render = true;
         }
 
+        Action::PreflightWarnings(warnings) => {
+            for w in &warnings {
+                let kind = match w.severity {
+                    crate::executor::plan::WarningSeverity::Danger => ToastKind::Error,
+                    crate::executor::plan::WarningSeverity::Warning => ToastKind::Warning,
+                    crate::executor::plan::WarningSeverity::Info => ToastKind::Info,
+                };
+                model.add_toast(w.message.clone(), kind);
+            }
+            model.needs_render = true;
+        }
+
         Action::InstallProgress(event) => {
             match &event {
                 ProgressEvent::StepLog { line, .. } => {
@@ -299,11 +312,10 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
                 SshVerifyPhase::Complete => None,
             };
             model.ssh_verify_phase = next;
-            if let Some(next_phase) = next {
-                if !matches!(next_phase, SshVerifyPhase::TestConnect | SshVerifyPhase::VerifyConnect) {
+            if let Some(next_phase) = next
+                && !matches!(next_phase, SshVerifyPhase::TestConnect | SshVerifyPhase::VerifyConnect) {
                     effects.push(Effect::SshRunPhase(next_phase));
                 }
-            }
             model.needs_render = true;
         }
 
@@ -651,6 +663,12 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                     *entry = !*entry;
                     model.needs_render = true;
                 }
+                KeyCode::Char('g') => {
+                    // 'g g' sequence: first press records, second press goes to top
+                    // For simplicity, single 'g' goes to top (vim-like)
+                    model.list_scroll = 0;
+                    model.needs_render = true;
+                }
                 KeyCode::Char('G') => {
                     model.list_scroll = ModuleId::all().len().saturating_sub(1);
                     model.needs_render = true;
@@ -725,20 +743,17 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
             }
         }
         Screen::Preflight => {
-            match key.code {
-                KeyCode::Enter => {
-                    if model.plan.is_some() {
-                        let spec = ConfirmSpec {
-                            action_label: "Apply setup plan",
-                            description: "This will make changes to your system. Ensure you have reviewed the plan.",
-                            confirm_label: "Apply",
-                            cancel_label: "Cancel",
-                            is_destructive: true,
-                        };
-                        model.push_screen(Screen::Confirm(spec));
-                    }
+            if key.code == KeyCode::Enter {
+                if model.plan.is_some() {
+                    let spec = ConfirmSpec {
+                        action_label: "Apply setup plan",
+                        description: "This will make changes to your system. Ensure you have reviewed the plan.",
+                        confirm_label: "Apply",
+                        cancel_label: "Cancel",
+                        is_destructive: true,
+                    };
+                    model.push_screen(Screen::Confirm(spec));
                 }
-                _ => {}
             }
         }
         Screen::Apply => {
@@ -768,11 +783,8 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
             }
         }
         Screen::Summary => {
-            match key.code {
-                KeyCode::Char('q') => {
-                    model.should_quit = true;
-                }
-                _ => {}
+            if let KeyCode::Char('q') = key.code {
+                model.should_quit = true;
             }
         }
         _ => {}

@@ -21,7 +21,7 @@ pub fn ssh_public_key(input: &str) -> Result<(), String> {
     if input.is_empty() {
         return Err("SSH public key is required".into());
     }
-    let parts: Vec<&str> = input.trim().split_whitespace().collect();
+    let parts: Vec<&str> = input.split_whitespace().collect();
     if parts.len() < 2 {
         return Err("Invalid SSH key format (expected: type base64 [comment])".into());
     }

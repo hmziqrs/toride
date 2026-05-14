@@ -16,7 +16,13 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
             tokio::spawn(async move {
                 let plan = crate::executor::plan::generate_plan(&module_ids, "", "").await;
                 match plan {
-                    Ok(p) => { let _ = tx.send(Action::PlanReady(p)); }
+                    Ok(p) => {
+                        let _ = tx.send(Action::PlanReady(p));
+                        let warnings = crate::executor::plan::generate_preflight_warnings(&module_ids);
+                        if !warnings.is_empty() {
+                            let _ = tx.send(Action::PreflightWarnings(warnings));
+                        }
+                    }
                     Err(e) => { let _ = tx.send(Action::Error(e.to_string())); }
                 }
             });
