@@ -13,9 +13,11 @@ ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 color-eyre = "0.6"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = "0.7"
 futures = "0.3"
 textwrap = "0.16"
+image = "0.25"
+reqwest = { version = "1", features = ["json"] }
 
 # Optional: image support
 ratatui-image = { version = "5", features = ["chafa-static"] }
@@ -35,6 +37,7 @@ struct App {
     list_state: ListState,
     should_quit: bool,
     dirty: bool,
+    error: Option<String>,
 }
 
 enum Action { Quit, MoveUp, MoveDown }
@@ -67,7 +70,8 @@ impl App {
 use color_eyre::eyre::Result;
 use crossterm::{execute, terminal};
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     color_eyre::install()?;
 
     // Restore terminal on panic
@@ -81,7 +85,7 @@ fn main() -> Result<()> {
     terminal::enable_raw_mode()?;
     execute!(std::io::stdout(), terminal::EnterAlternateScreen)?;
 
-    let result = run();
+    let result = run().await;
 
     terminal::disable_raw_mode()?;
     execute!(std::io::stdout(), terminal::LeaveAlternateScreen)?;
@@ -91,8 +95,8 @@ fn main() -> Result<()> {
 ```
 
 - Always call `color_eyre::install()?` first in `main()`.
+- Use `#[tokio::main]` so `run().await` works; the panic hook and terminal setup/teardown wrap the async call.
 - Always restore terminal on both normal exit and panic.
-- Keep run-loop lifecycle explicit: init → event loop → graceful shutdown.
 
 ## 3) Async Event Architecture
 
@@ -103,7 +107,10 @@ use crossterm::event::{Event, EventStream, KeyCode};
 use futures::StreamExt;
 use tokio::{select, sync::mpsc};
 
-async fn run(mut app: App, mut terminal: Terminal<impl Backend>) -> Result<()> {
+async fn run() -> Result<()> {
+    let backend = CrosstermBackend::new(std::io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    let mut app = App::default();
     let mut events = EventStream::new();
     let (tx, mut rx) = mpsc::channel::<AppEvent>(32);
 
@@ -134,7 +141,7 @@ Recommended architecture:
 1. `EventStream` yields crossterm `Event`s (keyboard, mouse, resize).
 2. Map `Event` → `Action` via `map_event_to_action`.
 3. Background tasks send results back through an `mpsc::Receiver` in the same `select!`.
-4. `terminal.draw(|f| app.draw(f))` renders only when dirty.
+4. `terminal.draw(|f| app.draw(f))` renders only when `dirty`.
 
 ## 4) Background Tasks
 
@@ -144,15 +151,8 @@ use tokio_util::sync::CancellationToken;
 
 enum AppEvent { FetchDone(Result<String, String>) }
 
-struct App {
-    tx: mpsc::Sender<AppEvent>,
-    cancel: CancellationToken,
-}
-
 impl App {
-    fn spawn_fetch(&self, url: String) {
-        let tx = self.tx.clone();
-        let cancel = self.cancel.clone();
+    fn spawn_fetch(&self, tx: mpsc::Sender<AppEvent>, cancel: CancellationToken, url: String) {
         tokio::spawn(async move {
             select! {
                 result = reqwest::get(&url) => {
@@ -168,7 +168,7 @@ impl App {
 
     fn handle_event(&mut self, event: AppEvent) {
         match event {
-            AppEvent::FetchDone(Ok(data)) => { /* update state */ }
+            AppEvent::FetchDone(Ok(data)) => self.items.push(data),
             AppEvent::FetchDone(Err(e)) => self.error = Some(e),
         }
         self.dirty = true;
@@ -184,17 +184,19 @@ impl App {
 ## 5) Image Integration
 
 ```rust
+use image::open as open_image;
 use ratatui_image::{picker::Picker, Resize, StatefulImage};
 use std::thread;
 
 // Query terminal protocol support once at startup — not per frame
 let mut picker = Picker::from_query_stdio()?;
 
-// Offload resize/encode to a background thread
+// Capture area before spawning — Rect is Copy
+let image_area = Rect::new(0, 0, 40, 20);
 let (tx, rx) = std::sync::mpsc::channel();
 thread::spawn(move || {
-    let dyn_img = image::open("photo.png").unwrap();
-    let protocol = picker.new_protocol(dyn_img, area.into(), Resize::Fit(None));
+    let dyn_img = open_image("photo.png").unwrap();
+    let protocol = picker.new_protocol(dyn_img, image_area.into(), Resize::Fit(None));
     tx.send(protocol).unwrap();
 });
 
@@ -209,9 +211,10 @@ if let Some(ref mut img) = app.image_state {
 }
 ```
 
-- Add `ratatui-image = { version = "5", features = ["chafa-static"] }` for portable binaries.
+- `Rect` is `Copy` — capture it by value before `thread::spawn`.
 - Query the terminal protocol once; reusing `Picker` across frames is safe.
 - Always offload image loading and encoding to a thread — never in `draw()`.
+- Use `chafa-static` feature for portable binaries that don't require chafa to be installed.
 
 ## 6) Error Handling
 

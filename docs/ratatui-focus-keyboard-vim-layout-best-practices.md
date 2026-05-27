@@ -23,8 +23,14 @@ Ratatui has no built-in focus system. Model focus explicitly in app state.
 #[derive(Copy, Clone, PartialEq)]
 enum Pane { Sidebar, Main, Footer }
 
+#[derive(Copy, Clone, PartialEq)]
+enum Mode { Normal, Insert, Visual, Command }
+
 struct App {
     focused_pane: Pane,
+    mode: Mode,
+    should_quit: bool,
+    sidebar_items: Vec<String>,
     sidebar_state: ListState,
     main_state: TableState,
 }
@@ -50,18 +56,16 @@ enum Action {
     Escape,
 }
 
-#[derive(Copy, Clone, PartialEq)]
-enum Mode { Normal, Insert, Visual, Command }
-
 fn map_key_to_action(mode: Mode, pane: Pane, key: KeyCode) -> Option<Action> {
-    match (mode, key) {
-        (Mode::Normal, KeyCode::Char('q')) => Some(Action::Quit),
-        (Mode::Normal, KeyCode::Char('i')) => Some(Action::EnterInsert),
-        (Mode::Normal, KeyCode::Char('j') | KeyCode::Down) => Some(Action::MoveDown),
-        (Mode::Normal, KeyCode::Char('k') | KeyCode::Up) => Some(Action::MoveUp),
-        (Mode::Normal, KeyCode::Tab) => Some(Action::FocusNext),
-        (Mode::Normal, KeyCode::Enter) => Some(Action::Select),
-        (Mode::Insert, KeyCode::Esc) => Some(Action::Escape),
+    match (mode, pane, key) {
+        (Mode::Normal, _, KeyCode::Char('q')) => Some(Action::Quit),
+        (Mode::Normal, _, KeyCode::Char('i')) => Some(Action::EnterInsert),
+        (Mode::Normal, _, KeyCode::Char('j') | KeyCode::Down) => Some(Action::MoveDown),
+        (Mode::Normal, _, KeyCode::Char('k') | KeyCode::Up) => Some(Action::MoveUp),
+        (Mode::Normal, _, KeyCode::Tab) => Some(Action::FocusNext),
+        // Context-sensitive: Enter only selects when focus is on Sidebar
+        (Mode::Normal, Pane::Sidebar, KeyCode::Enter) => Some(Action::Select),
+        (Mode::Insert, _, KeyCode::Esc) => Some(Action::Escape),
         _ => None,
     }
 }
@@ -119,6 +123,10 @@ fn draw(app: &mut App, frame: &mut Frame) {
         Constraint::Length(60),
         Constraint::Fill(1),
     ]).flex(Flex::Center).areas(body);
+
+    app.draw_sidebar(frame, sidebar);
+    app.draw_main(frame, main);
+    app.draw_status(frame, footer);
 }
 ```
 
@@ -133,19 +141,29 @@ impl App {
         match self.focused_pane {
             Pane::Sidebar => self.sidebar_state.select_next(),
             Pane::Main => {
-                let next = self.main_state.selected().map(|i| i + 1).unwrap_or(0);
-                self.main_state.select(Some(next.min(self.items.len() - 1)));
+                let i = self.main_state.selected().map(|i| i + 1).unwrap_or(0);
+                self.main_state.select(Some(i.min(self.sidebar_items.len() - 1)));
             }
             _ => {}
         }
     }
-}
 
-// In draw(), pass state by mutable ref
-fn draw(app: &mut App, frame: &mut Frame) {
-    let list = List::new(app.sidebar_items.clone())
-        .highlight_style(Style::new().bold().cyan());
-    frame.render_stateful_widget(list, sidebar_area, &mut app.sidebar_state);
+    fn move_up(&mut self) {
+        match self.focused_pane {
+            Pane::Sidebar => self.sidebar_state.select_previous(),
+            Pane::Main => {
+                let i = self.main_state.selected().unwrap_or(0).saturating_sub(1);
+                self.main_state.select(Some(i));
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_sidebar(&mut self, frame: &mut Frame, area: Rect) {
+        let list = List::new(self.sidebar_items.clone())
+            .highlight_style(Style::new().bold().cyan());
+        frame.render_stateful_widget(list, area, &mut self.sidebar_state);
+    }
 }
 ```
 
@@ -162,6 +180,7 @@ use ratatui::style::Stylize;
 "item text".dim()
 "error".red().bold()
 "selected".cyan()
+"warning".yellow()
 
 // Avoid
 Style::default().fg(Color::White)
@@ -171,24 +190,27 @@ Style::new().add_modifier(Modifier::BOLD)
 Color palette:
 - Primary: `.cyan()`, `.green()`
 - Error: `.red()`
+- Warning: `.yellow()` (sparingly)
 - Muted: `.dim()`, `.dark_gray()`
 - Accent: `.magenta()`
 
 ## 7) Status Bar
 
 ```rust
-let mode_label = match app.mode {
-    Mode::Normal => " NORMAL ".bold().on_cyan(),
-    Mode::Insert => " INSERT ".bold().on_green(),
-    Mode::Visual => " VISUAL ".bold().on_magenta(),
-    Mode::Command => " COMMAND ".bold().on_yellow(),
-};
+fn draw_status(&self, frame: &mut Frame, area: Rect) {
+    let mode_label = match self.mode {
+        Mode::Normal  => " NORMAL ".bold().on_cyan(),
+        Mode::Insert  => " INSERT ".bold().on_green(),
+        Mode::Visual  => " VISUAL ".bold().on_magenta(),
+        Mode::Command => " COMMAND ".bold().on_yellow(),
+    };
 
-let status = Line::from(vec![
-    mode_label.into(),
-    format!(" {} items ", app.items.len()).dim().into(),
-]);
-frame.render_widget(Paragraph::new(status), footer_area);
+    let status = Line::from(vec![
+        mode_label.into(),
+        format!(" {} items ", self.sidebar_items.len()).dim().into(),
+    ]);
+    frame.render_widget(Paragraph::new(status), area);
+}
 ```
 
 ## 8) Key Bindings Display
