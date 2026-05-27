@@ -13,6 +13,10 @@ ratatui = "0.30"
 crossterm = "0.29"
 color-eyre = "0.6"
 textwrap = "0.16"
+
+# For apps with multiple panes / component-app structure:
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ```
 
 ## 1) Focus Model in Ratatui
@@ -23,8 +27,14 @@ Ratatui has no built-in focus system. Model focus explicitly in app state.
 #[derive(Copy, Clone, PartialEq)]
 enum Pane { Sidebar, Main, Footer }
 
-#[derive(Copy, Clone, PartialEq)]
-enum Mode { Normal, Insert, Visual, Command }
+#[derive(Default, Copy, Clone, PartialEq)]
+enum Mode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    Command,
+}
 
 struct App {
     focused_pane: Pane,
@@ -142,7 +152,8 @@ impl App {
             Pane::Sidebar => self.sidebar_state.select_next(),
             Pane::Main => {
                 let i = self.main_state.selected().map(|i| i + 1).unwrap_or(0);
-                self.main_state.select(Some(i.min(self.sidebar_items.len() - 1)));
+                // saturating_sub prevents usize underflow panic when list is empty
+                self.main_state.select(Some(i.min(self.sidebar_items.len().saturating_sub(1))));
             }
             _ => {}
         }
@@ -160,6 +171,8 @@ impl App {
     }
 
     fn draw_sidebar(&mut self, frame: &mut Frame, area: Rect) {
+        // Avoid cloning large item lists in draw(). For large datasets:
+        // let list = List::new(self.sidebar_items.iter().map(|s| s.as_str()));
         let list = List::new(self.sidebar_items.clone())
             .highlight_style(Style::new().bold().cyan());
         frame.render_stateful_widget(list, area, &mut self.sidebar_state);
@@ -266,6 +279,8 @@ For apps with focus, modes, and multiple panes, use the `component-app` template
 
 ```bash
 cp -r ~/.agents/skills/ratatui-tui-blacktop/assets/templates/component-app/* .
+# or with pedronauck skill:
+cp -r ~/.claude/skills/ratatui-tui-pedronauck/assets/templates/component-app/* .
 ```
 
 Structure:
@@ -275,7 +290,81 @@ Structure:
 - `ui.rs` — all rendering
 - `tui.rs` — terminal setup/teardown
 
-## 12) Testing Targets
+### Modern Terminal Init (ratatui 0.29+)
+
+Prefer the ratatui convenience helpers over manual crossterm calls:
+
+```rust
+#[tokio::main]
+async fn main() -> color_eyre::Result<()> {
+    color_eyre::install()?;
+    let mut terminal = ratatui::init();       // sets raw mode + alternate screen
+    let result = run(&mut terminal).await;
+    ratatui::restore();                        // always restores, even on panic
+    result
+}
+```
+
+`ratatui::init()` / `ratatui::restore()` are equivalent to the full crossterm setup/teardown block but require no manual panic hook. Use the manual crossterm approach only when you need fine-grained control over the hook.
+
+### Logging in TUI Apps
+
+`println!` and `eprintln!` are broken while in alternate screen / raw mode — output is invisible or corrupts the display. Use `tracing` with a file appender instead:
+
+```rust
+use tracing_subscriber::{fmt, EnvFilter};
+
+fn init_logging() {
+    let file = std::fs::File::create("/tmp/my-tui.log").unwrap();
+    fmt()
+        .with_writer(file)
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+}
+// Then: tracing::debug!("pane = {:?}", app.focused_pane);
+```
+
+Anti-pattern: `println!("{:?}", state)` inside a raw-mode loop — use `tracing::debug!` or `tracing::trace!` instead.
+
+## 12) Component Trait (Large Apps)
+
+When multiple panes grow independently, encapsulate each behind a `Component` trait:
+
+```rust
+use crossterm::event::KeyEvent;
+
+pub enum EventResult {
+    Consumed,
+    Ignored,
+    Action(Action),
+}
+
+pub trait Component {
+    fn handle_key(&mut self, key: KeyEvent) -> EventResult;
+    fn render(&self, frame: &mut Frame, area: Rect);
+    fn focus(&mut self) {}
+    fn blur(&mut self) {}
+}
+```
+
+Usage in `App::update`:
+
+```rust
+let result = match self.focused_pane {
+    Pane::Sidebar => self.sidebar.handle_key(key),
+    Pane::Main    => self.main.handle_key(key),
+    Pane::Footer  => EventResult::Ignored,
+};
+if let EventResult::Action(action) = result {
+    self.update(action);
+}
+```
+
+- Each component owns its `ListState`/`TableState` and focus flag.
+- Parent routes keys; components return `Action` for app-level effects.
+- Prefer this over a single giant `match (pane, mode, key)` once panes have 5+ bindings each.
+
+## 13) Testing Targets
 
 - Focus routing across panes/widgets.
 - Mode switching correctness (Normal/Insert/etc.).
