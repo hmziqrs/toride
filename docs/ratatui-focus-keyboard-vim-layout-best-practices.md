@@ -118,7 +118,7 @@ fn draw(app: &mut App, frame: &mut Frame) {
     ]).areas(body);
 
     // Center a fixed-width element using Flex
-    let [_, content, _] = Layout::horizontal([
+    let [_, _content, _] = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(60),
         Constraint::Fill(1),

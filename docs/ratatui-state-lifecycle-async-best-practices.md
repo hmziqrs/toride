@@ -32,6 +32,7 @@ Ratatui is render-focused and intentionally does not provide a full app framewor
 3. `draw()` (state → widgets)
 
 ```rust
+#[derive(Default)]
 struct App {
     items: Vec<String>,
     list_state: ListState,
@@ -105,6 +106,7 @@ Use `EventStream` from crossterm (requires `event-stream` feature) with a backgr
 ```rust
 use crossterm::event::{Event, EventStream, KeyCode};
 use futures::StreamExt;
+use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::{select, sync::mpsc};
 
 async fn run() -> Result<()> {
