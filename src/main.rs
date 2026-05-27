@@ -1,9 +1,25 @@
+use ratatui::{
+    Frame,
+    crossterm::event::{self, Event, KeyCode},
+    style::Stylize,
+    widgets::Paragraph,
+};
 
-use clap::{Parser, Subcommand};
+fn main() {
+    let mut terminal = ratatui::init();
+    loop {
+        terminal.draw(render).expect("failed to draw frame");
+        if matches!(
+            event::read().expect("failed to read event"),
+            Event::Key(key) if key.code == KeyCode::Char('q')
+        ) {
+            break;
+        }
+    }
+    ratatui::restore();
+}
 
-#[tokio::main]
-async fn main() -> () {
-    init_tracing();
-    println!("Hello world");
-    ()
+fn render(frame: &mut Frame) {
+    let text = "Hello, Ratatui! Press 'q' to quit.".bold().cyan();
+    frame.render_widget(Paragraph::new(text).centered(), frame.area());
 }
