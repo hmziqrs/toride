@@ -1,14 +1,12 @@
 use color_eyre::eyre::{Result, WrapErr};
 use crossterm::{execute, terminal};
-use crossterm::event::{Event, EventStream, KeyCode};
+use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
-};
+use ratatui::DefaultTerminal;
 use std::io::stdout;
 use tokio::select;
 
+use toride::action::Action;
 use toride::ui::welcome::WelcomeScreen;
 
 fn main() -> Result<()> {
@@ -26,8 +24,8 @@ fn main() -> Result<()> {
     execute!(stdout(), terminal::EnterAlternateScreen)
         .wrap_err("Failed to enter alternate screen")?;
 
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend).wrap_err("Failed to create terminal")?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout());
+    let mut terminal = ratatui::Terminal::new(backend).wrap_err("Failed to create terminal")?;
 
     let result = tokio::runtime::Runtime::new()
         .wrap_err("Failed to create tokio runtime")?
@@ -39,7 +37,7 @@ fn main() -> Result<()> {
     result
 }
 
-async fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let mut welcome = WelcomeScreen::new();
     let mut events = EventStream::new();
 
@@ -48,12 +46,13 @@ async fn run(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Resu
 
         select! {
             Some(Ok(event)) = events.next() => {
-                if let Event::Key(key) = event {
-                    match key.code {
-                        KeyCode::Char('q') | KeyCode::Esc => break,
-                        other => {
-                            welcome.handle_key(other);
-                        }
+                if let Event::Key(key) = event
+                    && key.kind == KeyEventKind::Press
+                {
+                    match welcome.handle_key(key.code) {
+                        Some(Action::Quit) => break,
+                        Some(Action::Help) => {} // TODO: help screen
+                        _ => {}
                     }
                 }
             }

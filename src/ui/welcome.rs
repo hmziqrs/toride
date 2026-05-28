@@ -74,7 +74,7 @@ impl WelcomeScreen {
         let needs_regen = !self.gradient_cache.as_ref().is_some_and(|(cached_area, _)| *cached_area == area);
         if needs_regen {
             let mut gradient = Buffer::empty(area);
-            render_gradient_bg(&mut gradient, area);
+            render_gradient_bg(&mut gradient, area, p);
             copy_bg(&gradient, buf, area);
             self.gradient_cache = Some((area, gradient));
         } else if let Some((_, ref gradient)) = self.gradient_cache {
@@ -189,8 +189,14 @@ impl WelcomeScreen {
     }
 }
 
-// Radial gradient: slightly lighter bg at center, darker at edges.
-fn render_gradient_bg(buf: &mut Buffer, area: Rect) {
+// Radial gradient: lighter at center (bg), darker at edges (darkened bg).
+fn render_gradient_bg(buf: &mut Buffer, area: Rect, p: Palette) {
+    let (cr, cg, cb) = rgb_components(p.bg);
+    // Edge color: darken the base bg by ~40%
+    let er = (cr as f64 * 0.6) as u8;
+    let eg = (cg as f64 * 0.6) as u8;
+    let eb = (cb as f64 * 0.6) as u8;
+
     let cx = (area.left() + area.right()) / 2;
     let cy = (area.top() + area.bottom()) / 2;
     let max_dist = ((cx.saturating_sub(area.left()) as f64)
@@ -201,14 +207,21 @@ fn render_gradient_bg(buf: &mut Buffer, area: Rect) {
         for x in area.left()..area.right() {
             let dx = (x as i32 - cx as i32).abs() as f64;
             let dy = (y as i32 - cy as i32).abs() as f64;
-            let t = (dx.hypot(dy) / max_dist).min(1.0);
-            let r = lerp(26.0, 14.0, t) as u8;
-            let g = lerp(22.0, 12.0, t) as u8;
-            let b = lerp(40.0, 22.0, t) as u8;
+            let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
+            let r = lerp(cr as f64, er as f64, t) as u8;
+            let g = lerp(cg as f64, eg as f64, t) as u8;
+            let b = lerp(cb as f64, eb as f64, t) as u8;
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_bg(Color::Rgb(r, g, b));
             }
         }
+    }
+}
+
+fn rgb_components(color: Color) -> (u8, u8, u8) {
+    match color {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
     }
 }
 
