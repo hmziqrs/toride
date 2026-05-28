@@ -1,0 +1,245 @@
+---
+import '../styles/global.css';
+
+const title = "Toride - Modern Rust Terminal UI Framework | Build Beautiful CLIs";
+const description = "Toride is a modern Rust framework for building stunning terminal user interfaces. Features 50+ effects, interactive widgets, async support, and seamless ratatui integration. Create CLI applications that feel alive.";
+const author = "hmziqrs";
+const authorUrl = "https://github.com/hmziqrs";
+const siteUrl = "https://toride.dev";
+const githubUrl = "https://github.com/hmziqrs/toride";
+const keywords = [
+  "rust",
+  "terminal ui",
+  "tui",
+  "ratatui",
+  "cli framework",
+  "rust tui",
+  "terminal effects",
+  "command line interface",
+  "rust framework",
+  "terminal animations",
+  "tachyonfx",
+  "crossterm",
+  "tokio",
+  "async tui",
+  "interactive terminal"
+].join(", ");
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+		<meta name="generator" content={Astro.generator} />
+
+		<!-- Primary Meta Tags -->
+		<title>{title}</title>
+		<meta name="title" content={title} />
+		<meta name="description" content={description} />
+		<meta name="keywords" content={keywords} />
+		<meta name="author" content={author} />
+		<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+		<meta name="googlebot" content="index, follow" />
+		<meta name="theme-color" content="#0a0a0a" />
+		<meta name="color-scheme" content="dark" />
+		<meta name="language" content="English" />
+		<meta name="revisit-after" content="7 days" />
+
+		<!-- Canonical -->
+		<link rel="canonical" href={siteUrl} />
+
+		<!-- Open Graph / Facebook -->
+		<meta property="og:type" content="website" />
+		<meta property="og:url" content={siteUrl} />
+		<meta property="og:title" content={title} />
+		<meta property="og:description" content={description} />
+		<meta property="og:image" content={`${siteUrl}/og-image.png`} />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
+		<meta property="og:image:alt" content="Toride - Modern Rust Terminal UI Framework" />
+		<meta property="og:site_name" content="Toride" />
+		<meta property="og:locale" content="en_US" />
+
+		<!-- Twitter -->
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:url" content={siteUrl} />
+		<meta name="twitter:title" content={title} />
+		<meta name="twitter:description" content={description} />
+		<meta name="twitter:image" content={`${siteUrl}/og-image.png`} />
+		<meta name="twitter:image:alt" content="Toride - Modern Rust Terminal UI Framework" />
+		<meta name="twitter:creator" content={`@${author}`} />
+
+		<!-- Favicons -->
+		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+		<link rel="icon" type="image/x-icon" href="/favicon.ico" />
+		<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+
+		<!-- PWA / Web App -->
+		<link rel="manifest" href="/site.webmanifest" />
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="Toride" />
+
+		<!-- Performance Hints -->
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link rel="dns-prefetch" href="https://github.com" />
+
+		<!-- Structured Data (JSON-LD) -->
+		<script type="application/ld+json" set:html={JSON.stringify({
+			"@context": "https://schema.org",
+			"@type": "SoftwareApplication",
+			"name": "Toride",
+			"description": description,
+			"url": siteUrl,
+			"applicationCategory": "DeveloperApplication",
+			"operatingSystem": "Cross-platform",
+			"author": {
+				"@type": "Person",
+				"name": author,
+				"url": authorUrl
+			},
+			"offers": {
+				"@type": "Offer",
+				"price": "0",
+				"priceCurrency": "USD"
+			},
+			"softwareRequirements": "Rust",
+			"programmingLanguage": {
+				"@type": "ComputerLanguage",
+				"name": "Rust"
+			},
+			"codeRepository": githubUrl,
+			"license": "https://opensource.org/licenses/MIT",
+			"keywords": keywords
+		})} />
+
+		<script type="application/ld+json" set:html={JSON.stringify({
+			"@context": "https://schema.org",
+			"@type": "WebSite",
+			"name": "Toride",
+			"url": siteUrl,
+			"description": description,
+			"author": {
+				"@type": "Person",
+				"name": author,
+				"url": authorUrl
+			},
+			"potentialAction": {
+				"@type": "SearchAction",
+				"target": `${siteUrl}/search?q={search_term_string}`,
+				"query-input": "required name=search_term_string"
+			}
+		})} />
+
+		<script type="application/ld+json" set:html={JSON.stringify({
+			"@context": "https://schema.org",
+			"@type": "BreadcrumbList",
+			"itemListElement": [{
+				"@type": "ListItem",
+				"position": 1,
+				"name": "Home",
+				"item": siteUrl
+			}]
+		})} />
+	</head>
+	<body class="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#1a1a2e] to-[#0a0a0a] text-gray-200 font-sans flex flex-col items-center justify-center p-8 antialiased">
+		<main class="max-w-3xl text-center" role="main">
+			<h1 class="text-6xl md:text-7xl font-extrabold bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent mb-4 tracking-tight">toride</h1>
+			<p class="text-2xl text-gray-400 mb-8 font-light">Beautiful Terminal Interfaces, Effortlessly</p>
+			
+			<p class="text-lg leading-relaxed text-gray-400 mb-12 max-w-xl mx-auto">
+				A modern Rust framework for building stunning terminal user interfaces. 
+				Leveraging the power of ratatui with advanced effects, interactive widgets, 
+				and seamless async support to create CLI applications that feel alive.
+			</p>
+
+			<section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12" aria-label="Key Features">
+				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
+					<div class="text-4xl mb-3" aria-hidden="true">✨</div>
+					<h2 class="text-base font-semibold text-white mb-2">50+ Effects</h2>
+					<p class="text-sm text-gray-400">Color transformations, text animations, geometric distortions</p>
+				</article>
+				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
+					<div class="text-4xl mb-3" aria-hidden="true">🎯</div>
+					<h2 class="text-base font-semibold text-white mb-2">Interactive Widgets</h2>
+					<p class="text-sm text-gray-400">Buttons, inputs, menus, trees, and more out of the box</p>
+				</article>
+				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
+					<div class="text-4xl mb-3" aria-hidden="true">⚡</div>
+					<h2 class="text-base font-semibold text-white mb-2">Async Native</h2>
+					<p class="text-sm text-gray-400">Built on tokio for non-blocking, responsive interfaces</p>
+				</article>
+			</section>
+
+			<nav class="flex flex-wrap gap-4 justify-center mb-12" aria-label="Quick Actions">
+				<button class="inline-flex items-center gap-2 px-8 py-3.5 rounded-lg bg-gradient-to-r from-cyan-400 to-purple-500 text-black font-semibold transition-all duration-300 hover:opacity-90 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_rgba(0,212,255,0.3)] focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 cursor-pointer" id="coming-soon-btn" aria-label="Coming Soon - Stay tuned for release">
+					🚀 Coming Soon
+				</button>
+				<a href={githubUrl} class="inline-flex items-center gap-2 px-8 py-3.5 rounded-lg bg-white/5 text-white font-semibold border border-white/20 transition-all duration-300 hover:bg-white/10 hover:border-white/40 hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 no-underline" target="_blank" rel="noopener noreferrer" aria-label="View Toride on GitHub">
+					<span>GitHub</span>
+					<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+						<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+					</svg>
+				</a>
+			</nav>
+
+			<div class="bg-[#1e1e1e] rounded-xl overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.5)] border border-white/10" role="img" aria-label="Terminal preview showing toride commands">
+				<div class="bg-[#2d2d2d] px-4 py-3 flex items-center gap-2">
+					<div class="w-3 h-3 rounded-full bg-[#ff5f57]"></div>
+					<div class="w-3 h-3 rounded-full bg-[#febc2e]"></div>
+					<div class="w-3 h-3 rounded-full bg-[#28c840]"></div>
+				</div>
+				<div class="p-6 font-mono text-sm text-cyan-400 text-left">
+					<div class="mb-2">
+						<span class="text-[#555]">// Build beautiful TUIs with ease</span>
+					</div>
+					<div class="mb-2">
+						<span class="text-purple-500">$</span> cargo add toride
+					</div>
+					<div class="mb-2">
+						<span class="text-[#555]">// Create stunning terminal experiences</span>
+					</div>
+					<div class="mb-2">
+						<span class="text-purple-500">$</span> toride init my-app
+					</div>
+				</div>
+			</div>
+
+			<section class="mt-16 pt-8 border-t border-white/10" aria-label="Technology Stack">
+				<h2 class="text-xs text-gray-500 uppercase tracking-widest mb-4">Built With</h2>
+				<div class="flex flex-wrap gap-3 justify-center">
+					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">Rust</span>
+					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">ratatui</span>
+					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">tachyonfx</span>
+					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">tokio</span>
+					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">crossterm</span>
+				</div>
+			</section>
+		</main>
+
+		<footer class="mt-16 pt-8 border-t border-white/10 text-center" role="contentinfo">
+			<p class="text-sm text-gray-500">
+				Built by <a href={authorUrl} class="text-gray-400 hover:text-cyan-400 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 rounded-sm" target="_blank" rel="noopener noreferrer author">{author}</a>
+				&middot;
+				<a href={githubUrl} class="text-gray-400 hover:text-cyan-400 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 rounded-sm" target="_blank" rel="noopener noreferrer">Source Code</a>
+			</p>
+		</footer>
+
+		<script>
+			const btn = document.getElementById('coming-soon-btn');
+			btn?.addEventListener('click', () => {
+				btn.textContent = '⏳ Stay Tuned!';
+				btn.setAttribute('aria-label', 'Stay tuned for the release!');
+				setTimeout(() => {
+					btn.innerHTML = '🚀 Coming Soon';
+					btn.setAttribute('aria-label', 'Coming Soon - Stay tuned for release');
+				}, 2000);
+			});
+		</script>
+	</body>
+</html>

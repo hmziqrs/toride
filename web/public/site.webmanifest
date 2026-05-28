@@ -1,0 +1,26 @@
+{
+  "name": "Toride",
+  "short_name": "Toride",
+  "description": "A modern Rust framework for building stunning terminal user interfaces",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0a",
+  "theme_color": "#0a0a0a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.ico",
+      "sizes": "48x48",
+      "type": "image/x-icon"
+    }
+  ],
+  "categories": ["developer", "utilities"],
+  "lang": "en",
+  "dir": "ltr"
+}
