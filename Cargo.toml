@@ -36,6 +36,8 @@ nix = { version = "0.31", features = ["user", "signal", "fs"] }
 dirs = "6"
 async-trait = "0.1"
 ratatui-interact = "0.5.3"
+rattles = "0.3.1"
+ratatui-wgpu = "0.5.0"
 
 [dev-dependencies]
 insta = "1"
