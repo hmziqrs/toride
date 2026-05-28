@@ -1,28 +1,16 @@
 ---
 import '../styles/global.css';
 
-const title = "Toride - Modern Rust Terminal UI Framework | Build Beautiful CLIs";
-const description = "Toride is a modern Rust framework for building stunning terminal user interfaces. Features 50+ effects, interactive widgets, async support, and seamless ratatui integration. Create CLI applications that feel alive.";
+const title = "Toride - Build Stunning Terminal UIs in Rust";
+const description = "A modern Rust framework for building beautiful terminal user interfaces with 50+ effects, interactive widgets, and async support. Powered by ratatui.";
 const author = "hmziqrs";
 const authorUrl = "https://github.com/hmziqrs";
 const siteUrl = "https://toride.dev";
 const githubUrl = "https://github.com/hmziqrs/toride";
 const keywords = [
-  "rust",
-  "terminal ui",
-  "tui",
-  "ratatui",
-  "cli framework",
-  "rust tui",
-  "terminal effects",
-  "command line interface",
-  "rust framework",
-  "terminal animations",
-  "tachyonfx",
-  "crossterm",
-  "tokio",
-  "async tui",
-  "interactive terminal"
+  "rust", "terminal ui", "tui", "ratatui", "cli framework", "rust tui",
+  "terminal effects", "command line interface", "rust framework",
+  "terminal animations", "tachyonfx", "crossterm", "tokio", "async tui", "interactive terminal"
 ].join(", ");
 ---
 
@@ -33,7 +21,6 @@ const keywords = [
 		<meta http-equiv="X-UA-Compatible" content="IE=edge" />
 		<meta name="generator" content={Astro.generator} />
 
-		<!-- Primary Meta Tags -->
 		<title>{title}</title>
 		<meta name="title" content={title} />
 		<meta name="description" content={description} />
@@ -43,13 +30,9 @@ const keywords = [
 		<meta name="googlebot" content="index, follow" />
 		<meta name="theme-color" content="#0a0a0a" />
 		<meta name="color-scheme" content="dark" />
-		<meta name="language" content="English" />
-		<meta name="revisit-after" content="7 days" />
 
-		<!-- Canonical -->
 		<link rel="canonical" href={siteUrl} />
 
-		<!-- Open Graph / Facebook -->
 		<meta property="og:type" content="website" />
 		<meta property="og:url" content={siteUrl} />
 		<meta property="og:title" content={title} />
@@ -57,188 +40,244 @@ const keywords = [
 		<meta property="og:image" content={`${siteUrl}/og-image.png`} />
 		<meta property="og:image:width" content="1200" />
 		<meta property="og:image:height" content="630" />
-		<meta property="og:image:alt" content="Toride - Modern Rust Terminal UI Framework" />
+		<meta property="og:image:alt" content="Toride - Terminal UI Framework" />
 		<meta property="og:site_name" content="Toride" />
 		<meta property="og:locale" content="en_US" />
 
-		<!-- Twitter -->
 		<meta name="twitter:card" content="summary_large_image" />
 		<meta name="twitter:url" content={siteUrl} />
 		<meta name="twitter:title" content={title} />
 		<meta name="twitter:description" content={description} />
 		<meta name="twitter:image" content={`${siteUrl}/og-image.png`} />
-		<meta name="twitter:image:alt" content="Toride - Modern Rust Terminal UI Framework" />
 		<meta name="twitter:creator" content={`@${author}`} />
 
-		<!-- Favicons -->
 		<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 		<link rel="icon" type="image/x-icon" href="/favicon.ico" />
 		<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-		<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
-		<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
-
-		<!-- PWA / Web App -->
 		<link rel="manifest" href="/site.webmanifest" />
-		<meta name="mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 		<meta name="apple-mobile-web-app-title" content="Toride" />
 
-		<!-- Performance Hints -->
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 		<link rel="dns-prefetch" href="https://github.com" />
+		<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
 
-		<!-- Structured Data (JSON-LD) -->
 		<script type="application/ld+json" set:html={JSON.stringify({
 			"@context": "https://schema.org",
 			"@type": "SoftwareApplication",
-			"name": "Toride",
-			"description": description,
-			"url": siteUrl,
-			"applicationCategory": "DeveloperApplication",
-			"operatingSystem": "Cross-platform",
-			"author": {
-				"@type": "Person",
-				"name": author,
-				"url": authorUrl
-			},
-			"offers": {
-				"@type": "Offer",
-				"price": "0",
-				"priceCurrency": "USD"
-			},
+			"name": "Toride", "description": description, "url": siteUrl,
+			"applicationCategory": "DeveloperApplication", "operatingSystem": "Cross-platform",
+			"author": { "@type": "Person", "name": author, "url": authorUrl },
+			"offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
 			"softwareRequirements": "Rust",
-			"programmingLanguage": {
-				"@type": "ComputerLanguage",
-				"name": "Rust"
-			},
-			"codeRepository": githubUrl,
-			"license": "https://opensource.org/licenses/MIT",
-			"keywords": keywords
+			"programmingLanguage": { "@type": "ComputerLanguage", "name": "Rust" },
+			"codeRepository": githubUrl, "keywords": keywords
 		})} />
 
 		<script type="application/ld+json" set:html={JSON.stringify({
 			"@context": "https://schema.org",
-			"@type": "WebSite",
-			"name": "Toride",
-			"url": siteUrl,
-			"description": description,
-			"author": {
-				"@type": "Person",
-				"name": author,
-				"url": authorUrl
-			},
-			"potentialAction": {
-				"@type": "SearchAction",
-				"target": `${siteUrl}/search?q={search_term_string}`,
-				"query-input": "required name=search_term_string"
+			"@type": "WebSite", "name": "Toride", "url": siteUrl, "description": description,
+			"author": { "@type": "Person", "name": author, "url": authorUrl }
+		})} />
+
+		<style>
+			@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+			@keyframes tui-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+			.cursor-blink { animation: blink 1s step-end infinite; }
+			.anim { animation: tui-in 300ms cubic-bezier(0.2, 0, 0, 1) backwards; }
+			.d1 { animation-delay: 50ms; } .d2 { animation-delay: 100ms; } .d3 { animation-delay: 150ms; }
+			.d4 { animation-delay: 200ms; } .d5 { animation-delay: 250ms; } .d6 { animation-delay: 300ms; }
+			.d7 { animation-delay: 350ms; } .d8 { animation-delay: 400ms; }
+			@media (prefers-reduced-motion: reduce) {
+				*, *::before, *::after {
+					animation-duration: 0.01ms !important;
+					animation-iteration-count: 1 !important;
+					transition-duration: 0.01ms !important;
+				}
 			}
-		})} />
-
-		<script type="application/ld+json" set:html={JSON.stringify({
-			"@context": "https://schema.org",
-			"@type": "BreadcrumbList",
-			"itemListElement": [{
-				"@type": "ListItem",
-				"position": 1,
-				"name": "Home",
-				"item": siteUrl
-			}]
-		})} />
+		</style>
 	</head>
-	<body class="min-h-screen bg-gradient-to-br from-[#0a0a0a] via-[#1a1a2e] to-[#0a0a0a] text-gray-200 font-sans flex flex-col items-center justify-center p-8 antialiased">
-		<main class="max-w-3xl text-center" role="main">
-			<h1 class="text-6xl md:text-7xl font-extrabold bg-gradient-to-r from-cyan-400 to-purple-500 bg-clip-text text-transparent mb-4 tracking-tight">toride</h1>
-			<p class="text-2xl text-gray-400 mb-8 font-light">Beautiful Terminal Interfaces, Effortlessly</p>
-			
-			<p class="text-lg leading-relaxed text-gray-400 mb-12 max-w-xl mx-auto">
-				A modern Rust framework for building stunning terminal user interfaces. 
-				Leveraging the power of ratatui with advanced effects, interactive widgets, 
-				and seamless async support to create CLI applications that feel alive.
-			</p>
+	<body class="min-h-screen bg-[#0a0a0a] text-[#a0a0a0] font-['JetBrains_Mono',monospace] antialiased selection:bg-cyan-500/30 selection:text-white">
 
-			<section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12" aria-label="Key Features">
-				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
-					<div class="text-4xl mb-3" aria-hidden="true">✨</div>
-					<h2 class="text-base font-semibold text-white mb-2">50+ Effects</h2>
-					<p class="text-sm text-gray-400">Color transformations, text animations, geometric distortions</p>
-				</article>
-				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
-					<div class="text-4xl mb-3" aria-hidden="true">🎯</div>
-					<h2 class="text-base font-semibold text-white mb-2">Interactive Widgets</h2>
-					<p class="text-sm text-gray-400">Buttons, inputs, menus, trees, and more out of the box</p>
-				</article>
-				<article class="bg-white/[0.03] border border-white/10 rounded-xl p-6 transition-all duration-300 hover:bg-white/[0.05] hover:border-cyan-500/30 hover:-translate-y-0.5">
-					<div class="text-4xl mb-3" aria-hidden="true">⚡</div>
-					<h2 class="text-base font-semibold text-white mb-2">Async Native</h2>
-					<p class="text-sm text-gray-400">Built on tokio for non-blocking, responsive interfaces</p>
-				</article>
-			</section>
-
-			<nav class="flex flex-wrap gap-4 justify-center mb-12" aria-label="Quick Actions">
-				<button class="inline-flex items-center gap-2 px-8 py-3.5 rounded-lg bg-gradient-to-r from-cyan-400 to-purple-500 text-black font-semibold transition-all duration-300 hover:opacity-90 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_rgba(0,212,255,0.3)] focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 cursor-pointer" id="coming-soon-btn" aria-label="Coming Soon - Stay tuned for release">
-					🚀 Coming Soon
-				</button>
-				<a href={githubUrl} class="inline-flex items-center gap-2 px-8 py-3.5 rounded-lg bg-white/5 text-white font-semibold border border-white/20 transition-all duration-300 hover:bg-white/10 hover:border-white/40 hover:-translate-y-0.5 focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2 no-underline" target="_blank" rel="noopener noreferrer" aria-label="View Toride on GitHub">
-					<span>GitHub</span>
-					<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-						<path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
-					</svg>
-				</a>
-			</nav>
-
-			<div class="bg-[#1e1e1e] rounded-xl overflow-hidden shadow-[0_20px_60px_rgba(0,0,0,0.5)] border border-white/10" role="img" aria-label="Terminal preview showing toride commands">
-				<div class="bg-[#2d2d2d] px-4 py-3 flex items-center gap-2">
-					<div class="w-3 h-3 rounded-full bg-[#ff5f57]"></div>
-					<div class="w-3 h-3 rounded-full bg-[#febc2e]"></div>
-					<div class="w-3 h-3 rounded-full bg-[#28c840]"></div>
+		<!-- Top Bar -->
+		<header class="fixed top-0 inset-x-0 z-50 bg-[#0d0d0d] border-b border-[#222] anim d1">
+			<div class="mx-auto max-w-5xl px-6 h-10 flex items-center justify-between text-xs">
+				<div class="flex items-center gap-3">
+					<span class="text-[#e0e0e0] font-bold">toride</span>
+					<span class="text-[#333]">|</span>
+					<span class="text-[#555]">v0.1.0</span>
 				</div>
-				<div class="p-6 font-mono text-sm text-cyan-400 text-left">
-					<div class="mb-2">
-						<span class="text-[#555]">// Build beautiful TUIs with ease</span>
-					</div>
-					<div class="mb-2">
-						<span class="text-purple-500">$</span> cargo add toride
-					</div>
-					<div class="mb-2">
-						<span class="text-[#555]">// Create stunning terminal experiences</span>
-					</div>
-					<div class="mb-2">
-						<span class="text-purple-500">$</span> toride init my-app
-					</div>
+				<div class="flex items-center gap-4 text-[#555]">
+					<span>git:main</span>
+					<span class="text-[#333]">|</span>
+					<a href={githubUrl} class="text-[#666] hover:text-cyan-400 transition-colors duration-150 no-underline" target="_blank" rel="noopener noreferrer">github</a>
+					<span class="text-[#333]">|</span>
+					<span class="text-emerald-500">&#9679;</span>
 				</div>
 			</div>
+		</header>
 
-			<section class="mt-16 pt-8 border-t border-white/10" aria-label="Technology Stack">
-				<h2 class="text-xs text-gray-500 uppercase tracking-widest mb-4">Built With</h2>
-				<div class="flex flex-wrap gap-3 justify-center">
-					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">Rust</span>
-					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">ratatui</span>
-					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">tachyonfx</span>
-					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">tokio</span>
-					<span class="px-4 py-1.5 bg-white/5 border border-white/10 rounded-full text-xs text-gray-400">crossterm</span>
+		<main class="pt-10">
+			<!-- Hero -->
+			<section class="px-6 py-20 md:py-28" aria-label="Hero">
+				<div class="mx-auto max-w-3xl">
+					<div class="text-[#333] text-xs mb-6 anim d2">
+						<span>~/toride</span>
+						<span class="mx-2">|</span>
+						<span>README.md</span>
+					</div>
+
+					<h1 class="text-4xl md:text-6xl font-bold leading-[1.1] mb-6 anim d3">
+						<span class="text-[#e0e0e0]">Build terminal UIs</span>
+						<br />
+						<span class="text-cyan-400">that feel alive</span>
+						<span class="cursor-blink text-cyan-400 ml-0.5">_</span>
+					</h1>
+
+					<p class="text-[#888] text-sm md:text-base max-w-xl leading-relaxed mb-10 anim d4">
+						A Rust framework with 50+ effects, interactive widgets, and async support&mdash;powered by ratatui.
+					</p>
+
+					<div class="flex flex-col sm:flex-row gap-3 anim d5">
+						<a href={githubUrl} class="inline-flex items-center gap-2 px-5 py-2.5 bg-cyan-500 text-black font-bold text-sm border border-cyan-400 hover:bg-cyan-400 active:scale-[0.98] transition-all duration-150 focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 no-underline" target="_blank" rel="noopener noreferrer">
+							<svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+							View on GitHub
+						</a>
+						<button class="inline-flex items-center gap-2 px-5 py-2.5 bg-transparent text-[#a0a0a0] font-medium text-sm border border-[#333] hover:border-[#555] hover:text-[#e0e0e0] active:scale-[0.98] transition-all duration-150 cursor-pointer focus-visible:outline-2 focus-visible:outline-white focus-visible:outline-offset-2" id="coming-soon-btn" aria-label="Coming Soon - Stay tuned for release">
+							Notify Me
+						</button>
+					</div>
+				</div>
+			</section>
+
+			<!-- Features -->
+			<section class="px-6 pb-16" aria-label="Key Features">
+				<div class="mx-auto max-w-5xl">
+					<div class="text-[#333] text-xs mb-6 anim d5">
+						<span class="text-cyan-500">--features</span>
+					</div>
+
+					<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-px bg-[#1a1a1a] border border-[#1a1a1a] anim d6">
+						<article class="bg-[#0d0d0d] p-6 hover:bg-[#111] transition-colors duration-150">
+							<div class="text-cyan-500 text-xs font-bold mb-3">[effects]</div>
+							<h3 class="text-[#e0e0e0] text-sm font-semibold mb-2">50+ Visual Effects</h3>
+							<p class="text-[#666] text-xs leading-relaxed">Color transformations, text animations, geometric distortions, spatial patterns. Chain them together.</p>
+						</article>
+
+						<article class="bg-[#0d0d0d] p-6 hover:bg-[#111] transition-colors duration-150">
+							<div class="text-purple-500 text-xs font-bold mb-3">[widgets]</div>
+							<h3 class="text-[#e0e0e0] text-sm font-semibold mb-2">Rich Widget Library</h3>
+							<p class="text-[#666] text-xs leading-relaxed">Buttons, inputs, menus, trees, file explorers, popups. Focus management and mouse built-in.</p>
+						</article>
+
+						<article class="bg-[#0d0d0d] p-6 hover:bg-[#111] transition-colors duration-150">
+							<div class="text-emerald-500 text-xs font-bold mb-3">[async]</div>
+							<h3 class="text-[#e0e0e0] text-sm font-semibold mb-2">Async Native</h3>
+							<p class="text-[#666] text-xs leading-relaxed">Built on tokio. Handle concurrent tasks, streaming data, background work without freezing.</p>
+						</article>
+
+						<article class="bg-[#0d0d0d] p-6 hover:bg-[#111] transition-colors duration-150">
+							<div class="text-amber-500 text-xs font-bold mb-3">[precision]</div>
+							<h3 class="text-[#e0e0e0] text-sm font-semibold mb-2">Cell-Precise Control</h3>
+							<p class="text-[#666] text-xs leading-relaxed">Target specific regions or cells. Radial, diagonal, organic spatial patterns for fine-grained effects.</p>
+						</article>
+					</div>
+				</div>
+			</section>
+
+			<!-- Terminal Preview -->
+			<section class="px-6 pb-16" aria-label="Code example">
+				<div class="mx-auto max-w-3xl">
+					<div class="text-[#333] text-xs mb-6 anim d6">
+						<span class="text-cyan-500">--demo</span>
+					</div>
+
+					<div class="border border-[#222] anim d7" role="img" aria-label="Terminal preview showing toride commands">
+						<div class="bg-[#111] border-b border-[#222] px-4 py-2 flex items-center gap-4 text-xs text-[#555]">
+							<span>~/.cargo/bin/toride</span>
+							<span class="text-[#222]">|</span>
+							<span>bash</span>
+						</div>
+						<div class="bg-[#0a0a0a] p-6 text-sm leading-relaxed">
+							<div class="mb-2">
+								<span class="text-[#444] select-none">$ </span>
+								<span class="text-cyan-400">cargo</span>
+								<span class="text-[#a0a0a0]"> add toride</span>
+							</div>
+							<div class="mb-2">
+								<span class="text-[#444] select-none">$ </span>
+								<span class="text-cyan-400">toride</span>
+								<span class="text-[#a0a0a0]"> init my-app</span>
+							</div>
+							<div class="mb-2 text-[#555]">
+								<span class="text-emerald-500">&#10003;</span> Project created in my-app/
+							</div>
+							<div class="mb-2">
+								<span class="text-[#444] select-none">$ </span>
+								<span class="text-cyan-400">cd</span>
+								<span class="text-[#a0a0a0]"> my-app && </span>
+								<span class="text-cyan-400">cargo</span>
+								<span class="text-[#a0a0a0]"> run</span>
+							</div>
+							<div class="text-[#555]">
+								<span class="text-emerald-400">&#9679;</span> Compiling toride v0.1.0
+							</div>
+						</div>
+					</div>
+				</div>
+			</section>
+
+			<!-- Deps -->
+			<section class="px-6 pb-16" aria-label="Dependencies">
+				<div class="mx-auto max-w-5xl">
+					<div class="border-t border-[#1a1a1a] pt-8">
+						<div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-xs text-[#444] anim d8">
+							<span class="text-[#333]">deps:</span>
+							<span class="text-[#555]">ratatui</span>
+							<span class="text-[#222]">,</span>
+							<span class="text-[#555]">tachyonfx</span>
+							<span class="text-[#222]">,</span>
+							<span class="text-[#555]">tokio</span>
+							<span class="text-[#222]">,</span>
+							<span class="text-[#555]">crossterm</span>
+							<span class="text-[#222]">,</span>
+							<span class="text-[#555]">color-eyre</span>
+						</div>
+					</div>
 				</div>
 			</section>
 		</main>
 
-		<footer class="mt-16 pt-8 border-t border-white/10 text-center" role="contentinfo">
-			<p class="text-sm text-gray-500">
-				Built by <a href={authorUrl} class="text-gray-400 hover:text-cyan-400 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 rounded-sm" target="_blank" rel="noopener noreferrer author">{author}</a>
-				&middot;
-				<a href={githubUrl} class="text-gray-400 hover:text-cyan-400 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-cyan-400 focus-visible:outline-offset-2 rounded-sm" target="_blank" rel="noopener noreferrer">Source Code</a>
-			</p>
+		<!-- Footer Bar -->
+		<footer class="bg-[#0d0d0d] border-t border-[#222]" role="contentinfo">
+			<div class="mx-auto max-w-5xl px-6 h-10 flex items-center justify-between text-xs text-[#444]">
+				<div class="flex items-center gap-4">
+					<a href={authorUrl} class="text-[#555] hover:text-cyan-400 transition-colors duration-150 no-underline" target="_blank" rel="noopener noreferrer author">{author}</a>
+					<span class="text-[#222]">|</span>
+					<span>MIT</span>
+				</div>
+				<div class="flex items-center gap-4">
+					<a href={githubUrl} class="text-[#555] hover:text-cyan-400 transition-colors duration-150 no-underline" target="_blank" rel="noopener noreferrer">source</a>
+					<span class="text-[#222]">|</span>
+					<span class="text-emerald-500">&#9679; ready</span>
+				</div>
+			</div>
 		</footer>
 
 		<script>
 			const btn = document.getElementById('coming-soon-btn');
 			btn?.addEventListener('click', () => {
-				btn.textContent = '⏳ Stay Tuned!';
-				btn.setAttribute('aria-label', 'Stay tuned for the release!');
+				const original = btn.innerHTML;
+				btn.innerHTML = '<span class="text-emerald-400">[registered]</span>';
+				btn.setAttribute('aria-label', 'You\'re on the notification list!');
+				btn.classList.add('border-emerald-500/50');
 				setTimeout(() => {
-					btn.innerHTML = '🚀 Coming Soon';
+					btn.innerHTML = original;
 					btn.setAttribute('aria-label', 'Coming Soon - Stay tuned for release');
-				}, 2000);
+					btn.classList.remove('border-emerald-500/50');
+				}, 2500);
 			});
 		</script>
 	</body>
