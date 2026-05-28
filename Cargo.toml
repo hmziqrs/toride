@@ -42,3 +42,9 @@ ratatui-wgpu = "0.5.0"
 [dev-dependencies]
 insta = "1"
 testty = "0.9"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

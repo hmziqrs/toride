@@ -10,7 +10,7 @@ use ratatui::{
 use crate::action::Action;
 use crate::ui::theme::{self, Palette};
 
-const VERSION: &str = "0.4.1";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EDITION: &str = "SINGLE-HOST";
 
 // Key-badge background is not part of the palette; kept local.
@@ -32,13 +32,27 @@ const STATUS_MESSAGES: &[(&str, &str)] = &[
     ("ok", "apt available · 218 pkgs known"),
     ("ok", "docker engine 27.4.1 detected"),
     ("ok", "network: cloudflare 1.1.1.1 reachable"),
-    ("ok", "ratatui v0.29.0 rendering · 60 fps"),
+    ("ok", "ratatui v0.30.0 rendering · 60 fps"),
     ("--", "ready."),
 ];
 
-pub struct WelcomeScreen;
+pub struct WelcomeScreen {
+    gradient_cache: Option<(Rect, Buffer)>,
+}
+
+impl Default for WelcomeScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl WelcomeScreen {
+    pub fn new() -> Self {
+        Self {
+            gradient_cache: None,
+        }
+    }
+
     pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
         use ratatui::crossterm::event::KeyCode;
         match code {
@@ -49,15 +63,23 @@ impl WelcomeScreen {
         }
     }
 
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         self.render_with_palette(frame, theme::CHARM);
     }
 
-    fn render_with_palette(&self, frame: &mut Frame, p: Palette) {
+    fn render_with_palette(&mut self, frame: &mut Frame, p: Palette) {
         let area = frame.area();
 
-        // Radial gradient fills margins; panel uses bg_inset override
-        render_gradient_bg(frame.buffer_mut(), area, p);
+        let buf = frame.buffer_mut();
+        let needs_regen = !self.gradient_cache.as_ref().is_some_and(|(cached_area, _)| *cached_area == area);
+        if needs_regen {
+            let mut gradient = Buffer::empty(area);
+            render_gradient_bg(&mut gradient, area);
+            copy_bg(&gradient, buf, area);
+            self.gradient_cache = Some((area, gradient));
+        } else if let Some((_, ref gradient)) = self.gradient_cache {
+            copy_bg(gradient, buf, area);
+        }
 
         // Center column wide enough for logo (~45 cols) and panel
         let [_, center, _] = Layout::horizontal([
@@ -168,7 +190,7 @@ impl WelcomeScreen {
 }
 
 // Radial gradient: slightly lighter bg at center, darker at edges.
-fn render_gradient_bg(buf: &mut Buffer, area: Rect, _p: Palette) {
+fn render_gradient_bg(buf: &mut Buffer, area: Rect) {
     let cx = (area.left() + area.right()) / 2;
     let cy = (area.top() + area.bottom()) / 2;
     let max_dist = ((cx.saturating_sub(area.left()) as f64)
@@ -192,4 +214,16 @@ fn render_gradient_bg(buf: &mut Buffer, area: Rect, _p: Palette) {
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a * (1.0 - t) + b * t
+}
+
+fn copy_bg(src: &Buffer, dst: &mut Buffer, area: Rect) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if let Some(s) = src.cell(Position::new(x, y))
+                && let Some(d) = dst.cell_mut(Position::new(x, y))
+            {
+                d.set_bg(s.bg);
+            }
+        }
+    }
 }
