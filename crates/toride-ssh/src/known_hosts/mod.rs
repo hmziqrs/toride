@@ -171,6 +171,27 @@ impl<'a> KnownHostsService<'a> {
             .iter()
             .any(|e| e.hosts.iter().any(|h| host_pattern_matches(h, host))))
     }
+
+    /// Hash all hostnames in `~/.ssh/known_hosts` (`ssh-keygen -H`).
+    ///
+    /// This replaces plaintext hostnames with salted hashes for privacy.
+    /// The file is modified in-place by `ssh-keygen`.
+    pub async fn hash_all(&self) -> Result<()> {
+        let path = self.paths.known_hosts_path().to_path_buf();
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| Error::CommandFailed("known_hosts path is not valid UTF-8".into()))?
+            .to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            duct::cmd("ssh-keygen", ["-H", "-f", &path_str])
+                .read()
+                .map_err(|e| Error::CommandFailed(format!("ssh-keygen -H failed: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
+    }
 }
 
 /// Synchronous helper: read the file, filter out matching entries, write back

@@ -60,9 +60,17 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
         Ok(pk) => {
             // Explicit fallback: if we can't determine the algorithm, treat as
             // Ed25519. This is a best-effort heuristic for encrypted/unknown keys.
-            let key_type = algorithm_to_key_type(&pk.algorithm())
+            let mut key_type = algorithm_to_key_type(&pk.algorithm())
                 .unwrap_or(KeyType::Ed25519);
             let public_key = pk.public_key();
+
+            // Extract RSA bit size from the public key data.
+            if matches!(key_type, KeyType::Rsa { .. })
+                && let Some(rsa_public) = public_key.key_data().rsa()
+            {
+                let bits = rsa_public.key_size();
+                key_type = KeyType::Rsa { bits };
+            }
             let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
             let fingerprint = Some(Fingerprint {
                 hash: fp.to_string().trim_start_matches("SHA256:").to_owned(),

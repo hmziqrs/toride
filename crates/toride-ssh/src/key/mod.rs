@@ -146,6 +146,86 @@ impl<'a> KeyService<'a> {
     pub async fn repair_public(&self, private_key_path: &std::path::Path) -> Result<()> {
         repair::repair_public_key(private_key_path).await
     }
+
+    /// Change the passphrase on an existing key (`ssh-keygen -p`).
+    ///
+    /// If `old_passphrase` is `None`, the key is assumed to be unencrypted.
+    /// If `new_passphrase` is `None` or empty, the passphrase is removed.
+    pub async fn change_passphrase(
+        &self,
+        key_path: &std::path::Path,
+        old_passphrase: Option<&str>,
+        new_passphrase: Option<&str>,
+    ) -> Result<()> {
+        if !key_path.exists() {
+            return Err(Error::KeyNotFound(key_path.display().to_string()));
+        }
+
+        let path_str = key_path
+            .to_str()
+            .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+            .to_owned();
+
+        let old_pass = old_passphrase.unwrap_or("").to_owned();
+        let new_pass = new_passphrase.unwrap_or("").to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let output = duct::cmd(
+                "ssh-keygen",
+                [
+                    "-p",
+                    "-f", &path_str,
+                    "-P", &old_pass,
+                    "-N", &new_pass,
+                ],
+            )
+            .read()
+            .map_err(|e| Error::CommandFailed(format!("ssh-keygen -p failed: {e}")))?;
+
+            tracing::debug!("ssh-keygen -p output: {output}");
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("passphrase change task failed: {e}")))?
+    }
+
+    /// Change the comment on an existing key (`ssh-keygen -c`).
+    ///
+    /// Updates both the private and public key files.
+    pub async fn change_comment(
+        &self,
+        key_path: &std::path::Path,
+        new_comment: &str,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        if !key_path.exists() {
+            return Err(Error::KeyNotFound(key_path.display().to_string()));
+        }
+
+        let path_str = key_path
+            .to_str()
+            .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+            .to_owned();
+
+        let comment = new_comment.to_owned();
+        let pass = passphrase.unwrap_or("").to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let mut args = vec!["-c", "-f", &path_str, "-C", &comment];
+            if !pass.is_empty() {
+                args.extend(["-P", &pass]);
+            }
+
+            let output = duct::cmd("ssh-keygen", &args)
+                .read()
+                .map_err(|e| Error::CommandFailed(format!("ssh-keygen -c failed: {e}")))?;
+
+            tracing::debug!("ssh-keygen -c output: {output}");
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("comment change task failed: {e}")))?
+    }
 }
 
 /// Remove a key from the SSH agent.

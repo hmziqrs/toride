@@ -348,6 +348,8 @@ struct TokenContext<'a> {
     remote_user: &'a str,
     local_user: &'a str,
     port: &'a str,
+    /// Canonical hostname (same as host unless CanonicalizeHostname is enabled).
+    canonical_host: &'a str,
 }
 
 /// Expand tokens in resolved values.
@@ -370,6 +372,8 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         remote_user: &remote_user,
         local_user: &local_user,
         port: &port_str,
+        // Without CanonicalizeHostname, canonical host == alias.
+        canonical_host: host,
     };
 
     // Expand identity files.
@@ -392,11 +396,23 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     }
 }
 
-/// Expand SSH tokens (%d, %h, %l, %n, %p, %r, %u) in a value string.
+/// Expand SSH tokens in a value string.
 ///
-/// Uses character-by-character parsing so that unknown `%X` sequences
-/// (and a trailing bare `%`) are preserved as-is. `%%` is handled
-/// separately by [`collapse_double_percent`].
+/// Supported tokens (matching OpenSSH ssh_config(5)):
+/// - `%%` → literal `%`
+/// - `%C` → hash of connection (host+port+user) — placeholder
+/// - `%d` → home directory
+/// - `%H` → canonical hostname
+/// - `%h` / `%n` → remote host (alias)
+/// - `%i` → local user
+/// - `%L` → local hostname (short)
+/// - `%l` → local hostname (FQDN)
+/// - `%p` → remote port
+/// - `%r` → remote username
+/// - `%T` → remote username (same as %r)
+/// - `%u` → local username
+///
+/// Unknown `%X` sequences and trailing `%` are preserved as-is.
 fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -409,13 +425,30 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     result.push_str("%%");
                     chars.next();
                 }
+                Some('C') => {
+                    // Connection hash — use a simple hash of host:port:user.
+                    chars.next();
+                    let hash_input = format!("{}:{}:{}", ctx.host, ctx.port, ctx.local_user);
+                    let hash = simple_hash(&hash_input);
+                    result.push_str(&hash);
+                }
                 Some('d') => {
                     chars.next();
                     result.push_str(ctx.home_dir);
                 }
+                Some('H') => {
+                    chars.next();
+                    result.push_str(ctx.canonical_host);
+                }
                 Some('h' | 'n') => {
                     chars.next();
                     result.push_str(ctx.host);
+                }
+                Some('L') => {
+                    // Short hostname (first component before '.').
+                    chars.next();
+                    let short = ctx.local_hostname.split('.').next().unwrap_or(ctx.local_hostname);
+                    result.push_str(short);
                 }
                 Some('l') => {
                     chars.next();
@@ -425,11 +458,13 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     chars.next();
                     result.push_str(ctx.port);
                 }
-                Some('r') => {
+                Some('r' | 'T') => {
+                    // %r and %T both expand to the remote username.
                     chars.next();
                     result.push_str(ctx.remote_user);
                 }
-                Some('u') => {
+                Some('u' | 'i') => {
+                    // %u and %i both expand to the local username.
                     chars.next();
                     result.push_str(ctx.local_user);
                 }
@@ -444,6 +479,16 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
     }
 
     result
+}
+
+/// Simple hash function for `%C` token (OpenSSH uses SHA-1 of host:port:user).
+/// We use a deterministic string representation since SHA-1 adds a dependency.
+fn simple_hash(s: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    s.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// Replace `%%` with a single `%` (OpenSSH escape convention).
