@@ -4,13 +4,13 @@ My updated verdict: **there is no single Rust crate that manages “all SSH thin
 
 | Area                                                         | Best choice                             | Why                                                                                                                                                                                                  |
 | ------------------------------------------------------------ | --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SSH public/private keys, certs, known_hosts, authorized_keys | `ssh-key`                               | Pure Rust, supports OpenSSH public/private keys, certificates, signatures, `authorized_keys`, and `known_hosts`; key generation exists behind `ed25519`, `p256`, `rsa` features. ([Docs.rs][1])      |
-| OpenSSH config parsing                                       | `ssh2-config-rs`                        | Pure Rust parser aimed at `russh`, supports `IdentityFile`, `ProxyJump`, `CertificateFile`, algorithms, agent flags, etc., but **does not fully support `Match` patterns or tokens**. ([Docs.rs][2]) |
-| Config parser for `ssh2`/libssh2 stack                       | `ssh2-config`                           | Parses OpenSSH-style config and can query host-specific params, but it is older and designed around the `ssh2` crate. ([Docs.rs][3])                                                                 |
-| Real SSH execution with exact user behavior                  | `openssh`                               | Wraps the system `ssh` binary, so existing `~/.ssh/config`, agent, ProxyJump, certs, etc. behave like the real CLI. ([Docs.rs][4])                                                                   |
-| Pure Rust SSH client/server                                  | `russh`                                 | Use when you want native Rust SSH client/server, agent, key handling, forwarding-style work. Its keys module handles opening key files, encrypted keys, and agents. ([Docs.rs][5])                   |
+| SSH public/private keys, certs, known_hosts, authorized_keys | `ssh-key`                               | Pure Rust, supports OpenSSH public/private keys, certificates, signatures, `authorized_keys`, and `known_hosts`; key generation exists behind `ed25519`, `p256`, `rsa` features. **FIDO/sk keys can only be decoded/encoded/verified — cannot generate or sign.** Use `ssh-keygen` for all FIDO operations. ([Docs.rs][1])      |
+| OpenSSH config parsing                                       | `ssh2-config-rs`                        | Pure Rust parser (fork of `veeso/ssh2-config`, no OpenSSL) aimed at `russh`, supports `IdentityFile`, `ProxyJump`, `CertificateFile`, `AddKeysToAgent`, `UseKeychain`, algorithms, agent flags, etc., but **does not fully support `Match` patterns or tokens**. Unsupported fields are accessible via `ALLOW_UNSUPPORTED_FIELDS` parse rule. ([GitHub][2]) |
+| Config parser for `ssh2`/libssh2 stack                       | `ssh2-config`                           | Parses OpenSSH-style config and can query host-specific params with first-match-wins resolution, but it is older and designed around the `ssh2` crate. ([Docs.rs][3])                                                                 |
+| Real SSH execution with exact user behavior                  | `openssh`                               | Wraps the system `ssh` binary, so existing `~/.ssh/config`, agent, ProxyJump, certs, etc. behave like the real CLI. **Unix-only. Password-less auth only — cannot handle interactive password/passphrase prompts.** Has two modes: process-based (spawns ssh) and native mux (connects to ControlMaster socket directly). For cross-platform or interactive use, prefer `std::process::Command` / `tokio::process::Command` calling `ssh` directly. ([Docs.rs][4])                                                                   |
+| Pure Rust SSH client/server                                  | `russh`                                 | Use when you want native Rust SSH client/server, agent, key handling, forwarding-style work. Fork of Thrussh, **Tokio-based async**. Its keys module handles opening key files (with passphrase), encrypted keys, and agents. ([Docs.rs][5])                   |
 | libssh2 client                                               | `ssh2`                                  | Rust bindings to libssh2; client-only, SSH protocol v2 only. Useful, but less OpenSSH-compatible than shelling out to `ssh`. ([Docs.rs][6])                                                          |
-| SSH agent protocol                                           | `ssh-agent-client-rs` / `ssh-agent-lib` | `ssh-agent-client-rs` is a pure Rust synchronous client; `ssh-agent-lib` is for custom agents and connecting to existing ones. ([Docs.rs][7])                                                        |
+| SSH agent protocol                                           | `ssh-agent-client-rs` / `ssh-agent-lib` | `ssh-agent-client-rs` is a pure Rust **synchronous** client; `ssh-agent-lib` is **async (Tokio-based)** for custom agents and connecting to existing ones. For async apps, prefer `ssh-agent-lib`. ([Docs.rs][7])                                                        |
 | Interactive commands / password prompts                      | `portable-pty`                          | Useful if your app needs to run real `ssh`, `ssh-keygen`, or `ssh-add` interactively in a pseudo-terminal. ([Docs.rs][8])                                                                            |
 
 ## What you were missing
@@ -46,6 +46,13 @@ used_by_hosts
 
 OpenSSH default identity filenames include `id_rsa`, `id_ecdsa`, `id_ecdsa_sk`, `id_ed25519`, and `id_ed25519_sk`. ([OpenBSD Manual Pages][9])
 
+Edge cases:
+
+- **Key file format detection**: keys exist in multiple formats (OpenSSH native, PEM/RFC4716, PKCS#8, SEC1). The `ssh-key` crate handles OpenSSH format natively; PEM/PKCS#8 keys may need `ssh-keygen -i -m` conversion first. Enterprise environments often have legacy PEM keys.
+- **PKCS#11 keys**: `ssh-keygen -D /path/to/pkcs11.so` downloads public keys from hardware tokens. `PKCS11Provider` in ssh_config enables automatic use. These keys have no file on disk and won't appear in `~/.ssh/id_*` scans. Must detect `PKCS11Provider` in config and list via `ssh-keygen -D`.
+- **Agent-only keys**: keys loaded into the agent with no corresponding file on disk. Inventory must distinguish file-backed keys from agent-only keys.
+- **SSH v1 keys**: `~/.ssh/identity` / `~/.ssh/identity.pub` are deprecated protocol v1 files. Doctor should warn if they exist, not silently ignore or misparse them.
+
 ### 2. Create new keys
 
 Support presets:
@@ -78,6 +85,13 @@ optional install to remote authorized_keys
 ```
 
 `ssh-keygen -y` prints the public key from a private key, and `ssh-keygen` supports KDF rounds, fingerprints, known_hosts search/removal/hash, import/export, FIDO resident keys, KRLs, and certificates. ([OpenBSD Manual Pages][10])
+
+Edge cases:
+
+- **Passphrase change**: `ssh-keygen -p -f ~/.ssh/id_ed25519` changes the passphrase on an existing key. Supports `-N new_pass` and `-P old_pass` for non-interactive use. This is a common security operation not covered by creation or deletion.
+- **Comment change**: `ssh-keygen -c -f ~/.ssh/id_ed25519` changes the comment on a key pair (both private and public). Less critical but users expect it.
+- **Key format conversion**: `ssh-keygen -i -m PEM` imports from PEM format, `ssh-keygen -e -m PEM` exports to PEM format. Needed when users have legacy keys from PuTTY (PPK), OpenSSL, or older OpenSSH versions.
+- **RSA key size**: the plan lists `rsa 4096` but `rsa 3072` is also common and `rsa 2048` still exists. Doctor should flag `rsa 2048` as weak.
 
 ### 3. Remove keys safely
 
@@ -137,6 +151,12 @@ Host github-work
 
 Important: OpenSSH allows multiple `IdentityFile` entries and tries them in sequence; unlike many other config directives, multiple `IdentityFile` values add to the list. `IdentitiesOnly` is needed when you want to stop the agent from offering extra keys. ([OpenBSD Manual Pages][9])
 
+Edge cases:
+
+- **IdentityFile accumulation semantics**: `IdentityFile` is the major exception to first-match-wins. Multiple values accumulate across Host blocks, including from `Host *` defaults. Config resolution must model this additive behavior separately from all other directives.
+- **IdentitiesOnly + agent interaction**: when `IdentitiesOnly yes`, only configured `IdentityFile`/`CertificateFile` are offered, even if the agent holds more keys. When `no` (default), agent identities are offered first, then `IdentityFile` paths. The doctor must understand this to diagnose "wrong key offered" problems.
+- **MaxAuthTries exhaustion**: `sshd_config` defaults `MaxAuthTries` to 6. Each key offered counts as one attempt. If the agent has many keys, they can exhaust `MaxAuthTries` before the correct key is tried. Doctor should warn when agent key count approaches typical `MaxAuthTries` values.
+
 ### 6. SSH config editor
 
 This is a bigger problem than it looks.
@@ -165,7 +185,18 @@ CanonicalizeHostname
 
 OpenSSH config resolution is order-sensitive: command line first, then user config, then system config; first obtained value wins, and more specific host blocks should usually appear before defaults. ([OpenBSD Manual Pages][9])
 
-Big warning: `ssh2-config-rs` is useful, but it admits missing `Match` pattern and token support, while OpenSSH supports `Include`, tokens, and environment expansion in several directives. ([Docs.rs][2])
+Big warning: `ssh2-config-rs` is useful, but it admits missing `Match` pattern and token support, while OpenSSH supports `Include`, tokens, and environment expansion in several directives. ([GitHub][2])
+
+Edge cases:
+
+- **Token expansion**: OpenSSH expands `%%`, `%C`, `%d`, `%H`, `%h`, `%I`, `%i`, `%j`, `%K`, `%k`, `%L`, `%l`, `%n`, `%p`, `%r`, `%T`, `%t`, `%u` in `CertificateFile`, `ControlPath`, `IdentityAgent`, `IdentityFile`, `Include`, `KnownHostsCommand`, `LocalForward`, `RemoteCommand`, `RemoteForward`, `RevokedHostKeys`, `UserKnownHostsFile`. Config values like `IdentityFile ~/.ssh/keys/%h/%u` will not resolve correctly without token substitution. This is critical for key inventory scanning.
+- **Environment variable expansion**: OpenSSH expands `${ENV_VAR}` in the same directives as tokens, plus socket paths in `LocalForward`/`RemoteForward`. Config lines like `IdentityFile ${WORK_KEY_PATH}/id_rsa` must be resolved at runtime.
+- **Recursive Include chains**: `Include` accepts glob(7) patterns, tilde, tokens, and env vars. Includes can nest (included files can contain their own `Include`). The config editor must follow Include chains, resolve paths relative to the including file's directory, and detect cycles.
+- **`Match exec`**: the `exec` keyword in `Match` blocks runs arbitrary commands under the user's shell. Zero exit = true. This makes config resolution dynamic (e.g., network-location detection). The tool cannot fully resolve config without evaluating or simulating these.
+- **`CanonicalizeHostname` double-parsing**: when enabled, OpenSSH re-parses config with the canonical hostname and re-evaluates Host/Match blocks. The tool must model this two-pass resolution to determine which blocks apply.
+- **`=` separator syntax**: both `Host foo` and `Host=foo` are valid. A text-preserving editor must handle and preserve both.
+- **Whitespace preservation**: configs use mixed tabs, spaces, and indentation depths. The editor must preserve the original style on every write to avoid noisy diffs.
+- **ProxyCommand vs ProxyJump conflict**: OpenSSH documents that "whichever is specified first will prevent later instances of the other from taking effect." Having both is a common mistake. Doctor must detect this conflict.
 
 So for editing, I would **not** rely only on a config parser. Use:
 
@@ -220,6 +251,11 @@ ssh-keyscan -H host    collect host key
 
 Also support `UpdateHostKeys`, because OpenSSH can learn alternate host keys after authentication and update `UserKnownHostsFile`, which matters for host key rotation. ([OpenBSD Manual Pages][9])
 
+Edge cases:
+
+- **`@cert-authority` and `@revoked` markers**: known_hosts supports `@cert-authority` entries that trust any host certificate signed by a given CA, and `@revoked` entries that explicitly mark a host key as revoked. These have different semantics than regular entries and must be parsed/handled separately.
+- **`VerifyHostKeyDNS` / SSHFP records**: OpenSSH can verify host keys against DNS SSHFP records (`ssh-keygen -r hostname` generates them). The known_hosts manager should be aware of this verification path, even if it doesn't manage DNS directly.
+
 ### 8. Authorized keys manager
 
 This is separate from `known_hosts`.
@@ -245,6 +281,11 @@ options keytype base64-key comment
 The options field can restrict keys, including `cert-authority`, forwarding controls, command restrictions, etc. ([OpenBSD Manual Pages][13])
 
 You should support adding/removing public keys by fingerprint, not only by exact line string.
+
+Edge cases:
+
+- **Key options**: the options field supports `command="..."`, `from="pattern-list"`, `no-pty`, `no-port-forwarding`, `no-X11-forwarding`, `no-agent-forwarding`, `permit-open="host:port"`, `environment="NAME=value"`, `tunnel="n"`. When editing authorized_keys, the tool must parse and preserve these options rather than treating the line as opaque.
+- **`RevokedKeys` in sshd_config**: server-side revocation file (text or KRL format) that refuses listed public keys. The remote doctor must check this when diagnosing "valid key rejected" scenarios.
 
 ### 9. SSH doctor: local checks
 
@@ -279,6 +320,13 @@ agent has expected identities
 
 OpenSSH recommends `~/.ssh` be accessible only by the user, requires user config not be writable by others, and ignores private keys if they are accessible by others. ([OpenBSD Manual Pages][14])
 
+Edge cases:
+
+- **StrictModes full check chain**: `sshd StrictModes yes` (default) checks the entire ownership/permission chain: home directory must not be group/world writable, `~/.ssh` must be 700, `~/.ssh/authorized_keys` must be 600/644 and owned by the user. The doctor must check all of these, not just `~/.ssh` and key files.
+- **SELinux/AppArmor contexts**: on RHEL/CentOS/Fedora, incorrect SELinux security contexts on `~/.ssh` files cause authentication failures even when Unix permissions are correct. Doctor should run `ls -laZ ~/.ssh/` or `restorecon -Rvn ~/.ssh/` to check.
+- **NFS home directories**: when home is on NFS with root-squashing, `sshd` (running as root) may not be able to read `~/.ssh/authorized_keys`. The doctor should detect NFS mounts and warn about this.
+- **MaxAuthTries exhaustion from agent**: if the agent holds more keys than `MaxAuthTries` (default 6), the correct key may never be tried. Doctor should count agent keys and warn if the count approaches or exceeds common `MaxAuthTries` values.
+
 ### 10. SSH doctor: remote checks
 
 Add:
@@ -308,6 +356,15 @@ remote logs hint
 
 `sshd_config` defaults `PubkeyAuthentication` to yes, supports `AuthorizedKeysFile`, and `StrictModes` checks ownership/modes of user files and home directory before accepting login. ([OpenBSD Manual Pages][15])
 
+Edge cases:
+
+- **`AuthorizedKeysCommand`**: many enterprise setups use `AuthorizedKeysCommand` + `AuthorizedKeysCommandUser` to fetch keys from LDAP, Vault, or HTTP services. This is tried after `AuthorizedKeysFile`. Remote doctor must check this; otherwise it will report "key not in authorized_keys" without understanding why auth still works.
+- **`AuthorizedPrincipalsCommand`**: certificate-based environments often use `AuthorizedPrincipalsCommand` to dynamically generate the principal list (from LDAP, etc.) instead of a static `AuthorizedPrincipalsFile`. Remote doctor cannot diagnose cert auth failures without checking this.
+- **`Keyboard-Interactive` authentication**: `KbdInteractiveAuthentication` defaults to yes. It is used for 2FA/TOTP, PAM challenge-response, and BSD Auth. It is the default fallback after `publickey` and before `password`. Remote doctor must understand it as a distinct auth method.
+- **GSSAPI/Kerberos authentication**: `GSSAPIAuthentication` is supported by both client and server. In enterprise Kerberos environments, it may be the primary auth method. Remote doctor should detect and report on GSSAPI configuration.
+- **Non-standard SSH ports**: the doctor must support `ssh -p port` and config-resolved ports, not assume port 22.
+- **Hosts behind jump hosts**: remote checks for hosts that require `ProxyJump` must go through the jump host, not attempt direct connection.
+
 ### 11. Agent manager
 
 Support:
@@ -335,6 +392,12 @@ ssh-add -h jump>target
 ```
 
 OpenSSH supports destination constraints since 8.9, but both the remote client/server path must cooperate when forwarding. ([OpenBSD Manual Pages][11])
+
+Edge cases:
+
+- **`SSH_ASKPASS`**: when SSH needs a passphrase and has no terminal, it invokes the program at `$SSH_ASKPASS`. `SSH_ASKPASS_REQUIRE` (never/prefer/force) controls this. For a TUI app, this is the correct mechanism for passphrase prompts without needing a PTY. The architecture should use `SSH_ASKPASS` pointed at the app's own passphrase handler instead of relying on `portable-pty`.
+- **macOS Keychain integration**: `ssh-add --apple-use-keychain` and `--apple-load-keychain` store/retrieve passphrases in the macOS Keychain. `UseKeychain yes` in config enables automatic behavior. Agent manager must detect and respect this.
+- **ControlMaster session management**: active multiplexed sessions (via `ControlPath` sockets) should be listable, inspectable (`ssh -O check`), and cleanable (`ssh -O exit`). Stale control sockets (from crashed SSH processes) are a common problem.
 
 ### 12. Install key to remote
 
@@ -413,23 +476,61 @@ Git Bash / WSL path confusion
 
 `ssh2-config-rs` even exposes `UseKeychain` as a macOS-specific attribute. ([Docs.rs][2])
 
+### 16. Cross-cutting: authentication methods
+
+Do not assume pubkey is the only auth method.
+
+The full OpenSSH auth method stack is:
+
+```txt
+1. publickey           (keys, certs, FIDO, PKCS#11)  ← plan covers this well
+2. gssapi-with-mic     (Kerberos)                     ← not mentioned
+3. hostbased           (host keys + .rhosts/.shosts)  ← not mentioned
+4. keyboard-interactive (PAM, 2FA/TOTP, challenge)    ← not mentioned
+5. password            (cleartext over encrypted channel)
+```
+
+The doctor must understand all methods to diagnose authentication failures. The `PreferredAuthentications` config directive controls which methods are tried and in what order.
+
+### 17. Cross-cutting: port forwarding management
+
+Port forwarding is a day-to-day SSH task.
+
+Support:
+
+```txt
+list active forwards on a ControlMaster session (ssh -O forward -S path)
+cancel a forward (ssh -O cancel -S path)
+test forward connectivity (connect to local port, check it reaches remote)
+parse LocalForward / RemoteForward / DynamicForward from config
+detect conflicting local ports (two forwards on same local port)
+```
+
+OpenSSH escape sequence `~#` lists forwarded connections in an active session. `ssh -O forward` and `ssh -O cancel` manage forwards on multiplexed connections. ([OpenBSD Manual Pages][14])
+
 ## Final coverage checklist
 
 Your SSH manager should have commands like this:
 
 ```bash
 ssh-manager key list
+ssh-manager key list --verbose           # includes format detection, PKCS#11, agent-only keys
 ssh-manager key new --type ed25519 --name github-work --comment "hamza@github-work"
 ssh-manager key pub ~/.ssh/id_ed25519
 ssh-manager key rename old new
 ssh-manager key delete github-work --remove-agent --remove-config
 ssh-manager key chmod-fix
+ssh-manager key change-passphrase ~/.ssh/id_ed25519
+ssh-manager key change-comment ~/.ssh/id_ed25519 --comment "new-comment"
+ssh-manager key convert ~/.ssh/id_rsa_pem --from PEM --to OpenSSH
 
 ssh-manager config list
 ssh-manager config get github-work
 ssh-manager config add-host github-work --host github.com --user git --key ~/.ssh/id_ed25519_work
 ssh-manager config remove-host github-work
-ssh-manager config doctor
+ssh-manager config doctor                 # checks ProxyCommand/ProxyJump conflicts, Include chains,
+                                           # token usage, IdentityFile accumulation, whitespace issues
+ssh-manager config resolve github-work    # shows fully resolved config including Includes and tokens
 
 ssh-manager known-hosts list
 ssh-manager known-hosts find github.com
@@ -446,11 +547,16 @@ ssh-manager agent list
 ssh-manager agent add ~/.ssh/id_ed25519 --lifetime 8h --confirm
 ssh-manager agent remove ~/.ssh/id_ed25519
 ssh-manager agent clear
+ssh-manager agent sessions                 # list active ControlMaster sessions
+ssh-manager agent session-cleanup          # clean stale control sockets
 
 ssh-manager doctor
 ssh-manager doctor host github-work
 ssh-manager doctor remote user@host
 ssh-manager test github-work
+
+ssh-manager forward list                   # list active port forwards
+ssh-manager forward cancel --local 8080
 ```
 
 ## The important architectural decision
@@ -478,8 +584,54 @@ portable-pty
 
 The biggest missing piece in the Rust ecosystem is a **complete OpenSSH-compatible, comment-preserving, Include/Match/token-aware config editor**. I would build that yourself as a small AST/text-patcher instead of trusting a parser to rewrite the whole config.
 
+## Runtime model: go async
+
+Since toride already uses an async event loop with ratatui, the SSH subsystem should be async throughout to avoid bridging sync/async boundaries:
+
+```txt
+ssh-agent-lib          async agent client (not ssh-agent-client-rs which is sync)
+russh                  async SSH client/server (Tokio-based)
+tokio::process::Command  for calling ssh, ssh-keygen, ssh-add, ssh-keyscan
+ssh2-config-rs         sync but fast enough to call via spawn_blocking
+ssh-key                sync but fast enough to call via spawn_blocking
+portable-pty           sync; wrap in spawn_blocking for interactive flows
+```
+
+## Edge case summary by severity
+
+### Critical (will break things without handling)
+
+| Edge case | Where | Why it breaks |
+|---|---|---|
+| Token expansion (`%h`, `%d`, `%u`, etc.) | Config editor, key inventory | Config values like `IdentityFile ~/.ssh/keys/%h/%u` resolve to wrong paths |
+| Environment variable expansion (`${VAR}`) | Config editor, key inventory | `IdentityFile ${WORK_KEY_PATH}/id_rsa` produces broken paths |
+| Recursive `Include` chains | Config editor | Cannot build complete config picture; infinite loops without cycle detection |
+| `IdentityFile` accumulation | Multi-key, config resolution | Additive semantics (not first-match-wins) — wrong keys offered if modeled incorrectly |
+
+### Important (common real-world scenarios)
+
+| Edge case | Where | Impact |
+|---|---|---|
+| Key format detection (PEM/PKCS#8/OpenSSH) | Key inventory | Legacy keys appear missing |
+| PKCS#11 hardware token keys | Key inventory | Incomplete key list for token users |
+| `ssh-keygen -p` passphrase change | Key management | Common security operation missing |
+| `Match exec` dynamic config | Config editor | Dynamic config blocks not evaluated |
+| `CanonicalizeHostname` re-parsing | Config resolution | Wrong blocks matched for canonical hosts |
+| `=` separator and whitespace preservation | Config editor | Config corruption on write |
+| `ProxyCommand` vs `ProxyJump` conflict | Doctor | Common misconfig not detected |
+| `IdentitiesOnly` + agent interaction | Doctor, multi-key | Cannot diagnose "wrong key offered" |
+| `MaxAuthTries` exhaustion | Doctor | Agent with many keys fails silently |
+| `AuthorizedKeysCommand` | Remote doctor | Reports key missing when external fetcher provides it |
+| `AuthorizedPrincipalsCommand` | Remote doctor, certs | Cannot diagnose cert auth failures |
+| `Keyboard-Interactive` (2FA/TOTP) | Remote doctor | Cannot diagnose auth fallback behavior |
+| `SSH_ASKPASS` | Agent, passphrase input | Wrong mechanism for TUI passphrase prompts |
+| ControlMaster session cleanup | Agent | Stale sockets not managed |
+| Port forwarding management | Cross-cutting | No listing/cancelling active forwards |
+| SELinux/AppArmor contexts | Doctor | False-negative permission checks on RHEL/Fedora |
+| NFS home directories | Doctor | Root-squash causes false-negative auth diagnosis |
+
 [1]: https://docs.rs/ssh-key/ "ssh_key - Rust"
-[2]: https://docs.rs/crate/ssh2-config-rs/latest "ssh2-config-rs 0.7.2 - Docs.rs"
+[2]: https://github.com/pRizz/ssh2-config-rs "pRizz/ssh2-config-rs - GitHub"
 [3]: https://docs.rs/ssh2-config "ssh2_config - Rust"
 [4]: https://docs.rs/crate/openssh/latest "openssh 0.11.6 - Docs.rs"
 [5]: https://docs.rs/russh/latest/russh/keys/index.html "russh::keys - Rust"
