@@ -630,6 +630,277 @@ portable-pty           sync; wrap in spawn_blocking for interactive flows
 | SELinux/AppArmor contexts | Doctor | False-negative permission checks on RHEL/Fedora |
 | NFS home directories | Doctor | Root-squash causes false-negative auth diagnosis |
 
+---
+
+# Implementation Plan: `toride-ssh` Wrapper Crate
+
+## Context
+
+Toride is an early-stage ratatui TUI app for SSH management. The sections above identify 17 modules of SSH functionality that no single Rust crate covers. We need a separate library crate that wraps `ssh-key`, `ssh2-config-rs`, `ssh-agent-lib`, `russh`, and OpenSSH CLI tools behind a unified async API that the TUI binary can consume.
+
+## Structural change: Cargo workspace
+
+Convert the single-crate project into a workspace:
+
+```
+toride/                          # workspace root (Cargo.toml becomes workspace manifest)
+  crates/
+    toride-ssh/                  # NEW: the SSH wrapper crate
+      Cargo.toml
+      src/
+        lib.rs
+        types.rs
+        paths.rs
+        util.rs
+        key/
+          mod.rs
+          inventory.rs
+          generate.rs
+          repair.rs
+        config/
+          mod.rs
+          ast.rs
+          editor.rs
+          parse.rs
+          resolve.rs
+          managed.rs
+          directives.rs
+        known_hosts/
+          mod.rs
+          parse.rs
+          scan.rs
+        authorized_keys/
+          mod.rs
+          parse.rs
+          options.rs
+        agent/
+          mod.rs
+          client.rs
+          session.rs
+        doctor/
+          mod.rs
+          check.rs
+          registry.rs
+          local.rs
+          remote.rs
+        certificate/
+          mod.rs
+          ca.rs
+          krl.rs
+        forward/
+          mod.rs
+          control.rs
+        cli/                    # PRIVATE module (not re-exported)
+          mod.rs
+          command.rs
+          output.rs
+      tests/
+        fixtures/
+        integration/
+    toride/                     # existing binary+lib (moves from src/ to crates/toride/)
+      Cargo.toml
+      src/
+        lib.rs
+        main.rs
+        action.rs
+        app.rs
+        ui/
+          ...
+```
+
+The root `Cargo.toml` becomes a `[workspace]` manifest with `members = ["crates/*"]` and `[workspace.dependencies]` for shared versions (tokio, dirs, serde, thiserror, tracing).
+
+## Public API surface
+
+One entry struct, module accessor pattern:
+
+```rust
+let ssh = SshManager::new()?;          // resolves ~/.ssh
+let keys = ssh.keys().list().await?;    // KeyService borrows &SshManager
+let cfg = ssh.config().load().await?;   // ConfigService
+ssh.doctor().run_local_checks().await?; // DoctorService
+```
+
+`SshManager` is `Clone` (Arc internally), cheap to pass around. Testable via `SshManager::with_cli_runner(mock)`.
+
+## Core types (types.rs)
+
+Cross-cutting domain types shared across modules:
+
+- `KeyType` enum (Ed25519, Rsa, EcdsaP256/384/521, Dsa, SkEd25519, SkEcdsaP256)
+- `Fingerprint` (SHA-256 base64 + key metadata)
+- `SshKey` (path, type, fingerprint, comment, encrypted, source, permissions)
+- `KeySource` enum (Filesystem, Agent, Pkcs11)
+- `ResolvedHostConfig` (fully resolved config for a host -- includes token/env expansion, Include chains)
+- `KnownHostEntry`, `AuthorizedKeyEntry`, `KeyOption`
+- `AgentIdentity`, `CertificateInfo`, `ForwardSpec`
+- `Diagnostic` (id, severity, message, hint, module)
+- `Severity` enum (Ok, Warning, Error, Info)
+- Request/response types: `KeyCreateParams`, `KeyDeleteParams`
+
+All types derive `serde::Serialize + serde::Deserialize` for TUI state persistence.
+
+## Error model (lib.rs)
+
+Single `thiserror` Error enum with variants per subsystem:
+
+```
+KeyNotFound, KeyExists, KeyParseFailed, KeyGenerationFailed, PassphraseRequired, UnsupportedKeyFormat
+ConfigParseFailed, ConfigWriteFailed, HostNotFound, DuplicateHost, ConfigIncludeCycle, TokenExpansionFailed
+KnownHostsParseFailed, HostNotKnown
+AuthorizedKeysParseFailed, AuthorizedKeysWriteFailed
+AgentNotAvailable, AgentOperationFailed, AgentKeyNotFound
+CheckFailed
+CertificateParseFailed, CertificateExpired, CertificateNotYetValid
+ForwardFailed, ForwardNotFound
+ToolNotFound, CommandFailed, CommandParseFailed
+Io(From), PermissionDenied
+```
+
+`type Result<T> = std::result::Result<T, Error>;`
+
+## Async boundary
+
+| Module | Mechanism | Why |
+|---|---|---|
+| agent::client | Pure async | ssh-agent-lib is Tokio-native |
+| cli::command | Pure async | tokio::process::Command |
+| forward::control | Pure async | tokio::process::Command |
+| doctor::remote | Pure async | russh or tokio::process::Command |
+| config::editor | Pure async | in-memory string ops, fast enough |
+| key parsing/generation | spawn_blocking | ssh-key crate is sync CPU-bound |
+| config parsing | spawn_blocking | ssh2-config-rs is sync |
+| known_hosts parsing | spawn_blocking | ssh-key known_hosts parser is sync |
+| authorized_keys parsing | spawn_blocking | ssh-key authorized_keys parser is sync |
+| certificate inspection | spawn_blocking | ssh-key Certificate is sync |
+
+Pattern: read file async with `tokio::fs`, parse in `spawn_blocking`.
+
+## Dependencies
+
+| Crate | Module(s) | Purpose |
+|---|---|---|
+| `ssh-key` (ed25519,rsa,p256,crypto) | key, known_hosts, authorized_keys, certificate | Parse/generate keys, fingerprints, certs |
+| `ssh2-config-rs` | config::parse | Parse OpenSSH config (read only) |
+| `ssh-agent-lib` | agent::client | Async agent client (feature `agent`) |
+| `russh` | doctor::remote | Native async SSH client (feature `native-client`) |
+| `tokio` (process,fs,rt) | all | Async runtime + CLI tool execution |
+| `thiserror` | lib.rs | Error types |
+| `serde` + `serde_json` | types | Serialization |
+| `tracing` | all | Structured logging |
+| `dirs` | paths | Home directory resolution |
+| `which` | cli | Detect CLI tools in PATH |
+| `chrono` (serde) | certificate | Certificate timestamps |
+| `async-trait` | cli | CliRunner trait |
+| `tempfile` (dev) | tests | Test fixtures |
+
+**Not included**: `openssh` crate (Unix-only, adds no value over `tokio::process::Command`), `ssh2`/libssh2 (russh is pure Rust), `portable-pty` (SSH_ASKPASS is the right mechanism for TUI passphrase input).
+
+## Feature flags
+
+```toml
+default = ["ed25519", "rsa", "ecdsa", "agent", "doctor"]
+ed25519 = ["ssh-key/ed25519"]
+rsa = ["ssh-key/rsa"]
+ecdsa = ["ssh-key/p256"]
+ecdsa-full = ["ssh-key/p256", "ssh-key/p384", "ssh-key/p521"]
+dsa = ["ssh-key/dsa"]
+crypto = ["ssh-key/crypto"]
+fido = []                              # enables FIDO code paths (ssh-keygen CLI)
+native-client = ["dep:russh"]          # russh for remote doctor
+agent = ["dep:ssh-agent-lib"]
+doctor = []
+certificate = []
+macos-keychain = []
+```
+
+## CLI tool abstraction (cli/ -- private module)
+
+`CliRunner` trait with `DefaultCliRunner` (uses `tokio::process::Command`) and mock for tests:
+
+```rust
+#[async_trait]
+pub trait CliRunner: Send + Sync {
+    async fn run(&self, cmd: CommandSpec) -> CliResult;
+    async fn which(&self, tool: &str) -> bool;
+}
+```
+
+Typed command builders: `SshCommand`, `SshKeygenCommand`, `SshAddCommand`, `SshKeyscanCommand` -- each returns `CommandSpec` structs that `CliRunner::run()` executes.
+
+## Config editor architecture (the hardest module)
+
+The custom text-preserving editor has three layers:
+
+1. **ast.rs** -- Lossless parse tree (`ConfigNode` enum) preserving whitespace, = separators, comments, and blank lines. Every byte of the original file is representable.
+
+2. **editor.rs** -- Mutation operations on the AST: `add_host()`, `remove_host()`, `add_directive()`, `remove_directive()`. Managed blocks (`# >>> toride name` / `# <<< toride name`) are atomic units.
+
+3. **resolve.rs** -- Full config resolution that `ssh2-config-rs` cannot do:
+   - Follow `Include` chains with cycle detection
+   - Expand `%` tokens (`%h`, `%d`, `%u`, `%p`, etc.)
+   - Expand `${ENV_VAR}` references
+   - Apply first-match-wins for most directives, accumulation for `IdentityFile`/`LocalForward`/`RemoteForward`/`DynamicForward`
+   - Handle `CanonicalizeHostname` double-parse
+
+## Implementation order
+
+### Phase 1: Scaffold
+1. Create workspace root `Cargo.toml` with `[workspace]` and `[workspace.dependencies]`
+2. Move existing crate to `crates/toride/` (update paths in Cargo.toml)
+3. Create `crates/toride-ssh/Cargo.toml` with all deps
+4. Create `src/lib.rs` with Error, Result, SshManager skeleton, module declarations
+5. Create `src/types.rs` with all domain types
+6. Create `src/paths.rs` (SshPaths: ~/.ssh resolution)
+7. Create `src/cli/mod.rs`, `cli/command.rs`, `cli/output.rs` (CliRunner trait + DefaultCliRunner)
+8. Verify workspace builds: `cargo check --workspace`
+
+### Phase 2: Key module
+1. `key/inventory.rs` -- scan ~/.ssh/id_*, parse with ssh-key via spawn_blocking, detect format
+2. `key/mod.rs` -- `list()`, `scan()` public API
+3. `key/generate.rs` -- ssh-key crate generation + ssh-keygen CLI fallback for FIDO
+4. `key/repair.rs` -- derive .pub from private key
+5. Integration tests with test fixture keys
+
+### Phase 3: Config module
+1. `config/ast.rs` -- ConfigNode lossless parse tree
+2. `config/parse.rs` -- wrap ssh2-config-rs via spawn_blocking
+3. `config/editor.rs` -- mutation on AST
+4. `config/managed.rs` -- managed block markers
+5. `config/resolve.rs` -- Include chains, token/env expansion
+6. `config/directives.rs` -- typed directive accessors
+7. `config/mod.rs` -- public API tying it together
+8. Integration tests with fixture config files
+
+### Phase 4: Agent + Known Hosts + Authorized Keys
+1. `agent/client.rs` -- wrap ssh-agent-lib
+2. `agent/session.rs` -- ControlMaster session management
+3. `agent/mod.rs` -- public API
+4. `known_hosts/parse.rs` + `scan.rs` + `mod.rs`
+5. `authorized_keys/parse.rs` + `options.rs` + `mod.rs`
+
+### Phase 5: Doctor + Certificate + Forward
+1. `doctor/check.rs` -- Check trait, Diagnostic
+2. `doctor/registry.rs` -- CheckRegistry
+3. `doctor/local.rs` -- all local checks
+4. `doctor/remote.rs` -- remote checks (russh or CLI)
+5. `certificate/ca.rs` + `krl.rs` + `mod.rs`
+6. `forward/control.rs` + `mod.rs`
+
+### Phase 6: TUI integration
+1. Add `toride-ssh` dep to toride binary crate
+2. Add `SshManager` to `App` struct
+3. Wire SSH actions into the event loop
+
+## Verification
+
+1. `cargo check --workspace` after each phase
+2. `cargo test -p toride-ssh` -- unit + integration tests per module
+3. `cargo clippy --workspace -- -D warnings`
+4. Test fixture files for config parsing (include chains, managed blocks, = separators, token usage)
+5. Mock `CliRunner` for all tests that invoke CLI tools
+6. Manual: `cargo run -p toride` should still show the welcome screen after workspace conversion
+
 [1]: https://docs.rs/ssh-key/ "ssh_key - Rust"
 [2]: https://github.com/pRizz/ssh2-config-rs "pRizz/ssh2-config-rs - GitHub"
 [3]: https://docs.rs/ssh2-config "ssh2_config - Rust"
