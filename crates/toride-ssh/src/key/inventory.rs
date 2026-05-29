@@ -164,7 +164,7 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
 
     tokio::task::spawn_blocking(move || {
         let mut keys = Vec::new();
-        let mut seen_names = std::collections::HashSet::new();
+        let mut seen_names = std::collections::HashSet::<std::ffi::OsString>::new();
 
         // Read directory entries
         let entries = match std::fs::read_dir(&ssh_dir) {
@@ -200,14 +200,15 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
             }
 
             // Deduplicate by base name
-            if seen_names.insert(name.into_owned()) {
+            if seen_names.insert(file_name.clone()) {
                 private_key_paths.push(entry.path());
             }
         }
 
         // Ensure all default key names are checked even if not in directory listing
         for &default_name in default_names {
-            if seen_names.insert(default_name.to_owned()) {
+            let default_os: std::ffi::OsString = default_name.into();
+            if seen_names.insert(default_os) {
                 let default_path = ssh_dir.join(default_name);
                 if default_path.is_file() {
                     private_key_paths.push(default_path);

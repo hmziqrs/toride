@@ -120,9 +120,13 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
             continue;
         };
 
-        let fingerprint = encode_key_data(key_data)
-            .ok()
-            .map(|bytes| compute_sha256_fingerprint(&bytes, key_type));
+        let fingerprint = match encode_key_data(key_data) {
+            Ok(bytes) => Some(compute_sha256_fingerprint(&bytes, key_type)),
+            Err(e) => {
+                tracing::warn!("failed to encode agent key data: {e}");
+                None
+            }
+        };
 
         keys.push(SshKey {
             path: std::path::PathBuf::from(if identity.comment.is_empty() {
@@ -152,12 +156,16 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
 #[cfg(feature = "agent")]
 fn encode_key_data(
     key_data: &ssh_agent_lib::ssh_key::public::KeyData,
-) -> std::result::Result<Vec<u8>, ()> {
+) -> Result<Vec<u8>> {
     use ssh_agent_lib::ssh_encoding::Encode;
 
-    let len = key_data.encoded_len().map_err(|_| ())?;
+    let len = key_data
+        .encoded_len()
+        .map_err(|e| Error::AgentOperationFailed(format!("encoded_len failed: {e}")))?;
     let mut buf = Vec::with_capacity(len);
-    key_data.encode(&mut buf).map_err(|_| ())?;
+    key_data
+        .encode(&mut buf)
+        .map_err(|e| Error::AgentOperationFailed(format!("encode failed: {e}")))?;
     Ok(buf)
 }
 

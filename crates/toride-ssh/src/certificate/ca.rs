@@ -106,16 +106,7 @@ fn cert_to_info(cert: &ssh_key::certificate::Certificate) -> CertificateInfo {
 
 /// Mutable state for the `ssh-keygen -L` line-by-line parser.
 struct KeygenParserState {
-    serial: u64,
-    key_type: String,
-    key_id: String,
-    valid_principals: Vec<String>,
-    valid_after: u64,
-    valid_before: u64,
-    critical_options: Vec<(String, String)>,
-    extensions: Vec<String>,
-    ca_fingerprint: Option<String>,
-    is_host: bool,
+    info: CertificateInfo,
     in_principals: bool,
     in_extensions: bool,
     in_critical: bool,
@@ -124,16 +115,18 @@ struct KeygenParserState {
 impl KeygenParserState {
     fn new() -> Self {
         Self {
-            serial: 0,
-            key_type: String::new(),
-            key_id: String::new(),
-            valid_principals: Vec::new(),
-            valid_after: 0,
-            valid_before: 0,
-            critical_options: Vec::new(),
-            extensions: Vec::new(),
-            ca_fingerprint: None,
-            is_host: false,
+            info: CertificateInfo {
+                serial: 0,
+                key_type: String::new(),
+                key_id: String::new(),
+                valid_principals: Vec::new(),
+                valid_after: 0,
+                valid_before: 0,
+                critical_options: Vec::new(),
+                extensions: Vec::new(),
+                ca_fingerprint: None,
+                is_host: false,
+            },
             in_principals: false,
             in_extensions: false,
             in_critical: false,
@@ -150,7 +143,7 @@ impl KeygenParserState {
             {
                 self.in_principals = false;
             } else {
-                self.valid_principals.push(trimmed.to_owned());
+                self.info.valid_principals.push(trimmed.to_owned());
                 return Ok(());
             }
         }
@@ -159,7 +152,7 @@ impl KeygenParserState {
             if trimmed.is_empty() || trimmed.starts_with("Critical") {
                 self.in_extensions = false;
             } else {
-                self.extensions.push(trimmed.to_owned());
+                self.info.extensions.push(trimmed.to_owned());
                 return Ok(());
             }
         }
@@ -173,9 +166,9 @@ impl KeygenParserState {
             } else if !trimmed.starts_with('(') {
                 // Parse "name value" or just "name"
                 if let Some((k, v)) = trimmed.split_once(' ') {
-                    self.critical_options.push((k.to_owned(), v.to_owned()));
+                    self.info.critical_options.push((k.to_owned(), v.to_owned()));
                 } else {
-                    self.critical_options.push((trimmed.to_owned(), String::new()));
+                    self.info.critical_options.push((trimmed.to_owned(), String::new()));
                 }
                 return Ok(());
             }
@@ -184,22 +177,22 @@ impl KeygenParserState {
         if let Some(rest) = trimmed.strip_prefix("Type:") {
             let rest = rest.trim();
             if rest.contains("host certificate") {
-                self.is_host = true;
+                self.info.is_host = true;
             }
             // Extract key type, e.g. "ssh-ed25519-cert-v01@openssh.com ..."
             if let Some(sp) = rest.find(' ') {
-                rest[..sp].clone_into(&mut self.key_type);
+                rest[..sp].clone_into(&mut self.info.key_type);
             } else {
-                rest.clone_into(&mut self.key_type);
+                rest.clone_into(&mut self.info.key_type);
             }
         } else if let Some(rest) = trimmed.strip_prefix("Serial:") {
-            self.serial = rest.trim().parse().map_err(|_| {
+            self.info.serial = rest.trim().parse().map_err(|_| {
                 crate::Error::CertificateParseFailed(format!("invalid serial: {}", rest.trim()))
             })?;
         } else if let Some(rest) = trimmed.strip_prefix("Key ID:") {
             rest.trim()
                 .trim_matches('"')
-                .clone_into(&mut self.key_id);
+                .clone_into(&mut self.info.key_id);
         } else if let Some(rest) = trimmed.strip_prefix("Valid:") {
             // Parse "from YYYY-MM-DDTHH:MM:SS to YYYY-MM-DDTHH:MM:SS"
             // Also handle: "forever" for unbounded validity.
@@ -207,8 +200,8 @@ impl KeygenParserState {
             if let Some((after_str, before_str)) =
                 rest.strip_prefix("from ").and_then(|s| s.split_once(" to "))
             {
-                self.valid_after = datetime_str_to_unix(after_str.trim())?;
-                self.valid_before = if before_str.trim().eq_ignore_ascii_case("forever") {
+                self.info.valid_after = datetime_str_to_unix(after_str.trim())?;
+                self.info.valid_before = if before_str.trim().eq_ignore_ascii_case("forever") {
                     u64::MAX
                 } else {
                     datetime_str_to_unix(before_str.trim())?
@@ -217,7 +210,7 @@ impl KeygenParserState {
         } else if let Some(rest) = trimmed.strip_prefix("Signing CA:") {
             // Look for SHA256:... fingerprint
             if let Some(fp) = rest.split_whitespace().find(|s| s.starts_with("SHA256:")) {
-                self.ca_fingerprint = Some(fp.to_owned());
+                self.info.ca_fingerprint = Some(fp.to_owned());
             }
         } else if trimmed == "Principals:" {
             self.in_principals = true;
@@ -228,6 +221,10 @@ impl KeygenParserState {
         }
 
         Ok(())
+    }
+
+    fn into_info(self) -> CertificateInfo {
+        self.info
     }
 }
 
@@ -262,25 +259,14 @@ fn parse_keygen_output(output: &str, path: &Path) -> Result<CertificateInfo> {
     }
 
     // Sanity check that we parsed something meaningful.
-    if state.key_type.is_empty() {
+    if state.info.key_type.is_empty() {
         return Err(crate::Error::CertificateParseFailed(format!(
             "ssh-keygen -L output for {} did not contain a key type",
             path.display()
         )));
     }
 
-    Ok(CertificateInfo {
-        serial: state.serial,
-        key_type: state.key_type,
-        key_id: state.key_id,
-        valid_principals: state.valid_principals,
-        valid_after: state.valid_after,
-        valid_before: state.valid_before,
-        critical_options: state.critical_options,
-        extensions: state.extensions,
-        ca_fingerprint: state.ca_fingerprint,
-        is_host: state.is_host,
-    })
+    Ok(state.into_info())
 }
 
 /// Convert a datetime string like "2024-01-01T00:00:00" to a Unix timestamp.
@@ -295,26 +281,11 @@ fn datetime_str_to_unix(s: &str) -> Result<u64> {
         return Ok(u64::MAX);
     }
 
-    // ssh-keygen outputs dates in various formats:
-    //   "2024-01-01T00:00:00"  (ISO 8601 with T separator)
-    //   "2024-01-01 00:00:00"  (space separator)
-    //   "20240101T00:00:00"    (compact form, sometimes from -Q -l)
-    // Also try timezone-aware variants.
-    let formats = [
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y%m%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S%:z",
-        "%Y-%m-%dT%H:%M:%S%#z",
-    ];
-
-    for fmt in &formats {
-        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Ok(u64::try_from(dt.and_utc().timestamp().max(0)).unwrap_or(0));
-        }
-    }
-
-    Err(crate::Error::CertificateParseFailed(format!(
-        "unrecognized datetime format: {s}"
-    )))
+    super::parse_ssh_datetime(s)
+        .map(|ts| u64::try_from(ts.max(0)).unwrap_or(0))
+        .ok_or_else(|| {
+            crate::Error::CertificateParseFailed(format!(
+                "unrecognized datetime format: {s}"
+            ))
+        })
 }

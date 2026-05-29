@@ -170,9 +170,10 @@ fn insert_included_nodes(flat: &mut ConfigAst, included: &ConfigAst) {
 
     if let Some(idx) = include_idx {
         flat.nodes.remove(idx);
-        for (i, node) in included.nodes.iter().enumerate() {
-            flat.nodes.insert(idx + i, node.clone());
-        }
+        flat.nodes.splice(
+            idx..idx,
+            included.nodes.iter().cloned(),
+        );
     }
 }
 
@@ -317,6 +318,16 @@ fn resolve_block(
     }
 }
 
+/// Context for SSH token expansion (`%h`, `%d`, `%l`, etc.).
+struct TokenContext<'a> {
+    host: &'a str,
+    home_dir: &'a str,
+    local_hostname: &'a str,
+    remote_user: &'a str,
+    local_user: &'a str,
+    port: &'a str,
+}
+
 /// Expand tokens in resolved values.
 fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     let local_user = whoami();
@@ -330,25 +341,33 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         .map_or_else(|| "22".to_owned(), |p| p.to_string());
     let remote_user = resolved.user.as_deref().unwrap_or(&local_user).to_owned();
 
+    let ctx = TokenContext {
+        host,
+        home_dir: &home_dir,
+        local_hostname: &local_hostname,
+        remote_user: &remote_user,
+        local_user: &local_user,
+        port: &port_str,
+    };
+
     // Expand identity files.
     for id_file in &mut resolved.identity_files {
         *id_file = expand_tilde_and_env(id_file);
-        *id_file = expand_tokens(id_file, host, &home_dir, &local_hostname, &remote_user, &local_user, &port_str);
+        *id_file = expand_tokens(id_file, &ctx);
         *id_file = collapse_double_percent(id_file);
     }
 
     // Expand host_name.
     if let Some(ref mut hn) = resolved.host_name {
-        *hn = expand_tokens(hn, host, &home_dir, &local_hostname, &remote_user, &local_user, &port_str);
+        *hn = expand_tokens(hn, &ctx);
         *hn = collapse_double_percent(hn);
     }
 
     // Expand proxy_jump.
     if let Some(ref mut pj) = resolved.proxy_jump {
-        *pj = expand_tokens(pj, host, &home_dir, &local_hostname, &remote_user, &local_user, &port_str);
+        *pj = expand_tokens(pj, &ctx);
         *pj = collapse_double_percent(pj);
     }
-
 }
 
 /// Expand SSH tokens (%d, %h, %l, %n, %p, %r, %u) in a value string.
@@ -356,15 +375,7 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
 /// Uses character-by-character parsing so that unknown `%X` sequences
 /// (and a trailing bare `%`) are preserved as-is. `%%` is handled
 /// separately by [`collapse_double_percent`].
-fn expand_tokens(
-    s: &str,
-    host: &str,
-    home_dir: &str,
-    local_hostname: &str,
-    remote_user: &str,
-    local_user: &str,
-    port: &str,
-) -> String {
+fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
 
@@ -378,27 +389,27 @@ fn expand_tokens(
                 }
                 Some('d') => {
                     chars.next();
-                    result.push_str(home_dir);
+                    result.push_str(ctx.home_dir);
                 }
                 Some('h' | 'n') => {
                     chars.next();
-                    result.push_str(host);
+                    result.push_str(ctx.host);
                 }
                 Some('l') => {
                     chars.next();
-                    result.push_str(local_hostname);
+                    result.push_str(ctx.local_hostname);
                 }
                 Some('p') => {
                     chars.next();
-                    result.push_str(port);
+                    result.push_str(ctx.port);
                 }
                 Some('r') => {
                     chars.next();
-                    result.push_str(remote_user);
+                    result.push_str(ctx.remote_user);
                 }
                 Some('u') => {
                     chars.next();
-                    result.push_str(local_user);
+                    result.push_str(ctx.local_user);
                 }
                 _ => {
                     // Unknown token or '%' at end of string — keep as-is.

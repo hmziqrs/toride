@@ -49,7 +49,7 @@ impl<'a> ForwardService<'a> {
     }
 
     /// List forwards for a single session identified by its control socket path.
-    pub async fn forward_list_for_session(&self, control_path: &Path) -> Result<Vec<PortForward>> {
+    pub async fn list_forwards(&self, control_path: &Path) -> Result<Vec<PortForward>> {
         control::list_forwards(control_path).await
     }
 

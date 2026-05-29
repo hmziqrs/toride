@@ -104,93 +104,68 @@ fn collapse_double_percent_multiple() {
 
 #[test]
 fn expand_tokens_no_tokens() {
-    assert_eq!(
-        expand_tokens("hello", "host", "/home", "local", "remote", "user", "22"),
-        "hello"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("hello", &ctx), "hello");
 }
 
 #[test]
 fn expand_tokens_host() {
-    assert_eq!(
-        expand_tokens("%h", "example.com", "/home", "local", "remote", "user", "22"),
-        "example.com"
-    );
+    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%h", &ctx), "example.com");
 }
 
 #[test]
 fn expand_tokens_user() {
-    assert_eq!(
-        expand_tokens("%u", "host", "/home", "local", "remote", "alice", "22"),
-        "alice"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22" };
+    assert_eq!(expand_tokens("%u", &ctx), "alice");
 }
 
 #[test]
 fn expand_tokens_port() {
-    assert_eq!(
-        expand_tokens("%p", "host", "/home", "local", "remote", "user", "2222"),
-        "2222"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "2222" };
+    assert_eq!(expand_tokens("%p", &ctx), "2222");
 }
 
 #[test]
 fn expand_tokens_home_dir() {
-    assert_eq!(
-        expand_tokens("%d", "host", "/home/alice", "local", "remote", "user", "22"),
-        "/home/alice"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home/alice", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%d", &ctx), "/home/alice");
 }
 
 #[test]
 fn expand_tokens_local_hostname() {
-    assert_eq!(
-        expand_tokens("%l", "host", "/home", "myhost", "remote", "user", "22"),
-        "myhost"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "myhost", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%l", &ctx), "myhost");
 }
 
 #[test]
 fn expand_tokens_remote_user() {
-    assert_eq!(
-        expand_tokens("%r", "host", "/home", "local", "deploy", "user", "22"),
-        "deploy"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "deploy", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%r", &ctx), "deploy");
 }
 
 #[test]
 fn expand_tokens_unknown_token() {
-    // Unknown %X sequences should be preserved
-    assert_eq!(
-        expand_tokens("%z", "host", "/home", "local", "remote", "user", "22"),
-        "%z"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%z", &ctx), "%z");
 }
 
 #[test]
 fn expand_tokens_trailing_percent() {
-    // Trailing bare % should be preserved
-    assert_eq!(
-        expand_tokens("hello%", "host", "/home", "local", "remote", "user", "22"),
-        "hello%"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("hello%", &ctx), "hello%");
 }
 
 #[test]
 fn expand_tokens_double_percent() {
-    // %% should be preserved (collapse_double_percent handles it later)
-    assert_eq!(
-        expand_tokens("%%", "host", "/home", "local", "remote", "user", "22"),
-        "%%"
-    );
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%%", &ctx), "%%");
 }
 
 #[test]
 fn expand_tokens_mixed() {
-    assert_eq!(
-        expand_tokens("%h:%p", "example.com", "/home", "local", "remote", "user", "22"),
-        "example.com:22"
-    );
+    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22" };
+    assert_eq!(expand_tokens("%h:%p", &ctx), "example.com:22");
 }
 
 #[test]

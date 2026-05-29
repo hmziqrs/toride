@@ -83,14 +83,11 @@ pub async fn add_to_known_hosts(
     known_hosts_path: &Path,
     keys: &[ScannedHostKey],
 ) -> Result<()> {
+    use std::fmt::Write;
     let mut buf = String::new();
     for key in keys {
-        buf.push_str(&key.raw_host);
-        buf.push(' ');
-        buf.push_str(&key.key_type);
-        buf.push(' ');
-        buf.push_str(&key.public_key);
-        buf.push('\n');
+        writeln!(buf, "{} {} {}", key.raw_host, key.key_type, key.public_key)
+            .expect("write to String cannot fail");
     }
     let path: PathBuf = known_hosts_path.to_path_buf();
 

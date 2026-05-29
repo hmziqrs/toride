@@ -170,26 +170,5 @@ fn parse_serials(input: &str, out: &mut Vec<u64>) {
 /// Handles the compact format emitted by `ssh-keygen -Q -l`:
 /// `20240101T000000` as well as the more common ISO-ish formats.
 fn parse_datetime_to_unix(s: &str) -> Option<i64> {
-    let formats = [
-        "%Y%m%dT%H%M%S",    // compact form used by ssh-keygen KRL output
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S%:z",
-        "%Y-%m-%dT%H:%M:%S%#z",
-    ];
-
-    for fmt in &formats {
-        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(dt.and_utc().timestamp());
-        }
-    }
-
-    // Try date-only.
-    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d
-            .and_hms_opt(0, 0, 0)
-            .map(|dt| dt.and_utc().timestamp());
-    }
-
-    None
+    super::parse_ssh_datetime(s)
 }
