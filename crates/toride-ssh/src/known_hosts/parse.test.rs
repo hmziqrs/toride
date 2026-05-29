@@ -298,3 +298,26 @@ fn parse_line_line_number_preserved() {
     let entry = parse_line(line, 999).unwrap();
     assert_eq!(entry.line_number, 999);
 }
+
+// ---------------------------------------------------------------------------
+// Workflow-discovered edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_with_revoked_key_id() {
+    // A key ID that happens to be "REVOKED" should not be skipped
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+}
+
+#[test]
+fn parse_line_with_host_matching_another_entry() {
+    // Two entries for the same host should both parse correctly
+    let line1 = "host ssh-ed25519 AAAAC3...";
+    let line2 = "host ssh-rsa AAAAB3...";
+    let entry1 = parse_line(line1, 1).unwrap();
+    let entry2 = parse_line(line2, 2).unwrap();
+    assert_eq!(entry1.hosts, entry2.hosts);
+    assert_ne!(entry1.key_type, entry2.key_type);
+}

@@ -444,3 +444,28 @@ fn get_directive_with_empty_value() {
     let val = get_directive(&ast, "example", "HostName");
     assert_eq!(val, Some(String::new()));
 }
+
+// ---------------------------------------------------------------------------
+// Workflow-discovered edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn crlf_in_host_pattern_breaks_matching() {
+    let input = "Host example\r\n    User alice\r\n";
+    let ast = crate::config::ast::parse(input);
+    let val = get_directive(&ast, "example", "User");
+    // CRLF \r should be stripped by trim(), so host matching should work
+    assert!(val.is_some(), "CRLF should not break host matching");
+    assert_eq!(val.unwrap(), "alice");
+}
+
+#[test]
+fn crlf_in_directive_value_clean() {
+    let input = "Host example\r\n    HostName myhost.com\r\n";
+    let ast = crate::config::ast::parse(input);
+    let val = get_directive(&ast, "example", "HostName");
+    if let Some(ref v) = val {
+        assert!(!v.contains('\r'), "\\r leaked into value: {:?}", v);
+    }
+    assert_eq!(val.as_deref(), Some("myhost.com"));
+}

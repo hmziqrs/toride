@@ -26,10 +26,15 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<crate::Permissi
 
 /// Validate a key name to prevent path traversal attacks.
 ///
-/// Key names must not contain path separators or `..` components.
+/// Key names must not contain path separators, `..` components, or null bytes.
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::KeyGenerationFailed("key name must not be empty".to_owned()));
+    }
+    if name.contains('\0') {
+        return Err(Error::KeyGenerationFailed(
+            "key name must not contain null bytes".to_owned(),
+        ));
     }
     if name.contains('/') || name.contains('\\') {
         return Err(Error::KeyGenerationFailed(

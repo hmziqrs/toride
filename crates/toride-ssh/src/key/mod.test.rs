@@ -66,8 +66,8 @@ fn validate_key_name_with_tabs() {
 
 #[test]
 fn validate_key_name_with_null_byte() {
-    // Null bytes should not be allowed (path traversal risk)
-    assert!(validate_key_name("my\0key").is_ok()); // Not explicitly blocked
+    // Null bytes are now rejected to prevent path truncation attacks
+    assert!(validate_key_name("my\0key").is_err());
 }
 
 #[test]
@@ -186,4 +186,29 @@ fn validate_key_name_with_path_traversal_variants() {
 fn validate_key_name_with_backslash_traversal() {
     assert!(validate_key_name("..\\key").is_err());
     assert!(validate_key_name("key\\..").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-discovered edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_key_name_null_byte_rejected() {
+    // Null bytes can cause path truncation via C-level APIs
+    assert!(validate_key_name("evil\0safe").is_err());
+}
+
+#[test]
+fn validate_key_name_null_byte_at_start() {
+    assert!(validate_key_name("\0key").is_err());
+}
+
+#[test]
+fn validate_key_name_null_byte_at_end() {
+    assert!(validate_key_name("key\0").is_err());
+}
+
+#[test]
+fn validate_key_name_multiple_null_bytes() {
+    assert!(validate_key_name("key\0\0\0").is_err());
 }

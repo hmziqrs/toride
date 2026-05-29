@@ -56,6 +56,15 @@ impl<'a> AuthorizedKeysService<'a> {
         comment: Option<&str>,
         options: Option<&str>,
     ) -> Result<()> {
+        // Reject options containing newlines to prevent injection attacks.
+        if let Some(opts) = options {
+            if opts.contains('\n') || opts.contains('\r') {
+                return Err(Error::AuthorizedKeysWriteFailed(
+                    "options must not contain newlines".to_owned(),
+                ));
+            }
+        }
+
         // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
         let path = self.paths.authorized_keys_path().to_path_buf();
 
