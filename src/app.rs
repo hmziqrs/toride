@@ -45,14 +45,17 @@ impl App {
             terminal.draw(|f| self.view(f))?;
 
             select! {
-                Some(Ok(event)) = events.next() => {
-                    if let Event::Key(key) = event
-                        && key.kind == KeyEventKind::Press
-                        && let Some(action) = self.welcome.handle_key(key.code)
-                    {
-                        self.update(action);
+                Some(Ok(event)) = events.next() => match event {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        if let Some(action) = self.welcome.handle_key(key.code) {
+                            self.update(action);
+                        }
                     }
-                }
+                    Event::Resize(..) => {
+                        self.welcome.invalidate_cache();
+                    }
+                    _ => {}
+                },
             }
 
             if self.should_quit {

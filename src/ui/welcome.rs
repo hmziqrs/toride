@@ -4,16 +4,16 @@ use ratatui::{
     layout::{Constraint, Flex, Layout, Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::action::Action;
+use crate::ui::responsive::{self, Viewport};
 use crate::ui::theme::{self, Palette};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EDITION: &str = "SINGLE-HOST";
 
-// Key-badge background is not part of the palette; kept local.
 const KEY_BG: Color = Color::Rgb(32, 26, 50);
 
 // ANSI Shadow figlet — matches screens.jsx LOGO constant exactly
@@ -24,16 +24,6 @@ const LOGO: &[&str] = &[
     "   ██║   ██║   ██║██╔══██╗██║██║  ██║██╔══╝  ",
     "   ██║   ╚██████╔╝██║  ██║██║██████╔╝███████╗",
     "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ ╚══════╝",
-];
-
-const STATUS_MESSAGES: &[(&str, &str)] = &[
-    ("ok", "loaded /etc/toride/config.toml"),
-    ("ok", "verifying SSH keypair (ed25519)"),
-    ("ok", "apt available · 218 pkgs known"),
-    ("ok", "docker engine 27.4.1 detected"),
-    ("ok", "network: cloudflare 1.1.1.1 reachable"),
-    ("ok", "ratatui v0.30.0 rendering · 60 fps"),
-    ("--", "ready."),
 ];
 
 pub struct WelcomeScreen {
@@ -53,6 +43,10 @@ impl WelcomeScreen {
         }
     }
 
+    pub fn invalidate_cache(&mut self) {
+        self.gradient_cache = None;
+    }
+
     pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
         use ratatui::crossterm::event::KeyCode;
         match code {
@@ -69,9 +63,19 @@ impl WelcomeScreen {
 
     fn view_with_palette(&mut self, frame: &mut Frame, p: Palette) {
         let area = frame.area();
+        let viewport = Viewport::from_area(area);
 
+        // Fallback for tiny terminals
+        if responsive::render_too_small(frame, p) {
+            return;
+        }
+
+        // Gradient background
         let buf = frame.buffer_mut();
-        let needs_regen = !self.gradient_cache.as_ref().is_some_and(|(cached_area, _)| *cached_area == area);
+        let needs_regen = !self
+            .gradient_cache
+            .as_ref()
+            .is_some_and(|(cached_area, _)| *cached_area == area);
         if needs_regen {
             let mut gradient = Buffer::empty(area);
             render_gradient_bg(&mut gradient, area, p);
@@ -81,50 +85,35 @@ impl WelcomeScreen {
             copy_bg(gradient, buf, area);
         }
 
-        // Center column wide enough for logo (~45 cols) and panel
+        // Adaptive center column
         let [_, center, _] = Layout::horizontal([
             Constraint::Fill(1),
-            Constraint::Length(72),
+            responsive::center_column(),
             Constraint::Fill(1),
         ])
         .flex(Flex::Center)
         .areas(area);
 
-        // Layout: logo → spacer → version → prompt → spacer → panel → spacer → keys
-        // panel = 2 borders + 2 v-padding + 7 messages = 11 rows
-        let [
-            _top,
-            logo_area,
-            _g1,
-            version_area,
-            prompt_area,
-            _g2,
-            panel_area,
-            _g3,
-            keys_area,
-            _bottom,
-        ] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(6),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(11),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .areas(center);
+        // Vertical layout
+        let [_top, logo_area, _g1, version_area, prompt_area, _g2, keys_area, _bottom] =
+            Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(6),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(center);
 
-        // ── Logo ──────────────────────────────────────────────────────────────
-        let logo_lines: Vec<Line> = LOGO
-            .iter()
-            .map(|row| Line::from(Span::styled(*row, Style::new().fg(p.accent).bold())))
-            .collect();
+        // ── Logo ──────────────────────────────────────────────────────────
+        let logo_style = Style::new().fg(p.accent).bold();
+        let logo_lines = responsive::truncate_logo(LOGO, center.width, logo_style);
         frame.render_widget(Paragraph::new(logo_lines).centered(), logo_area);
 
-        // ── Version: "砦  ·  0.4.1  ·  SINGLE-HOST" ─────────────────────────
+        // ── Version ───────────────────────────────────────────────────────
         let version_line = Line::from(vec![
             Span::styled("砦", Style::new().fg(p.accent2).bold()),
             Span::styled("  ·  ", Style::new().fg(p.text_muted)),
@@ -134,65 +123,58 @@ impl WelcomeScreen {
         ]);
         frame.render_widget(Paragraph::new(version_line).centered(), version_area);
 
-        // ── Prompt ────────────────────────────────────────────────────────────
+        // ── Prompt ────────────────────────────────────────────────────────
+        let prompt_text = if viewport >= Viewport::Compact {
+            "Press any key, or click anywhere, to enter."
+        } else {
+            "Press any key to enter."
+        };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "Press any key, or click anywhere, to enter.",
+                prompt_text,
                 Style::new().fg(p.text_dim),
             )))
             .centered(),
             prompt_area,
         );
 
-        // ── Status panel ──────────────────────────────────────────────────────
-        let status_lines: Vec<Line> = STATUS_MESSAGES
-            .iter()
-            .map(|(tag, msg)| {
-                let tag_color = if *tag == "ok" { p.ok } else { p.accent };
-                Line::from(vec![
-                    Span::styled("[", Style::new().fg(tag_color).bold()),
-                    Span::styled(*tag, Style::new().fg(tag_color).bold()),
-                    Span::styled("]", Style::new().fg(tag_color).bold()),
-                    Span::raw(" "),
-                    Span::styled(*msg, Style::new().fg(p.text)),
-                ])
-            })
-            .collect();
-
-        let panel_block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(p.border))
-            .padding(Padding::new(2, 2, 1, 1))
-            .style(Style::new().bg(p.bg_inset));
-
-        frame.render_widget(Paragraph::new(status_lines).block(panel_block), panel_area);
-
-        // ── Keybindings — styled as keyboard badges ───────────────────────────
+        // ── Keybindings ───────────────────────────────────────────────────
         let key_style = Style::new().fg(p.text).bg(KEY_BG);
         let lbl_style = Style::new().fg(p.text_muted);
-        let gap = Span::raw("     ");
-        let keys_line = Line::from(vec![
-            Span::styled(" ↵ ", key_style),
-            Span::raw(" "),
-            Span::styled("continue", lbl_style),
-            gap.clone(),
-            Span::styled(" ? ", key_style),
-            Span::raw(" "),
-            Span::styled("help", lbl_style),
-            gap.clone(),
-            Span::styled(" q ", key_style),
-            Span::raw(" "),
-            Span::styled("quit", lbl_style),
-        ]);
+
+        let keys_line = if viewport >= Viewport::Compact {
+            let gap = Span::raw("     ");
+            Line::from(vec![
+                Span::styled(" ↵ ", key_style),
+                Span::raw(" "),
+                Span::styled("continue", lbl_style),
+                gap.clone(),
+                Span::styled(" ? ", key_style),
+                Span::raw(" "),
+                Span::styled("help", lbl_style),
+                gap.clone(),
+                Span::styled(" q ", key_style),
+                Span::raw(" "),
+                Span::styled("quit", lbl_style),
+            ])
+        } else {
+            // Minimal — badges only, no labels
+            Line::from(vec![
+                Span::styled(" ↵ ", key_style),
+                Span::raw(" "),
+                Span::styled(" ? ", key_style),
+                Span::raw(" "),
+                Span::styled(" q ", key_style),
+            ])
+        };
         frame.render_widget(Paragraph::new(keys_line).centered(), keys_area);
     }
 }
 
-// Radial gradient: lighter at center (bg), darker at edges (darkened bg).
+// ── Gradient background ──────────────────────────────────────────────────────
+
 fn render_gradient_bg(buf: &mut Buffer, area: Rect, p: Palette) {
     let (cr, cg, cb) = rgb_components(p.bg);
-    // Edge color: darken the base bg by ~40%
     let er = (cr as f64 * 0.6) as u8;
     let eg = (cg as f64 * 0.6) as u8;
     let eb = (cb as f64 * 0.6) as u8;
