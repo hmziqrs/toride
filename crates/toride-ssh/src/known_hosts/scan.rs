@@ -119,7 +119,7 @@ pub async fn add_host_hashed(known_hosts_path: &Path, host: &str) -> Result<()> 
     let keys = scan_host_hashed(host).await?;
     if keys.is_empty() {
         return Err(Error::CommandFailed(format!(
-            "ssh-keyscan returned no keys for {host}"
+            "ssh-keyscan found no host keys for {host} (host may be unreachable or not running SSH)"
         )));
     }
     add_to_known_hosts(known_hosts_path, &keys).await

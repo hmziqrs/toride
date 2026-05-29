@@ -59,28 +59,22 @@ impl<'a> AuthorizedKeysService<'a> {
         // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
         let path = self.paths.authorized_keys_path().to_path_buf();
 
-        // Validate the key
-        let mut key_line = public_key.trim().to_string();
+        // Parse and validate the key once.
+        let mut pk = ssh_key::PublicKey::from_openssh(public_key.trim()).map_err(|e| {
+            Error::KeyParseFailed(format!("invalid public key: {e}"))
+        })?;
 
-        // Apply comment override if provided
+        // Apply comment override if provided.
         if let Some(comment) = comment {
-            // Re-parse and serialize with the new comment
-            let mut pk = ssh_key::PublicKey::from_openssh(&key_line).map_err(|e| {
-                Error::KeyParseFailed(format!("invalid public key: {e}"))
-            })?;
             pk.set_comment(comment);
-            key_line = pk.to_openssh().map_err(|e| {
-                Error::KeyParseFailed(format!("failed to serialize key: {e}"))
-            })?;
-        } else {
-            // Still validate even without overriding comment
-            ssh_key::PublicKey::from_openssh(&key_line).map_err(|e| {
-                Error::KeyParseFailed(format!("invalid public key: {e}"))
-            })?;
         }
+        let key_line = pk.to_openssh().map_err(|e| {
+            Error::KeyParseFailed(format!("failed to serialize key: {e}"))
+        })?;
 
-        // Check for duplicate before writing
-        if self.contains(&key_line).await? {
+        // Check for duplicate before writing — reuse the parsed key's fingerprint.
+        let target_fp = pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
+        if self.contains_fingerprint(&target_fp).await? {
             return Err(Error::KeyExists(
                 "key already present in authorized_keys".to_string(),
             ));
@@ -204,10 +198,16 @@ impl<'a> AuthorizedKeysService<'a> {
         })?;
         let target_fp = target_pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
-        let entries = self.list().await?;
+        self.contains_fingerprint(&target_fp).await
+    }
 
-        // Use iterator `any()` for short-circuiting instead of manual loop.
-        Ok(entries.iter().any(|e| e.fingerprint().as_deref() == Some(&target_fp)))
+    /// Check if a fingerprint is already present in authorized_keys.
+    ///
+    /// This is an internal helper that avoids re-parsing the input key when
+    /// the caller already has a fingerprint.
+    async fn contains_fingerprint(&self, target_fp: &str) -> Result<bool> {
+        let entries = self.list().await?;
+        Ok(entries.iter().any(|e| e.fingerprint().as_deref() == Some(target_fp)))
     }
 }
 

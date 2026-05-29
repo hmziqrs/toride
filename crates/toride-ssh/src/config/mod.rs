@@ -48,7 +48,7 @@ impl<'a> ConfigService<'a> {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o644);
-            std::fs::set_permissions(path, perms)?;
+            tokio::fs::set_permissions(path, perms).await?;
         }
 
         Ok(())
@@ -130,11 +130,12 @@ impl<'a> ConfigService<'a> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
-                std::fs::set_permissions(
+                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).await?;
+                tokio::fs::set_permissions(
                     self.paths.ssh_dir(),
                     std::fs::Permissions::from_mode(0o700),
-                )?;
+                )
+                .await?;
             }
         }
         Ok(())

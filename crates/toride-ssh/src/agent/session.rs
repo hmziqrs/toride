@@ -166,7 +166,7 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 
 /// Verify a control socket is still active using `ssh -O check`.
 ///
-/// Returns `true` if `ssh -O check` via the control path succeeds.
+/// Returns `true` if `ssh -O check` exits with code 0 (master running).
 async fn verify_control_session(socket_path: &Path) -> bool {
     let path_str = match socket_path.to_str() {
         Some(s) => s.to_owned(),
@@ -181,27 +181,16 @@ async fn verify_control_session(socket_path: &Path) -> bool {
             "ssh",
             ["-S", &path_str, "-O", "check", "localhost"],
         )
-        .stderr_to_stdout()
-        .read()
+        .stdout_null()
+        .stderr_null()
+        .run()
     })
     .await;
 
     match result {
-        Ok(Ok(output)) => {
-            // Some versions print "Master running" to stdout, others are silent.
-            output.contains("Master running") || output.is_empty()
-        }
-        Ok(Err(e)) => {
-            // ssh exited non-zero. With stderr_to_stdout, the error message
-            // may contain "Master running" (some OpenSSH versions report the
-            // alive status via a non-zero exit code).
-            let msg = e.to_string();
-            msg.contains("Master running") || msg.contains("Running")
-        }
-        Err(_) => {
-            // spawn_blocking task panicked — treat as dead session.
-            false
-        }
+        Ok(Ok(_)) => true,         // exit code 0 = master running
+        Ok(Err(_)) => false,       // non-zero exit = not running
+        Err(_) => false,           // task panic = treat as dead
     }
 }
 

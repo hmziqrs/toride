@@ -66,8 +66,13 @@ async fn inspect_native(path: &Path) -> Result<CertificateInfo> {
 
 /// Parse `ssh-keygen -L` output when the native parser is insufficient.
 async fn inspect_via_keygen(path: &Path) -> Result<CertificateInfo> {
-    let path_str = path.to_string_lossy();
-    let output = crate::runner::ssh_keygen(&["-L", "-f", &path_str]).await?;
+    let path_str = path.to_str().ok_or_else(|| {
+        crate::Error::CommandFailed(format!(
+            "certificate path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    let output = crate::runner::ssh_keygen(&["-L", "-f", path_str]).await?;
 
     parse_keygen_output(&output, path)
 }

@@ -146,6 +146,10 @@ pub enum Error {
     #[cfg(feature = "certificate")]
     #[error("certificate not yet valid: {0}")]
     CertificateNotYetValid(String),
+    /// Failed to parse a Key Revocation List.
+    #[cfg(feature = "certificate")]
+    #[error("KRL parse failed: {0}")]
+    KrlParseFailed(String),
 
     // Forward
     /// Port forwarding setup failed.

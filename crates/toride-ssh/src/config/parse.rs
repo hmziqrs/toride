@@ -22,7 +22,7 @@ pub async fn parse_config(path: &Path) -> Result<SshConfig> {
         Ok(config)
     })
     .await
-    .map_err(|e| crate::Error::ConfigParseFailed(e.to_string()))?
+    .map_err(|e| crate::Error::ConfigParseFailed(format!("blocking task panicked: {e}")))?
 }
 
 /// Parse SSH config from a string using ssh2-config-rs.

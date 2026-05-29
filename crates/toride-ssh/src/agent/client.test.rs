@@ -4,7 +4,7 @@ use super::*;
 fn parse_algorithm_ed25519() {
     assert_eq!(
         parse_key_type_from_algorithm("ssh-ed25519"),
-        KeyType::Ed25519
+        Some(KeyType::Ed25519)
     );
 }
 
@@ -12,7 +12,15 @@ fn parse_algorithm_ed25519() {
 fn parse_algorithm_ecdsa() {
     assert_eq!(
         parse_key_type_from_algorithm("ecdsa-sha2-nistp384"),
-        KeyType::EcdsaP384
+        Some(KeyType::EcdsaP384)
+    );
+}
+
+#[test]
+fn parse_algorithm_unknown_returns_none() {
+    assert_eq!(
+        parse_key_type_from_algorithm("unknown-algo"),
+        None
     );
 }
 

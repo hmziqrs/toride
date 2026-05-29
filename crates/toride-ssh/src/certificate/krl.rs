@@ -42,11 +42,16 @@ pub struct KrlInfo {
 /// The dummy file (`/dev/null`) is required because `-Q` needs at least one key
 /// to query, but we only care about the listing output produced by `-l`.
 pub async fn inspect_krl(path: &Path) -> Result<KrlInfo> {
-    let path_str = path.to_string_lossy();
+    let path_str = path.to_str().ok_or_else(|| {
+        crate::Error::CommandFailed(format!(
+            "KRL path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
 
     // -Q queries a KRL, -l causes it to also print the KRL contents.
     // A dummy file argument is required; /dev/null works as a no-op input.
-    let output = crate::runner::ssh_keygen(&["-Q", "-l", "-f", &path_str, "/dev/null"]).await?;
+    let output = crate::runner::ssh_keygen(&["-Q", "-l", "-f", path_str, "/dev/null"]).await?;
 
     parse_krl_output(&output, path)
 }
@@ -93,7 +98,7 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
 
         if let Some(rest) = trimmed.strip_prefix("# KRL version") {
             version = rest.trim().parse().map_err(|_| {
-                crate::Error::CertificateParseFailed(format!("invalid KRL version: {}", rest.trim()))
+                crate::Error::KrlParseFailed(format!("invalid KRL version: {}", rest.trim()))
             })?;
         } else if let Some(rest) = trimmed.strip_prefix("# Generated at") {
             let dt_str = rest.trim();

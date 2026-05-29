@@ -78,8 +78,22 @@ pub fn parse_options(options_str: &str) -> Result<AuthorizedKeyOptions> {
 
             match name {
                 "command" => opts.command = Some(value),
-                "from" => opts.from.push(value),
-                "permit-open" => opts.permit_open.push(value),
+                "from" => {
+                    for host in value.split(',') {
+                        let host = host.trim();
+                        if !host.is_empty() {
+                            opts.from.push(host.to_string());
+                        }
+                    }
+                }
+                "permit-open" => {
+                    for target in value.split(',') {
+                        let target = target.trim();
+                        if !target.is_empty() {
+                            opts.permit_open.push(target.to_string());
+                        }
+                    }
+                }
                 "environment" => {
                     if let Some((k, v)) = value.split_once('=') {
                         opts.environment.push((k.to_string(), v.to_string()));

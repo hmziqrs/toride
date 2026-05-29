@@ -247,7 +247,7 @@ pub fn parse(input: &str) -> ConfigAst {
 
 /// Extract the leading whitespace from a line.
 fn line_indent(line: &str) -> &str {
-    let end = line.len() - line.trim_start().len();
+    let end = line.find(|c: char| !c.is_whitespace()).unwrap_or(line.len());
     &line[..end]
 }
 

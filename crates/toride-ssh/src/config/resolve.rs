@@ -129,7 +129,7 @@ fn load_and_flatten<'a>(
             .collect();
 
         for include_pattern in include_nodes {
-            let expanded = expand_tilde_and_env(&include_pattern, path.parent().unwrap_or(Path::new(".")));
+            let expanded = expand_tilde_and_env(&include_pattern);
 
             // Glob the pattern.
             let base_dir = if Path::new(&expanded).is_absolute() {
@@ -174,7 +174,7 @@ fn insert_included_nodes(flat: &mut ConfigAst, included: &ConfigAst) {
 }
 
 /// Expand tilde (`~`) and `${ENV}` patterns in an include path.
-fn expand_tilde_and_env(path: &str, _base_dir: &Path) -> String {
+fn expand_tilde_and_env(path: &str) -> String {
     let mut result = path.to_owned();
 
     // Expand `~` or `~/`.
@@ -303,7 +303,7 @@ fn resolve_block(
 }
 
 /// Expand tokens in resolved values.
-fn expand_resolved(resolved: &mut ResolvedHost, host: &str, ssh_dir: &Path) {
+fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     let local_user = whoami();
     let local_hostname = hostname();
     let home_dir = dirs::home_dir()
@@ -317,7 +317,7 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, ssh_dir: &Path) {
 
     // Expand identity files.
     for id_file in &mut resolved.identity_files {
-        *id_file = expand_tilde_and_env(id_file, ssh_dir);
+        *id_file = expand_tilde_and_env(id_file);
         *id_file = expand_tokens(id_file, host, &home_dir, &local_hostname, &remote_user, &local_user, &port_str);
         *id_file = collapse_double_percent(id_file);
     }

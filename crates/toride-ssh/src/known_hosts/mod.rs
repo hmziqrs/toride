@@ -108,8 +108,18 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         Error::KnownHostsParseFailed("known_hosts path has no parent directory".into())
     })?;
-    let tmp_path = parent.join(format!(".known_hosts.tmp.{}", std::process::id()));
-    std::fs::write(&tmp_path, &kept)?;
+    let tmp_path = parent.join(format!(".known_hosts.tmp.{}.{}", std::process::id(), std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()));
+    // Use create_new to prevent symlink attacks on multi-user systems.
+    {
+        let mut tmp_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)?;
+        std::io::Write::write_all(&mut tmp_file, kept.as_bytes())?;
+    }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e.into());

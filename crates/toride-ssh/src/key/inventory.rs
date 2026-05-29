@@ -8,21 +8,24 @@ use crate::paths::SshPaths;
 use crate::{Error, Fingerprint, KeySource, KeyType, Result, SshKey};
 
 /// Convert an [`ssh_key::Algorithm`] to our [`KeyType`].
-fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> KeyType {
+///
+/// Returns `None` for unknown algorithms so callers can decide how to handle them
+/// rather than silently misidentifying the key type.
+fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> Option<KeyType> {
     match algo {
-        ssh_key::Algorithm::Ed25519 => KeyType::Ed25519,
-        ssh_key::Algorithm::Rsa { .. } => KeyType::Rsa { bits: 0 },
-        ssh_key::Algorithm::Ecdsa { curve } => match curve {
+        ssh_key::Algorithm::Ed25519 => Some(KeyType::Ed25519),
+        ssh_key::Algorithm::Rsa { .. } => Some(KeyType::Rsa { bits: 0 }),
+        ssh_key::Algorithm::Ecdsa { curve } => Some(match curve {
             ssh_key::EcdsaCurve::NistP256 => KeyType::EcdsaP256,
             ssh_key::EcdsaCurve::NistP384 => KeyType::EcdsaP384,
             ssh_key::EcdsaCurve::NistP521 => KeyType::EcdsaP521,
-        },
-        ssh_key::Algorithm::Dsa => KeyType::Dsa,
-        ssh_key::Algorithm::SkEd25519 => KeyType::SkEd25519,
-        ssh_key::Algorithm::SkEcdsaSha2NistP256 => KeyType::SkEcdsaP256,
+        }),
+        ssh_key::Algorithm::Dsa => Some(KeyType::Dsa),
+        ssh_key::Algorithm::SkEd25519 => Some(KeyType::SkEd25519),
+        ssh_key::Algorithm::SkEcdsaSha2NistP256 => Some(KeyType::SkEcdsaP256),
         _ => {
-            tracing::warn!("unknown key algorithm {:?}, falling back to Ed25519", algo);
-            KeyType::Ed25519
+            tracing::warn!("unknown key algorithm: {:?}", algo);
+            None
         }
     }
 }
@@ -55,7 +58,10 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
 
     match ssh_key::PrivateKey::from_openssh(&private_key_data) {
         Ok(pk) => {
-            let key_type = algorithm_to_key_type(&pk.algorithm());
+            // Explicit fallback: if we can't determine the algorithm, treat as
+            // Ed25519. This is a best-effort heuristic for encrypted/unknown keys.
+            let key_type = algorithm_to_key_type(&pk.algorithm())
+                .unwrap_or(KeyType::Ed25519);
             let public_key = pk.public_key();
             let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
             let fingerprint = Some(Fingerprint {

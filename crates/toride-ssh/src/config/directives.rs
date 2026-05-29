@@ -192,11 +192,13 @@ pub(crate) fn is_accumulative(key_lower: &str) -> bool {
 /// - `?` matching a single character
 /// - Negation with `!`: `!example.com`
 pub(crate) fn host_matches_patterns(host: &str, patterns: &[String]) -> bool {
-    let host_lower = host.to_lowercase();
+    // SSH hostnames and patterns are ASCII — use ASCII lowercase to avoid
+    // Unicode-aware allocation overhead.
+    let host_lower = host.to_ascii_lowercase();
     let mut positive_match = false;
 
     for pattern in patterns {
-        let pat_lower = pattern.to_lowercase();
+        let pat_lower = pattern.to_ascii_lowercase();
 
         if let Some(negated) = pat_lower.strip_prefix('!') {
             // Negated pattern — if it matches, the whole result is false.

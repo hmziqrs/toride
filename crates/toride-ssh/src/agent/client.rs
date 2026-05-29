@@ -115,7 +115,10 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
     for identity in identities {
         let key_data = identity.credential.key_data();
         let alg_str = key_data.algorithm().to_string();
-        let key_type = parse_key_type_from_algorithm(&alg_str);
+        let Some(key_type) = parse_key_type_from_algorithm(&alg_str) else {
+            tracing::warn!("skipping agent key with unknown algorithm: {alg_str}");
+            continue;
+        };
 
         let fingerprint = encode_key_data(key_data)
             .ok()
@@ -172,19 +175,22 @@ fn compute_sha256_fingerprint(bytes: &[u8], key_type: KeyType) -> Fingerprint {
 }
 
 /// Map an algorithm name string (e.g. `"ssh-ed25519"`, `"ssh-rsa"`) to [`KeyType`].
-pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> KeyType {
+///
+/// Returns `None` for unknown algorithms so callers can decide how to handle them
+/// rather than silently misidentifying the key type.
+pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> Option<KeyType> {
     match alg {
-        "ssh-ed25519" => KeyType::Ed25519,
-        "ssh-rsa" => KeyType::Rsa { bits: 0 },
-        "ecdsa-sha2-nistp256" => KeyType::EcdsaP256,
-        "ecdsa-sha2-nistp384" => KeyType::EcdsaP384,
-        "ecdsa-sha2-nistp521" => KeyType::EcdsaP521,
-        "ssh-dss" => KeyType::Dsa,
-        "sk-ssh-ed25519@openssh.com" => KeyType::SkEd25519,
-        "sk-ecdsa-sha2-nistp256@openssh.com" => KeyType::SkEcdsaP256,
+        "ssh-ed25519" => Some(KeyType::Ed25519),
+        "ssh-rsa" => Some(KeyType::Rsa { bits: 0 }),
+        "ecdsa-sha2-nistp256" => Some(KeyType::EcdsaP256),
+        "ecdsa-sha2-nistp384" => Some(KeyType::EcdsaP384),
+        "ecdsa-sha2-nistp521" => Some(KeyType::EcdsaP521),
+        "ssh-dss" => Some(KeyType::Dsa),
+        "sk-ssh-ed25519@openssh.com" => Some(KeyType::SkEd25519),
+        "sk-ecdsa-sha2-nistp256@openssh.com" => Some(KeyType::SkEcdsaP256),
         _ => {
-            tracing::warn!("unknown SSH key algorithm \"{alg}\", falling back to Ed25519");
-            KeyType::Ed25519
+            tracing::warn!("unknown SSH key algorithm \"{alg}\"");
+            None
         }
     }
 }
