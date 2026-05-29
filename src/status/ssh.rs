@@ -40,6 +40,16 @@ impl SshStatus {
     ///
     /// Default control path: `~/.ssh/controlmasters/%r@%h-%p`
     /// Default config path: `~/.ssh/config`
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use toride::status::ssh::SshStatus;
+    ///
+    /// let status = SshStatus::collect();
+    /// println!("Mux alive: {}", status.mux_master_alive);
+    /// println!("Keys loaded: {}", status.key_count);
+    /// ```
     pub fn collect() -> Self {
         let control_path = default_control_path();
         let config_path = default_config_path();
@@ -94,9 +104,8 @@ fn validate_control_path(path: &Path) -> bool {
     use std::os::unix::fs::FileTypeExt;
 
     // 1. Existence and type check.
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
     };
 
     if !metadata.file_type().is_socket() {
@@ -114,9 +123,12 @@ fn validate_control_path(path: &Path) -> bool {
     check_socket_connectable(path)
 }
 
+/// # Platform behavior
+///
+/// On non-Unix platforms, socket type and permission checks are skipped.
+/// This implementation only verifies that the path exists.
 #[cfg(not(unix))]
 fn validate_control_path(path: &Path) -> bool {
-    // On non-Unix, just check existence.
     path.exists()
 }
 
@@ -132,12 +144,13 @@ fn check_socket_connectable(path: &Path) -> bool {
 ///
 /// Returns `true` if the command exits with status 0.
 fn check_mux_master(control_path: &Path) -> bool {
+    let control_str = control_path.to_string_lossy();
     Command::new("ssh")
         .args([
             "-O",
             "check",
             "-S",
-            control_path.to_string_lossy().as_ref(),
+            &control_str,
             "dummy",
         ])
         .stdout(std::process::Stdio::null())
@@ -151,8 +164,9 @@ fn check_mux_master(control_path: &Path) -> bool {
 ///
 /// Runs `ssh -G -F <config>` and checks the exit status.
 fn check_config(config_path: &Path) -> bool {
+    let config_str = config_path.to_string_lossy();
     Command::new("ssh")
-        .args(["-G", "-F", config_path.to_string_lossy().as_ref()])
+        .args(["-G", "-F", &config_str])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -164,21 +178,21 @@ fn check_config(config_path: &Path) -> bool {
 /// is connectable.
 #[cfg(unix)]
 fn check_agent() -> bool {
-    let sock = match std::env::var("SSH_AUTH_SOCK") {
-        Ok(s) => PathBuf::from(s),
-        Err(_) => return false,
-    };
-
-    if !sock.exists() {
+    let Ok(sock_str) = std::env::var("SSH_AUTH_SOCK") else {
         return false;
-    }
+    };
+    let sock = PathBuf::from(sock_str);
 
     check_socket_connectable(&sock)
 }
 
+/// # Platform behavior
+///
+/// On non-Unix platforms, socket connectivity cannot be tested. This
+/// implementation only checks whether the `SSH_AUTH_SOCK` environment
+/// variable is set, without verifying the socket is actually connectable.
 #[cfg(not(unix))]
 fn check_agent() -> bool {
-    // On non-Unix, check if SSH_AUTH_SOCK is set.
     std::env::var("SSH_AUTH_SOCK").is_ok()
 }
 
@@ -242,7 +256,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn collect_returns_default_state() {
+    fn collect_does_not_panic() {
         let status = SshStatus::collect();
         // These may or may not be true depending on the system,
         // but the struct should be populated without panicking.
@@ -294,7 +308,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn validate_control_path_returns_true_for_valid_socket() {
+    fn does_not_panic_for_listener_socket() {
         use std::os::unix::fs::PermissionsExt;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("socket");
@@ -319,7 +333,7 @@ mod tests {
     }
 
     #[test]
-    fn check_config_returns_true_for_valid_config() {
+    fn check_config_does_not_panic() {
         let dir = TempDir::new().unwrap();
         let config_path = dir.path().join("config");
         fs::write(&config_path, "Host *\n  ServerAliveInterval 60\n").unwrap();
@@ -332,8 +346,10 @@ mod tests {
     fn count_keys_returns_zero_when_no_agent() {
         // Without SSH_AUTH_SOCK, ssh-add should fail and return 0.
         let count = count_keys();
-        // Could be > 0 if an agent is running, but should not panic.
-        let _ = count;
+        // If no agent is running, count must be 0.
+        if std::env::var("SSH_AUTH_SOCK").is_err() {
+            assert_eq!(count, 0, "without SSH_AUTH_SOCK, key count must be 0");
+        }
     }
 
     #[test]
@@ -391,5 +407,27 @@ mod tests {
             "serialization should succeed: {:?}",
             json.err()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_control_path_returns_false_for_directory() {
+        let dir = TempDir::new().unwrap();
+        // A directory is not a socket; validation should fail.
+        assert!(!validate_control_path(dir.path()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_control_path_returns_false_for_permissions_640() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("socket");
+        let _listener = UnixListener::bind(&path).unwrap();
+        // 0o640 != 0o600, so permission check should reject it.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(!validate_control_path(&path));
     }
 }

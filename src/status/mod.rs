@@ -16,8 +16,9 @@ pub mod system;
 
 use std::fmt;
 
-pub use daemon::DaemonStatus;
 use serde::Serialize;
+
+pub use daemon::DaemonStatus;
 pub use ssh::SshStatus;
 pub use system::SystemStatus;
 
@@ -37,8 +38,11 @@ pub use system::SystemStatus;
 /// ```
 #[derive(Debug, Clone, Serialize)]
 pub struct TorideStatus {
+    /// OS-level metrics (CPU, memory, disk, network, uptime).
     pub system: SystemStatus,
+    /// Daemon liveness and health (PID, restart count, socket state).
     pub daemon: DaemonStatus,
+    /// SSH subsystem health (mux master, control path, agent, keys).
     pub ssh: SshStatus,
 }
 
@@ -47,6 +51,15 @@ impl TorideStatus {
     ///
     /// Each subsystem is collected independently — if one fails, its fields
     /// will contain `None` values rather than propagating the error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use toride::status::TorideStatus;
+    ///
+    /// let status = TorideStatus::collect();
+    /// println!("{}", status.system.hostname);
+    /// ```
     pub fn collect() -> Self {
         Self {
             system: SystemStatus::collect(),

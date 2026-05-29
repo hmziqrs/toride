@@ -36,6 +36,17 @@ impl DaemonStatus {
     /// Default PID file: `/var/run/toride.pid`
     /// Default socket path: `/tmp/toride.sock`
     /// Default restart count file: `~/.local/share/toride/restart_count`
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use toride::status::daemon::DaemonStatus;
+    ///
+    /// let status = DaemonStatus::collect();
+    /// if status.alive {
+    ///     println!("Daemon is alive (PID {:?})", status.pid);
+    /// }
+    /// ```
     pub fn collect() -> Self {
         let pid_path = default_pid_path();
         let socket_path = default_socket_path();
@@ -110,9 +121,12 @@ fn is_process_alive(pid: u32) -> bool {
     signal::kill(Pid::from_raw(pid as i32), None).is_ok()
 }
 
+/// # Platform behavior
+///
+/// On Windows, this would use `OpenProcess` with
+/// `PROCESS_QUERY_LIMITED_INFORMATION`. Currently stubbed to return `false`.
 #[cfg(not(unix))]
 fn is_process_alive(_pid: u32) -> bool {
-    // Windows: would use OpenProcess. Stubbed for now.
     false
 }
 
@@ -135,11 +149,11 @@ fn uptime_for_pid(pid: u32) -> Option<u64> {
 fn uptime_for_pid(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 22 (0-indexed: 21) is starttime in clock ticks since boot.
-    let fields: Vec<&str> = stat.split_whitespace().collect();
-    if fields.len() < 22 {
-        return None;
-    }
-    let start_ticks: u64 = fields[21].parse().ok()?;
+    // The comm field (field 2) can contain spaces and is wrapped in parens,
+    // so we skip past the closing ')' before splitting.
+    let after_comm = stat.find(')')?;
+    let rest = &stat[after_comm + 2..];
+    let start_ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
     let ticks_per_sec = sysconf::sysconf(sysconf::SysconfVariable::ClkTck).unwrap_or(100) as u64;
     let boot_time = read_boot_time()?;
     let start_secs = boot_time + start_ticks / ticks_per_sec;
@@ -150,6 +164,10 @@ fn uptime_for_pid(pid: u32) -> Option<u64> {
     now.checked_sub(start_secs)
 }
 
+/// # Platform behavior
+///
+/// On unsupported platforms (neither macOS nor Linux), process uptime
+/// cannot be determined and this function always returns `None`.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn uptime_for_pid(_pid: u32) -> Option<u64> {
     None
@@ -157,29 +175,30 @@ fn uptime_for_pid(_pid: u32) -> Option<u64> {
 
 /// Parse `ps` elapsed time format (``[[dd-]hh:]mm:ss``) into seconds.
 fn parse_elapsed_time(s: &str) -> Option<u64> {
-    let parts: Vec<&str> = s.split('-').collect();
-    let (days, time_str) = if parts.len() == 2 {
-        (parts[0].parse::<u64>().ok()?, parts[1])
-    } else {
-        (0, s)
+    let (days, time_str) = match s.split_once('-') {
+        Some((day_str, rest)) => (day_str.parse::<u64>().ok()?, rest),
+        None => (0, s),
     };
 
-    let time_parts: Vec<&str> = time_str.split(':').collect();
-    let (hours, minutes, seconds) = match time_parts.len() {
-        3 => (
-            time_parts[0].parse::<u64>().ok()?,
-            time_parts[1].parse::<u64>().ok()?,
-            time_parts[2].parse::<u64>().ok()?,
+    let mut parts = time_str.split(':');
+    let (hours, minutes, seconds) = match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(h), Some(m), Some(s), None) => (
+            h.parse::<u64>().ok()?,
+            m.parse::<u64>().ok()?,
+            s.parse::<u64>().ok()?,
         ),
-        2 => (
+        (Some(m), Some(s), None, None) => (
             0,
-            time_parts[0].parse::<u64>().ok()?,
-            time_parts[1].parse::<u64>().ok()?,
+            m.parse::<u64>().ok()?,
+            s.parse::<u64>().ok()?,
         ),
         _ => return None,
     };
 
-    Some(days * 86400 + hours * 3600 + minutes * 60 + seconds)
+    let day_secs = days.checked_mul(86400)?;
+    let hour_secs = hours.checked_mul(3600)?;
+    let min_secs = minutes.checked_mul(60)?;
+    day_secs.checked_add(hour_secs)?.checked_add(min_secs)?.checked_add(seconds)
 }
 
 /// Read the restart count from an append-only file.
@@ -198,21 +217,29 @@ fn read_restart_count(path: &Path) -> u32 {
 fn check_stale_socket(path: &Path) -> bool {
     use std::os::unix::net::UnixStream;
 
-    // If the socket file doesn't exist, it's not stale.
-    if !path.exists() {
-        return false;
-    }
-
-    // Try to connect with a short timeout.
-    UnixStream::connect(path).is_err()
+    // Stale = socket file exists but cannot be connected to.
+    path.exists() && UnixStream::connect(path).is_err()
 }
 
+/// # Platform behavior
+///
+/// On non-Unix platforms, Unix socket connectivity cannot be tested. This
+/// implementation returns `true` if the path exists (as a best-effort
+/// heuristic), but cannot distinguish a live socket from a stale one.
 #[cfg(not(unix))]
 fn check_stale_socket(path: &Path) -> bool {
-    // On non-Unix, just check if the file exists but is not connectable.
     path.exists()
 }
 
+/// Read the system boot time from `/proc/stat`.
+///
+/// Parses the `btime` field, which is the absolute time (in seconds since
+/// the Unix epoch) at which the system booted. This value is used to
+/// convert per-process start times (expressed in clock ticks since boot)
+/// into absolute timestamps for uptime calculation.
+///
+/// Returns `None` if `/proc/stat` cannot be read or the `btime` line is
+/// missing or unparseable.
 #[cfg(target_os = "linux")]
 fn read_boot_time() -> Option<u64> {
     let stat = fs::read_to_string("/proc/stat").ok()?;
@@ -313,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn read_pid_file_rejects_pid_zero() {
+    fn read_pid_file_accepts_pid_zero() {
         // PID 0 is valid on some systems but unusual; we accept it.
         let dir = setup_test_dir(Some("0"), None);
         assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(0));
@@ -472,5 +499,65 @@ mod tests {
             "serialization should succeed: {:?}",
             json.err()
         );
+    }
+
+    #[test]
+    fn read_pid_file_parses_max_pid() {
+        let dir = setup_test_dir(Some("4294967295"), None);
+        assert_eq!(
+            read_pid_file(&dir.path().join("toride.pid")),
+            Some(4294967295)
+        );
+    }
+
+    #[test]
+    fn read_pid_file_parses_pid_zero_with_newline() {
+        let dir = setup_test_dir(Some("0\n"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(0));
+    }
+
+    #[test]
+    fn read_restart_count_returns_zero_for_overflow_value() {
+        // u32::MAX + 1 overflows parse::<u32>() -> returns 0
+        let dir = setup_test_dir(None, Some("4294967296"));
+        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 0);
+    }
+
+    #[test]
+    fn read_restart_count_handles_whitespace_padded() {
+        let dir = setup_test_dir(None, Some(" 5 \n"));
+        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 5);
+    }
+
+    #[test]
+    fn parse_elapsed_time_handles_overflow() {
+        // u64::MAX days * 86400 overflows checked_mul, so parse returns None.
+        assert_eq!(
+            parse_elapsed_time("18446744073709551615-00:00:00"),
+            None
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn check_stale_socket_with_real_stale_socket() {
+        use std::os::unix::net::UnixListener;
+
+        let dir = TempDir::new().unwrap();
+        let sock_path = dir.path().join("real.sock");
+        let _listener = UnixListener::bind(&sock_path).unwrap();
+        // Drop the listener; the socket file persists but no one is listening.
+        drop(_listener);
+
+        // The socket file exists but no server is bound — should be stale.
+        // Note: on some platforms the file may be removed on drop, in which
+        // case check_stale_socket returns false (socket doesn't exist).
+        // We only assert stale=true if the file still exists after drop.
+        if sock_path.exists() {
+            assert!(
+                check_stale_socket(&sock_path),
+                "dropped listener socket should be stale"
+            );
+        }
     }
 }

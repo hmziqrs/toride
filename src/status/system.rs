@@ -77,8 +77,11 @@ pub struct NetworkStatus {
 /// System load average (1, 5, 15 minute windows).
 #[derive(Debug, Clone, Serialize)]
 pub struct LoadAverage {
+    /// 1-minute load average.
     pub one: f64,
+    /// 5-minute load average.
     pub five: f64,
+    /// 15-minute load average.
     pub fifteen: f64,
 }
 
@@ -88,6 +91,16 @@ impl SystemStatus {
     /// Each metric is collected independently — a failure reading one metric
     /// (e.g. permission denied) results in `None` for that field rather than
     /// propagating an error.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use toride::status::system::SystemStatus;
+    ///
+    /// let status = SystemStatus::collect();
+    /// println!("CPU: {:?}", status.cpu_usage);
+    /// println!("Memory: {} / {}", status.memory.used_bytes, status.memory.total_bytes);
+    /// ```
     pub fn collect() -> Self {
         let mut sys = System::new_with_specifics(
             RefreshKind::nothing()
@@ -144,7 +157,8 @@ impl SystemStatus {
     fn read_disk() -> DiskStatus {
         let disks = Disks::new_with_refreshed_list();
         // Use the root filesystem (first disk on macOS, "/" mount on Linux).
-        let disk = disks.iter().find(|d| d.mount_point() == std::path::Path::new("/"));
+        let root = std::path::Path::new("/");
+        let disk = disks.iter().find(|d| d.mount_point() == root);
         match disk {
             Some(d) => {
                 let total = d.total_space();
@@ -222,30 +236,25 @@ impl fmt::Display for SystemStatus {
             writeln!(f, "  CPU: N/A")?;
         }
 
-        writeln!(
-            f,
-            "  Memory: {} / {} ({:.1}%)",
-            format_bytes(self.memory.used_bytes),
-            format_bytes(self.memory.total_bytes),
-            self.memory.percentage
-        )?;
+        write!(f, "  Memory: ")?;
+        write_bytes(f, self.memory.used_bytes)?;
+        write!(f, " / ")?;
+        write_bytes(f, self.memory.total_bytes)?;
+        writeln!(f, " ({:.1}%)", self.memory.percentage)?;
 
-        writeln!(
-            f,
-            "  Disk: {} / {} ({:.1}%)",
-            format_bytes(self.disk.used_bytes),
-            format_bytes(self.disk.total_bytes),
-            self.disk.percentage
-        )?;
+        write!(f, "  Disk: ")?;
+        write_bytes(f, self.disk.used_bytes)?;
+        write!(f, " / ")?;
+        write_bytes(f, self.disk.total_bytes)?;
+        writeln!(f, " ({:.1}%)", self.disk.percentage)?;
 
-        writeln!(
-            f,
-            "  Network: {} sent, {} received",
-            format_bytes(self.network.bytes_transmitted),
-            format_bytes(self.network.bytes_received)
-        )?;
+        write!(f, "  Network: ")?;
+        write_bytes(f, self.network.bytes_transmitted)?;
+        write!(f, " sent, ")?;
+        write_bytes(f, self.network.bytes_received)?;
+        writeln!(f, " received")?;
 
-        if let Some(ref load) = self.load_average {
+        if let Some(load) = &self.load_average {
             writeln!(
                 f,
                 "  Load: {:.2} / {:.2} / {:.2}",
@@ -254,52 +263,99 @@ impl fmt::Display for SystemStatus {
         }
 
         if let Some(secs) = self.uptime_secs {
-            writeln!(f, "  Uptime: {}", format_duration(secs))?;
+            write!(f, "  Uptime: ")?;
+            write_duration(f, secs)?;
+            writeln!(f)?;
         }
 
         Ok(())
     }
 }
 
-/// Format bytes into a human-readable string (KiB, MiB, GiB, TiB).
-fn format_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    const TB: u64 = GB * 1024;
+const KB: u64 = 1024;
+const MB: u64 = KB * 1024;
+const GB: u64 = MB * 1024;
+const TB: u64 = GB * 1024;
+const PB: u64 = TB * 1024;
+const EB: u64 = PB * 1024;
 
-    if bytes >= TB {
-        format!("{:.1} TiB", bytes as f64 / TB as f64)
+/// Write bytes in human-readable form directly to the formatter.
+fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
+    if bytes >= EB {
+        write!(f, "{:.1} EB", bytes as f64 / EB as f64)
+    } else if bytes >= PB {
+        write!(f, "{:.1} PB", bytes as f64 / PB as f64)
+    } else if bytes >= TB {
+        write!(f, "{:.1} TiB", bytes as f64 / TB as f64)
     } else if bytes >= GB {
-        format!("{:.1} GiB", bytes as f64 / GB as f64)
+        write!(f, "{:.1} GiB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.1} MiB", bytes as f64 / MB as f64)
+        write!(f, "{:.1} MiB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.1} KiB", bytes as f64 / KB as f64)
+        write!(f, "{:.1} KiB", bytes as f64 / KB as f64)
     } else {
-        format!("{bytes} B")
+        write!(f, "{bytes} B")
     }
 }
 
-/// Format seconds into a human-readable duration string.
-fn format_duration(secs: u64) -> String {
+/// Write seconds in human-readable form directly to the formatter.
+///
+/// Intermediate zero-valued units (hours, minutes) are included when a
+/// higher unit is non-zero. For example, 3600 seconds renders as
+/// `1h 0m 0s` rather than `1h 0s`.
+fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
     let minutes = (secs % 3600) / 60;
     let seconds = secs % 60;
 
-    let mut parts = Vec::new();
+    let mut first = true;
     if days > 0 {
-        parts.push(format!("{days}d"));
+        write!(f, "{days}d")?;
+        first = false;
     }
-    if hours > 0 {
-        parts.push(format!("{hours}h"));
+    if hours > 0 || !first {
+        if !first {
+            write!(f, " ")?;
+        }
+        write!(f, "{hours}h")?;
+        first = false;
     }
-    if minutes > 0 {
-        parts.push(format!("{minutes}m"));
+    if minutes > 0 || !first {
+        if !first {
+            write!(f, " ")?;
+        }
+        write!(f, "{minutes}m")?;
+        first = false;
     }
-    parts.push(format!("{seconds}s"));
-    parts.join(" ")
+    if !first {
+        write!(f, " ")?;
+    }
+    write!(f, "{seconds}s")
+}
+
+/// Format bytes into a human-readable string. Wrapper for test use.
+#[cfg(test)]
+fn format_bytes(bytes: u64) -> String {
+    struct Fmt(u64);
+    impl fmt::Display for Fmt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write_bytes(f, self.0)
+        }
+    }
+    Fmt(bytes).to_string()
+}
+
+/// Format seconds into a human-readable duration string. Wrapper for test use.
+#[cfg(test)]
+fn format_duration(secs: u64) -> String {
+    struct Fmt(u64);
+    impl fmt::Display for Fmt {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write_duration(f, self.0)
+        }
+    }
+    Fmt(secs).to_string()
 }
 
 #[cfg(test)]
@@ -379,7 +435,7 @@ mod tests {
     }
 
     #[test]
-    fn network_bytes_are_non_negative() {
+    fn network_fields_are_accessible() {
         let status = SystemStatus::collect();
         // u64 is always >= 0, but we verify the values are reasonable.
         let _ = status.network.bytes_received;
@@ -489,5 +545,71 @@ mod tests {
         let status = SystemStatus::collect();
         let json = serde_json::to_string(&status);
         assert!(json.is_ok(), "serialization should succeed: {:?}", json.err());
+    }
+
+    #[test]
+    fn format_bytes_one_byte() {
+        assert_eq!(format_bytes(1), "1 B");
+    }
+
+    #[test]
+    fn format_bytes_boundary_below_kib() {
+        assert_eq!(format_bytes(1023), "1023 B");
+    }
+
+    #[test]
+    fn format_bytes_u64_max() {
+        // u64::MAX = 18_446_744_073_709_551_615 ≈ 16.0 EB
+        let result = format_bytes(u64::MAX);
+        assert!(
+            result.ends_with("EB"),
+            "u64::MAX should format as EB, got: {result}"
+        );
+    }
+
+    #[test]
+    fn format_duration_one_second() {
+        assert_eq!(format_duration(1), "1s");
+    }
+
+    #[test]
+    fn format_duration_exactly_one_minute() {
+        assert_eq!(format_duration(60), "1m 0s");
+    }
+
+    #[test]
+    fn format_duration_exactly_one_hour() {
+        assert_eq!(format_duration(3600), "1h 0m 0s");
+    }
+
+    #[test]
+    fn format_duration_exactly_one_day() {
+        assert_eq!(format_duration(86400), "1d 0h 0m 0s");
+    }
+
+    #[test]
+    fn display_with_none_cpu() {
+        let status = SystemStatus {
+            cpu_usage: None,
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+            },
+            disk: DiskStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+            },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "test".to_string(),
+        };
+        let output = format!("{status}");
+        assert!(output.contains("CPU: N/A"), "expected 'CPU: N/A' in output:\n{output}");
     }
 }
