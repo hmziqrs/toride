@@ -36,9 +36,16 @@ impl AuthorizedKeyEntry {
     /// Returns `None` if the stored key data cannot be re-parsed (corrupted entry).
     pub(super) fn fingerprint(&self) -> Option<String> {
         let key_line = self.openssh_key_line();
-        ssh_key::PublicKey::from_openssh(&key_line)
-            .ok()
-            .map(|pk| pk.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+        match ssh_key::PublicKey::from_openssh(&key_line) {
+            Ok(pk) => Some(pk.fingerprint(ssh_key::HashAlg::Sha256).to_string()),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to re-parse authorized_keys entry at line {}: {e}",
+                    self.line_number
+                );
+                None
+            }
+        }
     }
 }
 

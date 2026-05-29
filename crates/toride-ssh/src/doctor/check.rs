@@ -1,5 +1,9 @@
 use crate::{Diagnostic, Result};
 
+/// Return type for async check execution.
+pub type CheckFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
+
 /// A single diagnostic check that can be run independently.
 pub trait Check: Send + Sync {
     /// Machine-readable check identifier.
@@ -7,7 +11,5 @@ pub trait Check: Send + Sync {
     /// Module name for diagnostic grouping.
     fn module(&self) -> &'static str;
     /// Execute the check and return any findings.
-    fn run(
-        &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>;
+    fn run(&self) -> CheckFuture<'_>;
 }

@@ -195,6 +195,12 @@ pub struct SshManager {
     paths: SshPaths,
 }
 
+impl Default for SshManager {
+    fn default() -> Self {
+        Self::new().expect("failed to resolve SSH paths")
+    }
+}
+
 impl SshManager {
     /// Create a new manager resolving `~/.ssh` from the user's home directory.
     pub fn new() -> Result<Self> {

@@ -93,3 +93,48 @@ fn parse_line_should_parse_security_key_type() {
     let entry = parse_line(line, 11).unwrap();
     assert_eq!(entry.key_type, "sk-ssh-ed25519@openssh.com");
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_empty_string_errors() {
+    assert!(parse_line("", 1).is_err());
+}
+
+#[test]
+fn parse_line_whitespace_only_errors() {
+    assert!(parse_line("   ", 1).is_err());
+}
+
+#[test]
+fn parse_line_preserves_line_number() {
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 42).unwrap();
+    assert_eq!(entry.line_number, 42);
+}
+
+#[test]
+fn parse_line_multiple_hosts() {
+    let line = "host1,host2,host3 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts.len(), 3);
+    assert_eq!(entry.hosts[0], "host1");
+    assert_eq!(entry.hosts[1], "host2");
+    assert_eq!(entry.hosts[2], "host3");
+}
+
+#[test]
+fn parse_line_negated_host_pattern() {
+    let line = "!badhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["!badhost"]);
+}
+
+#[test]
+fn parse_line_glob_pattern() {
+    let line = "*.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["*.example.com"]);
+}

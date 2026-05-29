@@ -43,9 +43,9 @@ pub fn add_host(
         .map_or(ast.nodes.len(), |i| i + 1);
 
     // Insert a blank line separator before the new block if needed.
-    if !ast.nodes.is_empty() && insert_pos > 0 {
-        let prev_is_blank = insert_pos > 0
-            && matches!(ast.nodes.get(insert_pos - 1), Some(ConfigNode::BlankLine));
+    if insert_pos > 0 {
+        let prev_is_blank =
+            matches!(ast.nodes.get(insert_pos - 1), Some(ConfigNode::BlankLine));
         if !prev_is_blank {
             ast.nodes.insert(insert_pos, ConfigNode::BlankLine);
             ast.nodes.insert(insert_pos + 1, block);

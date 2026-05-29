@@ -141,6 +141,11 @@ pub(crate) fn parse_forward_output(output: &str) -> Vec<PortForward> {
 }
 
 /// Parse a single forward line from `ssh -O list` output.
+///
+/// # Safety
+///
+/// SSH `-O list` output is always ASCII, so byte-level indexing via
+/// `find`/`split_at` is safe.
 pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Option<PortForward> {
     // Two forms:
     //   "<addr> port <lport>, forwarding to <raddr> port <rport>"  (local/remote)
@@ -239,23 +244,11 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
     };
 
     let spec = if forward.forward_type == ForwardType::Dynamic {
-        format!(
-            "[{}]:{}",
-            if forward.local_addr == "*" {
-                "*"
-            } else {
-                &forward.local_addr
-            },
-            forward.local_port
-        )
+        format!("[{}]:{}", &forward.local_addr, forward.local_port)
     } else {
         format!(
             "[{}]:{}:{}:{}",
-            if forward.local_addr == "*" {
-                "*"
-            } else {
-                &forward.local_addr
-            },
+            &forward.local_addr,
             forward.local_port,
             if forward.remote_addr.is_empty() {
                 "localhost"

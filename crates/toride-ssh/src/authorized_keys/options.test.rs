@@ -136,3 +136,83 @@ fn unescape_should_convert_escaped_backslash_to_literal() {
 fn unescape_should_preserve_trailing_backslash() {
     assert_eq!(unescape("hello\\"), "hello\\");
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case tests for comma-separated from/permit-open
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_options_from_comma_separated() {
+    let opts = parse_options("from=\"host1,host2,host3\"").unwrap();
+    assert_eq!(opts.from, vec!["host1", "host2", "host3"]);
+}
+
+#[test]
+fn parse_options_from_comma_separated_with_spaces() {
+    let opts = parse_options("from=\"host1, host2 , host3\"").unwrap();
+    assert_eq!(opts.from, vec!["host1", "host2", "host3"]);
+}
+
+#[test]
+fn parse_options_from_single_value() {
+    let opts = parse_options("from=\"host1\"").unwrap();
+    assert_eq!(opts.from, vec!["host1"]);
+}
+
+#[test]
+fn parse_options_from_empty_string() {
+    let opts = parse_options("from=\"\"").unwrap();
+    assert!(opts.from.is_empty());
+}
+
+#[test]
+fn parse_options_permit_open_comma_separated() {
+    let opts = parse_options("permit-open=\"host1:22,host2:22,host3:22\"").unwrap();
+    assert_eq!(opts.permit_open, vec!["host1:22", "host2:22", "host3:22"]);
+}
+
+#[test]
+fn parse_options_permit_open_comma_separated_with_spaces() {
+    let opts = parse_options("permit-open=\"host1:22, host2:22\"").unwrap();
+    assert_eq!(opts.permit_open, vec!["host1:22", "host2:22"]);
+}
+
+#[test]
+fn parse_options_permit_open_empty_string() {
+    let opts = parse_options("permit-open=\"\"").unwrap();
+    assert!(opts.permit_open.is_empty());
+}
+
+#[test]
+fn parse_options_multiple_from_directives() {
+    // Each from="..." occurrence should push entries
+    let opts = parse_options("from=\"host1\",from=\"host2\"").unwrap();
+    assert_eq!(opts.from, vec!["host1", "host2"]);
+}
+
+#[test]
+fn parse_options_environment_without_equals() {
+    // environment="VAR" (no = in value) should set empty value
+    let opts = parse_options("environment=\"VAR\"").unwrap();
+    assert_eq!(opts.environment, vec![("VAR".to_string(), String::new())]);
+}
+
+#[test]
+fn parse_options_whitespace_only() {
+    let opts = parse_options("   ").unwrap();
+    assert!(opts.command.is_none());
+    assert!(opts.from.is_empty());
+    assert!(!opts.no_pty);
+}
+
+#[test]
+fn parse_options_trailing_comma() {
+    let opts = parse_options("no-pty,").unwrap();
+    assert!(opts.no_pty);
+}
+
+#[test]
+fn parse_options_leading_comma() {
+    let opts = parse_options(",no-pty").unwrap();
+    assert!(opts.no_pty);
+}

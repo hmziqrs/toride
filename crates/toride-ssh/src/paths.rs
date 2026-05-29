@@ -11,6 +11,12 @@ pub struct SshPaths {
     authorized_keys_path: PathBuf,
 }
 
+impl Default for SshPaths {
+    fn default() -> Self {
+        Self::new().expect("home directory not found")
+    }
+}
+
 impl SshPaths {
     /// Resolve paths from the user's home directory.
     pub fn new() -> Result<Self> {

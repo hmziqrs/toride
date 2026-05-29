@@ -97,6 +97,9 @@ fn load_and_flatten<'a>(
     visited: &'a mut HashSet<PathBuf>,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConfigAst>> + 'a>> {
     Box::pin(async move {
+        // PERF: If canonicalize fails (e.g. permission denied, broken symlink),
+        // cycle detection may not catch symlink loops. This is acceptable because
+        // SSH config files are unlikely to use symlinks.
         let canonical = path
             .canonicalize()
             .unwrap_or_else(|_| path.to_owned());
@@ -190,19 +193,31 @@ fn expand_tilde_and_env(path: &str) -> String {
     result
 }
 
-/// Expand environment variables in `${VAR}` and `$VAR` format.
+/// Expand environment variables in `${VAR}` format.
+///
+/// Uses a single-pass builder to avoid repeated string reallocations.
 fn expand_env_vars(s: &str) -> String {
-    let mut result = s.to_owned();
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.char_indices().peekable();
 
-    // Simple parser for ${VAR}.
-    while let Some(start) = result.find("${") {
-        let end = result[start + 2..].find('}').map(|i| start + 2 + i);
-        if let Some(end) = end {
-            let var_name = &result[start + 2..end];
-            let value = std::env::var(var_name).unwrap_or_default();
-            result = format!("{}{}{}", &result[..start], value, &result[end + 1..]);
+    while let Some((i, ch)) = chars.next() {
+        if ch == '$' {
+            if let Some((_, '{')) = chars.peek() {
+                chars.next(); // consume '{'
+                let start = i + 2;
+                if let Some(end_offset) = s[start..].find('}') {
+                    let var_name = &s[start..start + end_offset];
+                    result.push_str(&std::env::var(var_name).unwrap_or_default());
+                    // Skip to after '}'
+                    for _ in 0..=end_offset {
+                        chars.next();
+                    }
+                    continue;
+                }
+            }
+            result.push(ch);
         } else {
-            break;
+            result.push(ch);
         }
     }
 
@@ -412,14 +427,11 @@ fn whoami() -> String {
 
 /// Get the local hostname.
 fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| {
-            std::process::Command::new("hostname")
-                .output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-                .map_err(|_| std::env::VarError::NotPresent)
-        })
-        .unwrap_or_else(|_| "localhost".to_owned())
+    std::env::var("HOSTNAME").unwrap_or_else(|_| {
+        gethostname::gethostname()
+            .to_string_lossy()
+            .into_owned()
+    })
 }
 
 /// Check if a hostname matches SSH config patterns (reuses directive logic).
@@ -454,3 +466,7 @@ fn match_criteria_host(criteria: &str, target_host: &str) -> bool {
 
     has_host_clause && host_matched
 }
+
+#[cfg(test)]
+#[path = "resolve.test.rs"]
+mod tests;

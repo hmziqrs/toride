@@ -6,6 +6,17 @@ use crate::{Error, Result};
 
 /// Derive and write the `.pub` file for a private key.
 pub async fn repair_public_key(private_key_path: &Path) -> Result<()> {
+    // Validate the path before spawning the blocking task.
+    if !private_key_path.exists() {
+        return Err(Error::KeyNotFound(private_key_path.display().to_string()));
+    }
+    if !private_key_path.is_file() {
+        return Err(Error::KeyParseFailed(format!(
+            "{} is not a regular file",
+            private_key_path.display()
+        )));
+    }
+
     let private_path = private_key_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
@@ -44,10 +55,7 @@ pub async fn repair_public_key(private_key_path: &Path) -> Result<()> {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&public_path, std::fs::Permissions::from_mode(0o644))
                 .map_err(|e| {
-                    Error::PermissionDenied(format!(
-                        "failed to set permissions on {}: {e}",
-                        public_path.display()
-                    ))
+                    Error::Io(e)
                 })?;
         }
 

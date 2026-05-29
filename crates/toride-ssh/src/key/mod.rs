@@ -78,15 +78,18 @@ impl<'a> KeyService<'a> {
 
         let cert_path = self.paths.ssh_dir().join(format!("{}-cert.pub", params.name));
 
-        let params_clone = params.clone();
+        // Destructure to avoid cloning the entire params struct into spawn_blocking.
+        let backup = params.backup;
+        let remove_public = params.remove_public;
+        let remove_certificate = params.remove_certificate;
 
         tokio::task::spawn_blocking(move || {
             // Backup if requested
-            if params_clone.backup {
+            if backup {
                 let backup_path = private_path.with_extension("bak");
                 std::fs::rename(&private_path, &backup_path)?;
 
-                if params_clone.remove_public && public_path.exists() {
+                if remove_public && public_path.exists() {
                     let stem = public_path.file_stem().unwrap_or(OsStr::new("")).to_string_lossy();
                     let pub_backup = public_path.with_file_name(format!("{stem}.pub.bak"));
                     if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
@@ -94,7 +97,7 @@ impl<'a> KeyService<'a> {
                     }
                 }
 
-                if params_clone.remove_certificate && cert_path.exists() {
+                if remove_certificate && cert_path.exists() {
                     let name = cert_path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
                     let cert_backup = cert_path.with_file_name(format!("{name}.bak"));
                     if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
@@ -106,12 +109,12 @@ impl<'a> KeyService<'a> {
                 std::fs::remove_file(&private_path)?;
 
                 // Remove public key companion
-                if params_clone.remove_public && public_path.exists() {
+                if remove_public && public_path.exists() {
                     std::fs::remove_file(&public_path)?;
                 }
 
                 // Remove certificate companion
-                if params_clone.remove_certificate && cert_path.exists() {
+                if remove_certificate && cert_path.exists() {
                     std::fs::remove_file(&cert_path)?;
                 }
             }
@@ -170,7 +173,7 @@ async fn remove_key_from_agent(private_path: &std::path::Path) {
 ///
 /// This is a basic implementation that removes lines containing the key path.
 /// Read errors are non-fatal (the config may be unreadable due to permissions).
-async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<()> {
+async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
     // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
     let config_path = paths.config_path().to_path_buf();
 
@@ -179,7 +182,11 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
     }
 
     let key_name_owned = key_name.to_owned();
-    let ssh_dir_str = paths.ssh_dir().to_string_lossy().into_owned();
+    let ssh_dir_str = paths
+        .ssh_dir()
+        .to_str()
+        .unwrap_or("~/.ssh")
+        .to_owned();
 
     tokio::task::spawn_blocking(move || {
         let content = match std::fs::read_to_string(&config_path) {
@@ -231,3 +238,7 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
     .await
     .map_err(|e| Error::TaskFailed(format!("config cleanup task failed: {e}")))?
 }
+
+#[cfg(test)]
+#[path = "mod.test.rs"]
+mod tests;

@@ -129,6 +129,106 @@ fn extract_pid_from_patterns() {
     assert_eq!(extract_pid_from_name("ssh-hash-0"), None);
 }
 
+// ---------------------------------------------------------------------------
+// Edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_forward_line_empty_string() {
+    assert!(parse_forward_line("", ForwardType::Local).is_none());
+}
+
+#[test]
+fn parse_forward_line_no_port_keyword() {
+    assert!(parse_forward_line("127.0.0.1 8080", ForwardType::Local).is_none());
+}
+
+#[test]
+fn parse_forward_line_dynamic_empty_addr() {
+    // After trim_start, " port 1080" becomes "port 1080" which has no " port " — returns None
+    assert!(parse_forward_line(" port 1080", ForwardType::Dynamic).is_none());
+}
+
+#[test]
+fn parse_forward_line_remote_forward() {
+    let line = "0.0.0.0 port 2222, forwarding to 127.0.0.1 port 22";
+    let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
+    assert_eq!(fwd.forward_type, ForwardType::Remote);
+    assert_eq!(fwd.local_addr, "0.0.0.0");
+    assert_eq!(fwd.remote_port, 22);
+}
+
+#[test]
+fn parse_forward_output_only_local_section() {
+    let output = "Local connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 1);
+    assert_eq!(fwds[0].forward_type, ForwardType::Local);
+}
+
+#[test]
+fn parse_forward_output_unknown_section_header() {
+    let output = "Unknown section:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
+    let fwds = parse_forward_output(output);
+    assert!(fwds.is_empty());
+}
+
+#[test]
+fn parse_forward_output_blank_lines_between_entries() {
+    let output = "\
+Local connections:
+  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
+
+  127.0.0.1 port 9090, forwarding to 10.0.0.2 port 80
+";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 2);
+}
+
+#[test]
+fn extract_host_from_name_no_at_sign() {
+    assert_eq!(extract_host_from_name("some-random-name"), "some-random-name");
+}
+
+#[test]
+fn extract_host_from_name_only_prefix() {
+    assert_eq!(extract_host_from_name("cm-"), "");
+}
+
+#[test]
+fn extract_host_from_name_at_no_port() {
+    assert_eq!(extract_host_from_name("cm-user@host"), "host");
+}
+
+#[test]
+fn extract_pid_from_name_no_dash() {
+    assert_eq!(extract_pid_from_name("nodash"), None);
+}
+
+#[test]
+fn extract_pid_from_name_non_numeric() {
+    assert_eq!(extract_pid_from_name("ssh-hash-abc"), None);
+}
+
+#[test]
+fn extract_pid_from_name_large_pid() {
+    assert_eq!(extract_pid_from_name("ssh-hash-999999"), Some(999999));
+}
+
+#[test]
+fn forward_type_display() {
+    assert_eq!(ForwardType::Local.to_string(), "local");
+    assert_eq!(ForwardType::Remote.to_string(), "remote");
+    assert_eq!(ForwardType::Dynamic.to_string(), "dynamic");
+}
+
+#[test]
+fn parse_forward_line_with_extra_whitespace() {
+    // The parser expects exactly " port " (single space) — multiple spaces return None
+    let line = "  127.0.0.1  port  8080,  forwarding  to  10.0.0.1  port  80  ";
+    assert!(parse_forward_line(line, ForwardType::Local).is_none());
+}
+
 #[test]
 fn cancel_spec_local_forward() {
     let fwd = PortForward {

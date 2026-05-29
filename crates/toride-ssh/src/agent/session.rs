@@ -48,7 +48,8 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         }
     }
 
-    if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
+    let tmp_dir = std::env::temp_dir();
+    if let Ok(mut entries) = tokio::fs::read_dir(&tmp_dir).await {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let name = path
@@ -80,7 +81,9 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
             });
         } else {
             // Dead socket — clean it up.
-            let _ = tokio::fs::remove_file(&socket_path).await;
+            if let Err(e) = tokio::fs::remove_file(&socket_path).await {
+                tracing::debug!("failed to remove dead socket {}: {e}", socket_path.display());
+            }
         }
     }
 

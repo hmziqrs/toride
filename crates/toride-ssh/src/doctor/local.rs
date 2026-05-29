@@ -3,7 +3,7 @@
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-use crate::doctor::check::Check;
+use crate::doctor::check::{Check, CheckFuture};
 use crate::paths::SshPaths;
 use crate::types::{Diagnostic, Severity};
 use crate::Result;
@@ -63,7 +63,7 @@ impl Check for SshDirExists<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
@@ -105,7 +105,7 @@ impl Check for SshDirPermissions<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
@@ -163,7 +163,7 @@ impl Check for ConfigExists<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let config_path = self.paths.config_path();
         Box::pin(async move {
@@ -198,7 +198,7 @@ impl Check for KnownHostsExists<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let kh_path = self.paths.known_hosts_path();
         Box::pin(async move {
@@ -234,7 +234,7 @@ impl Check for PrivateKeyPermissions<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
@@ -348,7 +348,7 @@ impl Check for AgentAvailable {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         Box::pin(async move {
             match std::env::var("SSH_AUTH_SOCK") {
@@ -398,7 +398,7 @@ impl Check for KeygenAvailable {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         Box::pin(async move {
             if crate::runner::tool_exists("ssh-keygen") {
@@ -433,7 +433,7 @@ impl Check for DefaultKeyExists<'_> {
     }
     fn run(
         &self,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
+    ) -> CheckFuture<'_>
     {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {

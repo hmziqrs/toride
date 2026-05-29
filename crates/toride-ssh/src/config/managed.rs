@@ -12,6 +12,16 @@ const OPEN_PREFIX: &str = "# >>> toride ";
 /// The prefix for a managed block closing marker.
 const CLOSE_PREFIX: &str = "# <<< toride ";
 
+/// Build the opening marker comment for a managed block.
+fn open_marker(name: &str) -> String {
+    format!("{OPEN_PREFIX}{name}")
+}
+
+/// Build the closing marker comment for a managed block.
+fn close_marker(name: &str) -> String {
+    format!("{CLOSE_PREFIX}{name}")
+}
+
 /// A managed block extracted from the AST, with its name and directive nodes.
 #[derive(Debug, Clone)]
 pub struct ManagedBlock {
@@ -27,8 +37,8 @@ pub struct ManagedBlock {
 /// `# <<< toride {name}` comment pairs at the *top level* of the config.
 /// Returns the directive nodes between the markers.
 pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock> {
-    let open = format!("{OPEN_PREFIX}{name}");
-    let close = format!("{CLOSE_PREFIX}{name}");
+    let open = open_marker(name);
+    let close = close_marker(name);
 
     let mut inside = false;
     let mut nodes = Vec::new();
@@ -89,8 +99,8 @@ pub fn upsert_managed_block(
     directives: Vec<(String, String)>,
 ) {
     // Try to find and replace existing block.
-    let open = format!("{OPEN_PREFIX}{name}");
-    let close = format!("{CLOSE_PREFIX}{name}");
+    let open = open_marker(name);
+    let close = close_marker(name);
 
     let open_idx = ast.nodes.iter().position(|node| {
         matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
@@ -148,8 +158,8 @@ pub fn upsert_managed_block(
 /// Removes the marker comments, all content between them, and any adjacent
 /// blank line to keep the config clean.
 pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
-    let open = format!("{OPEN_PREFIX}{name}");
-    let close = format!("{CLOSE_PREFIX}{name}");
+    let open = open_marker(name);
+    let close = close_marker(name);
 
     let open_idx = ast.nodes.iter().position(|node| {
         matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
@@ -187,7 +197,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
 
 /// Check whether a managed block with the given name exists.
 pub fn has_managed_block(ast: &ConfigAst, name: &str) -> bool {
-    let open = format!("{OPEN_PREFIX}{name}");
+    let open = open_marker(name);
     ast.nodes
         .iter()
         .any(|node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open))
