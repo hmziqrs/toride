@@ -196,8 +196,11 @@ pub struct SshManager {
 }
 
 impl Default for SshManager {
+    /// Return a best-effort manager. Falls back to `~/.ssh` if home is unavailable.
     fn default() -> Self {
-        Self::new().expect("failed to resolve SSH paths")
+        Self {
+            paths: SshPaths::default(),
+        }
     }
 }
 

@@ -80,6 +80,10 @@ pub struct SshKey {
     pub has_public_pair: bool,
     /// Whether a matching `-cert.pub` file exists.
     pub has_certificate: bool,
+    /// File modification time (seconds since Unix epoch), if available.
+    pub last_modified: Option<u64>,
+    /// Host aliases in `~/.ssh/config` that reference this key via `IdentityFile`.
+    pub used_by_hosts: Vec<String>,
 }
 
 /// Diagnostic severity level.

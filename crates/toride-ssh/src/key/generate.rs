@@ -170,6 +170,8 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
         permissions,
         has_public_pair,
         has_certificate: false,
+        last_modified: None,
+        used_by_hosts: Vec::new(),
     })
 }
 

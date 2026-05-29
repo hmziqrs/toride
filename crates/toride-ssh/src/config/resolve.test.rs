@@ -572,3 +572,70 @@ fn match_criteria_host_negation() {
     assert!(!match_criteria_host("host *,!badhost", "badhost"));
     assert!(match_criteria_host("host *,!badhost", "goodhost"));
 }
+
+// ---------------------------------------------------------------------------
+// Edge case tests for expand_env_vars (v2 — no duplicate names)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn expand_env_vars_empty_braces() {
+    // ${} with empty name — should expand to empty
+    assert_eq!(expand_env_vars("${}"), "");
+}
+
+#[test]
+fn expand_env_vars_trailing_dollar() {
+    // Bare $ at end of string
+    assert_eq!(expand_env_vars("test$"), "test$");
+}
+
+#[test]
+fn expand_env_vars_no_braces_in_path() {
+    unsafe { std::env::set_var("TORIDE_PVAR", "/usr/local"); }
+    assert_eq!(expand_env_vars("$TORIDE_PVAR/bin"), "/usr/local/bin");
+    unsafe { std::env::remove_var("TORIDE_PVAR"); }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case tests for expand_tokens (v2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn expand_tokens_unknown_x() {
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h" };
+    assert_eq!(expand_tokens("%X", &ctx), "%X");
+}
+
+#[test]
+fn expand_tokens_double_percent_preserved() {
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h" };
+    assert_eq!(expand_tokens("%%", &ctx), "%%");
+}
+
+#[test]
+fn expand_tokens_empty() {
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h" };
+    assert_eq!(expand_tokens("", &ctx), "");
+}
+
+// ---------------------------------------------------------------------------
+// Edge case tests for collapse_double_percent (v2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn collapse_double_pct_basic() {
+    assert_eq!(collapse_double_percent("%%"), "%");
+    assert_eq!(collapse_double_percent("100%%"), "100%");
+    assert_eq!(collapse_double_percent("%%test"), "%test");
+}
+
+#[test]
+fn collapse_double_pct_none() {
+    assert_eq!(collapse_double_percent("test"), "test");
+    assert_eq!(collapse_double_percent("%h"), "%h");
+}
+
+#[test]
+fn collapse_double_pct_empty() {
+    assert_eq!(collapse_double_percent(""), "");
+}

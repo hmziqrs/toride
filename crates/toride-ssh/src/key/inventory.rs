@@ -48,6 +48,11 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let has_public_pair = pub_path.exists();
     let has_certificate = cert_path.exists();
     let permissions = get_permissions(&path);
+    let last_modified = std::fs::metadata(&path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
 
     let private_key_data = std::fs::read_to_string(&path)
         .map_err(|e| Error::KeyParseFailed(format!("failed to read {filename}: {e}")))?;
@@ -93,6 +98,8 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 permissions,
                 has_public_pair,
                 has_certificate,
+                last_modified,
+                used_by_hosts: Vec::new(),
             })
         }
         Err(e) => {
@@ -119,6 +126,8 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 permissions,
                 has_public_pair,
                 has_certificate,
+                last_modified,
+                used_by_hosts: Vec::new(),
             })
         }
     }
@@ -257,6 +266,55 @@ mod tests {
 
         let p521 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP521 }).unwrap();
         assert!(matches!(p521, KeyType::EcdsaP521));
+    }
+
+    // Edge cases for guess_key_type_from_name
+
+    #[test]
+    fn guess_key_type_from_name_empty() {
+        // Empty name should default to Ed25519
+        assert!(matches!(guess_key_type_from_name(""), KeyType::Ed25519));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_partial_match() {
+        // "rsa_backup" should match because it contains "rsa"
+        assert!(matches!(guess_key_type_from_name("rsa_backup"), KeyType::Rsa { .. }));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_no_match() {
+        // Random name with no algo hint
+        assert!(matches!(guess_key_type_from_name("my_ssh_key"), KeyType::Ed25519));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_sk_before_base() {
+        // "id_ed25519_sk" must match SkEd25519, not Ed25519
+        assert!(matches!(guess_key_type_from_name("id_ed25519_sk"), KeyType::SkEd25519));
+        assert!(matches!(guess_key_type_from_name("id_ecdsa_sk"), KeyType::SkEcdsaP256));
+    }
+
+    // Edge cases for is_likely_encrypted
+
+    #[test]
+    fn is_likely_encrypted_case_sensitive() {
+        // "encrypted" (lowercase) in header
+        let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nencrypted\n";
+        assert!(is_likely_encrypted(data));
+    }
+
+    #[test]
+    fn is_likely_encrypted_beyond_first_5_lines() {
+        // "ENCRYPTED" on line 6 should NOT be detected
+        let data = "line1\nline2\nline3\nline4\nline5\nENCRYPTED\n";
+        assert!(!is_likely_encrypted(data));
+    }
+
+    #[test]
+    fn is_likely_encrypted_pem_proc_type() {
+        let data = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n";
+        assert!(is_likely_encrypted(data));
     }
 }
 

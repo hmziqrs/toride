@@ -146,6 +146,8 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
             permissions: None,
             has_public_pair: false,
             has_certificate: false,
+            last_modified: None,
+            used_by_hosts: Vec::new(),
         });
     }
 
@@ -266,6 +268,8 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         permissions: None,
         has_public_pair: false,
         has_certificate: false,
+        last_modified: None,
+        used_by_hosts: Vec::new(),
     })
 }
 

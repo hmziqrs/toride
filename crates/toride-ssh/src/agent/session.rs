@@ -150,6 +150,7 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 
     let stripped = name
         .strip_prefix("cm-")
+        .or_else(|| name.strip_prefix("control-"))
         .or_else(|| name.strip_prefix("ctrl-"))
         .or_else(|| name.strip_prefix("mux-"))
         .or_else(|| name.strip_prefix("ssh-"))

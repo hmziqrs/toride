@@ -3,6 +3,10 @@ use std::path::{Path, PathBuf};
 use crate::Result;
 
 /// Resolved paths for the `~/.ssh` directory.
+///
+/// All paths are resolved relative to the user's home directory at construction
+/// time. The `Default` impl returns a best-effort set of paths, falling back to
+/// `~/.ssh` when the home directory cannot be resolved (e.g., in containers).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshPaths {
     ssh_dir: PathBuf,
@@ -12,8 +16,16 @@ pub struct SshPaths {
 }
 
 impl Default for SshPaths {
+    /// Return best-effort paths, falling back to `~/.ssh` if home is unavailable.
     fn default() -> Self {
-        Self::new().expect("home directory not found")
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("~"));
+        let ssh_dir = home.join(".ssh");
+        Self {
+            config_path: ssh_dir.join("config"),
+            known_hosts_path: ssh_dir.join("known_hosts"),
+            authorized_keys_path: ssh_dir.join("authorized_keys"),
+            ssh_dir,
+        }
     }
 }
 
