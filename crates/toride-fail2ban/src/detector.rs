@@ -46,7 +46,7 @@ impl LogDetector {
         pattern: &str,
     ) -> crate::Result<Self> {
         let regex = Regex::new(pattern)
-            .map_err(|e| crate::Error::InvalidRegex(format!("Invalid regex '{}': {}", pattern, e)))?;
+            .map_err(|e| crate::Error::InvalidRegex(format!("Invalid regex '{pattern}': {e}")))?;
 
         Ok(Self {
             regex,
@@ -104,22 +104,22 @@ impl LogDetector {
 
             if let Some(detail) = self.match_line(&line, self.line_number) {
                 matches_found += 1;
-                if let Some(ip_str) = &detail.ip {
-                    if let Ok(ip) = ip_str.parse::<std::net::IpAddr>() {
-                        new_bans.push(BanEntry {
-                            ip,
-                            prefix: match ip {
-                                std::net::IpAddr::V4(_) => 32,
-                                std::net::IpAddr::V6(_) => 128,
-                            },
-                            banned_at: Utc::now(),
-                            expires_at: None,
-                            jail_name: self.jail_name.clone(),
-                            fail_count: 1,
-                            last_fail_at: Utc::now(),
-                            reason: Some(format!("Matched line {}", detail.line_number)),
-                        });
-                    }
+                if let Some(ip_str) = &detail.ip
+                    && let Ok(ip) = ip_str.parse::<std::net::IpAddr>()
+                {
+                    new_bans.push(BanEntry {
+                        ip,
+                        prefix: match ip {
+                            std::net::IpAddr::V4(_) => 32,
+                            std::net::IpAddr::V6(_) => 128,
+                        },
+                        banned_at: Utc::now(),
+                        expires_at: None,
+                        jail_name: self.jail_name.clone(),
+                        fail_count: 1,
+                        last_fail_at: Utc::now(),
+                        reason: Some(format!("Matched line {}", detail.line_number)),
+                    });
                 }
             }
         }

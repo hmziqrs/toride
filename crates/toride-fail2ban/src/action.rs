@@ -140,14 +140,12 @@ impl ActionExec {
                 Ok(s) if s.success() => {}
                 Ok(s) => {
                     return Err(crate::Error::CommandFailed(format!(
-                        "Validation command '{}' exited with status: {}",
-                        cmd_str, s
+                        "Validation command '{cmd_str}' exited with status: {s}"
                     )));
                 }
                 Err(e) => {
                     return Err(crate::Error::CommandFailed(format!(
-                        "Failed to run validation command '{}': {}",
-                        cmd_str, e
+                        "Failed to run validation command '{cmd_str}': {e}"
                     )));
                 }
             }
@@ -165,7 +163,7 @@ impl ActionExec {
             .args(["-c", cmd_str])
             .envs(env)
             .output()
-            .map_err(|e| crate::Error::CommandFailed(format!("Failed to execute '{}': {}", cmd_str, e)))?;
+            .map_err(|e| crate::Error::CommandFailed(format!("Failed to execute '{cmd_str}': {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

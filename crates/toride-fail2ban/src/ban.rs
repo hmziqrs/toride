@@ -195,6 +195,7 @@ impl BanManager {
             ip,
             prefix,
             banned_at: now,
+            #[expect(clippy::cast_possible_wrap, reason = "ban duration fits in i64")]
             expires_at: Some(now + Duration::seconds(ban_duration_secs as i64)),
             jail_name: jail_name.to_string(),
             fail_count,

@@ -64,10 +64,10 @@ pub fn detect_firewall() -> Firewall {
         if which_exists("firewall-cmd") {
             return Firewall::Firewalld;
         }
-    } else if cfg!(target_os = "macos") || cfg!(target_os = "freebsd") {
-        if which_exists("pfctl") {
-            return Firewall::Pf;
-        }
+    } else if (cfg!(target_os = "macos") || cfg!(target_os = "freebsd"))
+        && which_exists("pfctl")
+    {
+        return Firewall::Pf;
     }
     Firewall::Unknown
 }
@@ -178,8 +178,7 @@ pub fn iptables_commands(action: &str, ip: &str) -> Vec<String> {
 /// Get pf commands for banning/unbanning.
 pub fn pf_commands(action: &str, ip: &str) -> Vec<String> {
     match action {
-        "ban" => vec![format!("echo 'block in from {ip}' | pfctl -f -")],
-        "unban" => vec![format!("echo 'block in from {ip}' | pfctl -f -")],
+        "ban" | "unban" => vec![format!("echo 'block in from {ip}' | pfctl -f -")],
         _ => vec![],
     }
 }

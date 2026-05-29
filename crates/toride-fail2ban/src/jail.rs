@@ -59,6 +59,7 @@ impl Jail {
     }
 
     /// Set ignore IPs for this jail.
+    #[must_use]
     pub fn with_ignore_ips(mut self, ips: Vec<String>) -> Self {
         self.ignore_ips = ips;
         self
