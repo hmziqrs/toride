@@ -49,6 +49,14 @@ It should provide:
 
 Use existing crates first.
 
+Maintenance-first policy:
+
+* prefer crates with recent releases and active repositories
+* prefer crates with clear docs/API stability over niche wrappers
+* if two crates solve the same problem, choose the one with stronger maintenance signals
+* allow niche crates only behind optional feature flags and capability checks
+* re-check crate health before each milestone release
+
 Do not home-cook:
 
 * process scanning
@@ -75,6 +83,18 @@ Only custom-code:
 * error mapping
 * testing fixtures
 * docs and examples
+
+## Crate selection rubric
+
+Before adding any dependency, score it on:
+
+* maintenance: recent release + active issue/PR activity
+* adoption: meaningful usage in ecosystem (downloads/stars are hints, not truth)
+* API fit: solves a real gap in this crate's scope
+* portability: expected platform behavior and system dependencies
+* failure model: clear errors for missing permissions/tools
+
+If a crate scores weakly but is still useful, keep it optional and non-default.
 
 ## Crate name ideas
 
@@ -240,6 +260,8 @@ Use `procfs` for Linux-specific deeper stats when existing cross-platform APIs a
 
 Note: `systemstat` and `psutil` overlap heavily with `sysinfo`. Only add them if specific gaps are found during implementation. Prefer `sysinfo` + `procfs` as the primary stack.
 
+`procfs` should remain Linux-only and feature-gated (`linux-procfs`).
+
 ### OS info
 
 Use `os_info` for:
@@ -321,7 +343,8 @@ Use:
 
 * `sysinfo` for disks and mount usage
 * `procfs` for Linux disk I/O counters (`/proc/diskstats`)
-* `rsblkid`/`blkid` for filesystem UUID/label/type on Linux (via `duct`)
+* `rsblkid` for filesystem UUID/label/type on Linux when available
+* `blkid` command fallback via `duct` under `commands` feature
 * `udev` for Linux disk metadata (Linux-only, requires system `libudev`)
 * optional `smartctl` via `duct` command execution for SMART health (gate behind `commands` feature; do NOT use `smartctl-rs` — only 124 downloads, too immature)
 
@@ -355,9 +378,10 @@ Storage data to expose:
 Use:
 
 * `sysinfo` for basic network counters
-* `netdev` for network interface metadata (cross-platform, 1.85M downloads, actively maintained; avoid `getifs` — 9 of 13 versions yanked)
+* `netdev` for network interface metadata (feature-gated and validated during implementation)
 * `procfs` for Linux network I/O counters (`/proc/net/dev`)
 * `rtnetlink` for Linux advanced network details
+* `default-net` optional for default gateway/interface resolution
 
 Network data to expose:
 
@@ -389,7 +413,6 @@ Network data to expose:
 Use:
 
 * `sysinfo` as default
-* `procfs` for Linux-specific deep process details
 * `procfs` for Linux-specific deep process details
 
 Process data to expose:
@@ -586,10 +609,28 @@ Expose:
 Use:
 
 * cgroup filesystem readers
-* `cgroups-rs` for cgroups v1 and v2 (4.98M downloads, maintained by kata-containers)
+* `cgroups-rs` for cgroups v1/v2 where it simplifies parsing
 * Linux `/proc/1/cgroup`
 * DMI hints via `dmidecode`
 * WSL environment hints
+
+Prefer direct `/sys/fs/cgroup` + `/proc` parsing for simple limits if `cgroups-rs` is too restrictive for mixed runtime environments.
+
+## Maintenance snapshot (2026-05-30)
+
+Quick audit baseline for core crates in this plan (re-verify before implementation lock):
+
+* `sysinfo` `0.39.3` (repo: `GuillaumeGomez/sysinfo`) -> keep as default foundation
+* `procfs` `0.18.0` (repo: `eminence/procfs`) -> keep for Linux deep telemetry
+* `os_info` `3.15.0` -> keep for OS metadata
+* `duct` `1.1.1` (default `timeout` feature enabled) -> required for command providers
+* `nvml-wrapper` `0.12.1` -> keep for NVIDIA metrics
+* `starship-battery` `0.11.0` -> keep for battery
+* `dmidecode` `1.0.1` -> optional, good candidate for hardware inventory feature
+* `rsblkid` `0.4.1` -> optional, validate on target distros
+* `netdev` `0.43.0` -> optional, validate API/coverage during network provider implementation
+* `hwlocality` `1.0.0-alpha.12` -> optional/advanced only (alpha)
+* `cgroups-rs` `0.5.0` -> optional; benchmark against direct cgroup fs parsing
 
 ## Provider model
 
@@ -779,7 +820,9 @@ With timeout (always timeout external commands):
 use duct::cmd;
 use std::time::Duration;
 
-let handle = cmd!("system_profiler", "SPHardwareDataType").start()?;
+let handle = cmd!("system_profiler", "SPHardwareDataType")
+    .stderr_capture()
+    .start()?;
 match handle.wait_timeout(Duration::from_secs(5))? {
     Some(output) => { /* process output */ }
     None => { handle.kill()?; } // timed out
@@ -816,6 +859,7 @@ Rules:
 * redact command output before logging
 * command providers disabled by default unless explicitly enabled
 * gate all command providers behind `commands` feature flag
+* never run heavy commands in hot refresh loops; cache static command outputs with TTL
 
 ## Main public data model
 
