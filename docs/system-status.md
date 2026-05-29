@@ -227,23 +227,18 @@ It should cover the basic cross-platform surface:
 * components where available
 * users where available
 
-### Supplemental general telemetry
+### Deep Linux telemetry
 
-Use `systemstat` as optional supplement for:
+Use `procfs` for Linux-specific deeper stats when existing cross-platform APIs are not enough.
 
-* CPU load
-* load average
-* uptime
-* boot time
-* battery
-* filesystem mounts
-* disk I/O
-* network traffic
-* CPU temperature
+* `/proc/stat` detailed CPU counters
+* `/proc/meminfo` detailed memory stats
+* `/proc/diskstats` per-device I/O counters
+* `/proc/net/dev` detailed network counters
+* `/proc/[pid]/` deep per-process details
+* `/sys/class` device class info
 
-Use `psutil` as optional supplement where it provides cleaner process/system counters.
-
-Use `procfs` only for Linux-specific deeper stats when existing cross-platform APIs are not enough.
+Note: `systemstat` and `psutil` overlap heavily with `sysinfo`. Only add them if specific gaps are found during implementation. Prefer `sysinfo` + `procfs` as the primary stack.
 
 ### OS info
 
@@ -272,7 +267,7 @@ Use:
 * `sysinfo` for CPU brand/frequency/core counts
 * `raw-cpuid` for x86/x86_64 CPU features
 * `cpufeatures` for runtime feature detection where useful
-* `hwlocality` or `hwloc2` for topology/NUMA/cache/socket layout
+* `hwlocality` for topology/NUMA/cache/socket layout (alpha but only maintained hwloc binding; gate behind feature flag, requires system `libhwloc`)
 
 CPU data to expose:
 
@@ -298,7 +293,7 @@ CPU data to expose:
 Use:
 
 * `sysinfo` for memory usage
-* `dmidecode` or `smbioslib` for memory hardware details on systems where SMBIOS/DMI is available
+* `dmidecode` for memory hardware details on systems where SMBIOS/DMI is available
 * `hwlocality` for NUMA memory topology
 
 Memory data to expose:
@@ -325,11 +320,10 @@ Memory data to expose:
 Use:
 
 * `sysinfo` for disks and mount usage
-* `systemstat` or `psutil` for disk I/O counters
-* `rsblkid`/`blkid` for filesystem UUID/label/type on Linux
-* `udev` for Linux disk metadata
-* optional `smartctl-rs` or `smartctl` through safe command execution for SMART health
-* optional `libatasmart` for limited SMART support
+* `procfs` for Linux disk I/O counters (`/proc/diskstats`)
+* `rsblkid`/`blkid` for filesystem UUID/label/type on Linux (via `duct`)
+* `udev` for Linux disk metadata (Linux-only, requires system `libudev`)
+* optional `smartctl` via `duct` command execution for SMART health (gate behind `commands` feature; do NOT use `smartctl-rs` — only 124 downloads, too immature)
 
 Storage data to expose:
 
@@ -361,8 +355,8 @@ Storage data to expose:
 Use:
 
 * `sysinfo` for basic network counters
-* `netdev` or `getifs` for network interface metadata
-* `psutil` for network I/O counters and connections where useful
+* `netdev` for network interface metadata (cross-platform, 1.85M downloads, actively maintained; avoid `getifs` — 9 of 13 versions yanked)
+* `procfs` for Linux network I/O counters (`/proc/net/dev`)
 * `rtnetlink` for Linux advanced network details
 
 Network data to expose:
@@ -395,7 +389,7 @@ Network data to expose:
 Use:
 
 * `sysinfo` as default
-* `psutil` for richer process info
+* `procfs` for Linux-specific deep process details
 * `procfs` for Linux-specific deep process details
 
 Process data to expose:
@@ -432,17 +426,18 @@ Use a provider model.
 
 Default GPU identity providers:
 
-* `wgpu` adapter enumeration
-* `gfxinfo`
-* PCI enumeration via `pci-info`
+* `nvml-wrapper` for NVIDIA (primary, 4M downloads, well-maintained)
+* `wgpu` for cross-platform adapter enumeration (feature-gated, heavy dependency)
+  * Use `Instance::enumerate_adapters(backends)` — no device creation needed
+  * Returns name, vendor, device type (DiscreteGpu, IntegratedGpu, etc.)
+* `pci-info` + `pci-ids` for PCI-based GPU enumeration fallback
+* `duct` + `lspci`/`system_profiler` as zero-dep fallback for basic identity
 
 NVIDIA metrics provider:
 
-* `nvml-wrapper`
+* `nvml-wrapper` (GPU name, memory, temperature, utilization, processes)
 
-Optional emerging provider:
-
-* `all-smi`
+Note: Do NOT use `all-smi` — it is a CLI binary, not a library. Do NOT use `gfxinfo` — only 6K downloads, too immature. There is no mature cross-platform GPU metrics library in Rust; NVIDIA via NVML is the only well-supported path.
 
 GPU data to expose:
 
@@ -477,7 +472,7 @@ Provider support expectations:
 
 ### Battery
 
-Use `battery`.
+Use `starship-battery` (actively maintained fork of the abandoned `battery` crate; 1.59M downloads, maintained by the Starship prompt project).
 
 Expose:
 
@@ -499,7 +494,7 @@ Expose:
 Use:
 
 * `sysinfo` components where enough
-* `lm-sensors` on Linux
+* `lm-sensors` on Linux (v0.5.1, 23K downloads, active but niche; gate behind feature flag)
 * platform-specific providers where needed
 
 Expose:
@@ -518,12 +513,10 @@ Do not make sensors a hard dependency. Sensor support varies heavily.
 
 Use:
 
-* `dmidecode`
-* `smbioslib`
-* `pci-info`
-* `pci-ids`
-* `udev`
-* `devices`
+* `dmidecode` for SMBIOS/DMI parsing (v1.0.1, 159K downloads, reached 1.0 stable)
+* `pci-info` for PCI device enumeration
+* `pci-ids` for PCI vendor/device name resolution
+* `udev` for Linux device metadata (Linux-only, requires system `libudev`)
 
 Expose:
 
@@ -593,9 +586,9 @@ Expose:
 Use:
 
 * cgroup filesystem readers
-* `cgroups-rs` or `cgroups-fs`
+* `cgroups-rs` for cgroups v1 and v2 (4.98M downloads, maintained by kata-containers)
 * Linux `/proc/1/cgroup`
-* DMI hints
+* DMI hints via `dmidecode`
 * WSL environment hints
 
 ## Provider model
@@ -719,11 +712,11 @@ Internally store:
 * voltage as volts
 * fan speed as RPM
 
-Optional dependency:
+Recommended dependency:
 
-* `uom` if strict units are worth it
+* `uom` for type-safe units (10M downloads, no_std compatible). Prevents unit confusion between Hz/MHz/GHz, Celsius/Fahrenheit, Watts/Volts, etc.
 
-Otherwise keep simple typed wrappers:
+If `uom` is too heavy, use simple typed wrappers:
 
 ```rust
 struct Bytes(u64);
@@ -764,24 +757,65 @@ Command-based providers must be optional.
 
 Examples:
 
-* `smartctl`
-* `system_profiler`
-* `powermetrics`
-* `ioreg`
-* `nvidia-smi` fallback
-* `lsblk`
-* `lspci`
-* `wmic` fallback only if needed
+* `smartctl` for SMART disk health
+* `system_profiler` for macOS hardware info
+* `powermetrics` for macOS power/thermal data
+* `ioreg` for macOS I/O registry
+* `nvidia-smi` fallback for NVIDIA GPU
+* `lsblk` for Linux block devices
+* `lspci` for PCI device listing
+* `wmic` fallback only if needed on Windows
+
+### duct usage patterns
+
+Basic command (no shell, args as arrays):
+```rust
+use duct::cmd;
+let output = cmd!("smartctl", "--json", "-a", "/dev/sda").read()?;
+```
+
+With timeout (always timeout external commands):
+```rust
+use duct::cmd;
+use std::time::Duration;
+
+let handle = cmd!("system_profiler", "SPHardwareDataType").start()?;
+match handle.wait_timeout(Duration::from_secs(5))? {
+    Some(output) => { /* process output */ }
+    None => { handle.kill()?; } // timed out
+}
+```
+
+Check command availability first:
+```rust
+use which::which;
+if which("nvidia-smi").is_ok() {
+    // nvidia-smi is available
+}
+```
+
+Capture stderr for error reporting:
+```rust
+let output = cmd!("nvidia-smi", "--query-gpu=name", "--format=csv,noheader")
+    .stderr_capture()
+    .unchecked()
+    .run()?;
+if !output.status.success() {
+    // report error from output.stderr
+}
+```
 
 Rules:
 
-* no shell strings
-* pass args as arrays
-* timeout every command
-* capture stderr
+* no shell strings — always use `cmd!(...)` with args as arrays
+* timeout every command via `Handle::wait_timeout(Duration)`
+* capture stderr via `.stderr_capture()`
+* use `.unchecked()` when non-zero exit is expected (e.g., probing availability)
+* check command exists with `which::which()` before invoking
 * parse structured JSON where available
 * redact command output before logging
 * command providers disabled by default unless explicitly enabled
+* gate all command providers behind `commands` feature flag
 
 ## Main public data model
 
@@ -990,8 +1024,6 @@ Recommended:
 default = ["sysinfo-provider", "os-info", "serde"]
 
 sysinfo-provider = ["sysinfo"]
-systemstat-provider = ["systemstat"]
-psutil-provider = ["psutil"]
 linux-procfs = ["procfs"]
 linux-sensors = ["lm-sensors"]
 linux-udev = ["udev"]
@@ -1000,16 +1032,14 @@ linux-cgroups = ["cgroups-rs"]
 
 os-info = ["os_info"]
 cpu-cpuid = ["raw-cpuid"]
-hardware-dmi = ["dmidecode", "smbioslib"]
+hardware-dmi = ["dmidecode"]
 hardware-pci = ["pci-info", "pci-ids"]
 hardware-topology = ["hwlocality"]
 
 gpu-wgpu = ["wgpu"]
-gpu-gfxinfo = ["gfxinfo"]
 gpu-nvidia = ["nvml-wrapper"]
-gpu-all-smi = ["all-smi"]
 
-battery = ["battery"]
+battery = ["starship-battery"]
 smart = []
 commands = ["duct", "which"]
 serde = ["dep:serde"]
