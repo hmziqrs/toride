@@ -67,7 +67,11 @@ pub async fn parse_authorized_keys(path: &Path) -> Result<Vec<AuthorizedKeyEntry
 
 /// Synchronous implementation that reads and parses the file.
 fn parse_authorized_keys_sync(path: &Path) -> Result<Vec<AuthorizedKeyEntry>> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
 
     let mut entries = Vec::new();
 

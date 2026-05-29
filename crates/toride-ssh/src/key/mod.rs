@@ -27,9 +27,15 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<crate::Permissi
 /// Validate a key name to prevent path traversal attacks.
 ///
 /// Key names must not contain path separators, `..` components, or null bytes.
+/// Maximum length is 255 bytes (typical filesystem limit).
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::KeyGenerationFailed("key name must not be empty".to_owned()));
+    }
+    if name.len() > 255 {
+        return Err(Error::KeyGenerationFailed(
+            "key name must not exceed 255 bytes".to_owned(),
+        ));
     }
     if name.contains('\0') {
         return Err(Error::KeyGenerationFailed(
@@ -145,6 +151,97 @@ impl<'a> KeyService<'a> {
     /// Derive the `.pub` file from a private key.
     pub async fn repair_public(&self, private_key_path: &std::path::Path) -> Result<()> {
         repair::repair_public_key(private_key_path).await
+    }
+
+    /// Rename a key pair (private, public, certificate).
+    ///
+    /// Renames `~/.ssh/<old_name>` to `~/.ssh/<new_name>` and all companion
+    /// files (`.pub`, `-cert.pub`). Does NOT update config references — call
+    /// `remove_from_config` for the old name and add new `IdentityFile` entries
+    /// separately.
+    pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
+        validate_key_name(old_name)?;
+        validate_key_name(new_name)?;
+
+        let old_private = self.paths.ssh_dir().join(old_name);
+        let new_private = self.paths.ssh_dir().join(new_name);
+
+        if !old_private.exists() {
+            return Err(Error::KeyNotFound(old_name.to_owned()));
+        }
+        if new_private.exists() {
+            return Err(Error::KeyExists(new_name.to_owned()));
+        }
+
+        let old_public = old_private.with_extension("pub");
+        let new_public = new_private.with_extension("pub");
+        let old_cert = self.paths.ssh_dir().join(format!("{old_name}-cert.pub"));
+        let new_cert = self.paths.ssh_dir().join(format!("{new_name}-cert.pub"));
+
+        tokio::task::spawn_blocking(move || {
+            // Rename private key
+            std::fs::rename(&old_private, &new_private).map_err(|e| {
+                Error::CommandFailed(format!("failed to rename private key: {e}"))
+            })?;
+
+            // Rename public key if it exists
+            if old_public.exists()
+                && let Err(e) = std::fs::rename(&old_public, &new_public)
+            {
+                tracing::warn!("failed to rename public key: {e}");
+            }
+
+            // Rename certificate if it exists
+            if old_cert.exists()
+                && let Err(e) = std::fs::rename(&old_cert, &new_cert)
+            {
+                tracing::warn!("failed to rename certificate: {e}");
+            }
+
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("rename task failed: {e}")))?
+    }
+
+    /// Fix permissions on key files (set private keys to 0o600, public to 0o644).
+    pub async fn chmod_fix(&self, key_name: &str) -> Result<()> {
+        validate_key_name(key_name)?;
+
+        let private_path = self.paths.ssh_dir().join(key_name);
+        if !private_path.exists() {
+            return Err(Error::KeyNotFound(key_name.to_owned()));
+        }
+
+        let public_path = private_path.with_extension("pub");
+
+        tokio::task::spawn_blocking(move || {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    &private_path,
+                    std::fs::Permissions::from_mode(0o600),
+                )
+                .map_err(|e| Error::CommandFailed(format!("failed to set private key permissions: {e}")))?;
+
+                if public_path.exists()
+                    && let Err(e) = std::fs::set_permissions(
+                        &public_path,
+                        std::fs::Permissions::from_mode(0o644),
+                    )
+                {
+                    tracing::warn!("failed to set public key permissions: {e}");
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = (private_path, public_path);
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("chmod task failed: {e}")))?
     }
 
     /// Change the passphrase on an existing key (`ssh-keygen -p`).
@@ -293,11 +390,15 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
             .lines()
             .filter(|line| {
                 let trimmed = line.trim();
-                if !trimmed.starts_with("IdentityFile") {
+                // Extract the keyword (first whitespace-delimited token) and
+                // compare case-insensitively.  This avoids matching directives
+                // like "IdentityFileSomething" or comments containing the word.
+                let keyword = trimmed.split_whitespace().next().unwrap_or("");
+                if !keyword.eq_ignore_ascii_case("IdentityFile") {
                     return true;
                 }
-                // Check if this IdentityFile line references our key
-                let value = trimmed.trim_start_matches("IdentityFile").trim();
+                // Extract the value (everything after the keyword).
+                let value = trimmed[keyword.len()..].trim();
                 // Remove quotes if present
                 let value = value.trim_matches('"').trim_matches('\'');
                 value != key_pattern_tilde && value != key_pattern_abs && value != key_name_owned

@@ -482,13 +482,21 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
 }
 
 /// Simple hash function for `%C` token (OpenSSH uses SHA-1 of host:port:user).
-/// We use a deterministic string representation since SHA-1 adds a dependency.
+///
+/// Uses a FNV-1a style hash for stability across Rust versions.  This is NOT
+/// cryptographically secure — it only needs to be deterministic and collision-
+/// resistant enough for socket naming.  OpenSSH uses SHA-1 here, but we avoid
+/// the dependency.
 fn simple_hash(s: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    s.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    let bytes = s.as_bytes();
+    // FNV-1a 64-bit parameters
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let prime: u64 = 0x0100_0000_01b3;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(prime);
+    }
+    format!("{hash:016x}")
 }
 
 /// Replace `%%` with a single `%` (OpenSSH escape convention).

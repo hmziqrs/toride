@@ -26,6 +26,19 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
         return Err(Error::AgentNotAvailable);
     }
 
+    // Verify SSH_AUTH_SOCK points to an actual socket, not a regular file or FIFO.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if let Ok(meta) = std::fs::metadata(&path)
+            && !meta.file_type().is_socket()
+        {
+            return Err(Error::AgentOperationFailed(format!(
+                "SSH_AUTH_SOCK ({socket_path}) is not a Unix socket"
+            )));
+        }
+    }
+
     // Connect directly via UnixStream to avoid pulling in service_binding.
     let stream = tokio::task::spawn_blocking(move || {
         std::os::unix::net::UnixStream::connect(&path)

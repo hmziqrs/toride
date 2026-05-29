@@ -77,8 +77,13 @@ fn validate_key_name_with_control_chars() {
 
 #[test]
 fn validate_key_name_very_long() {
-    let long_name = "a".repeat(10000);
-    assert!(validate_key_name(&long_name).is_ok());
+    // Names up to 255 bytes are OK (filesystem limit).
+    let name_255 = "a".repeat(255);
+    assert!(validate_key_name(&name_255).is_ok());
+
+    // Names over 255 bytes are rejected.
+    let name_256 = "a".repeat(256);
+    assert!(validate_key_name(&name_256).is_err());
 }
 
 #[test]

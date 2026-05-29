@@ -39,7 +39,11 @@ pub async fn parse_known_hosts(path: &Path) -> Result<Vec<KnownHostEntry>> {
 
 /// Synchronous implementation that does the actual parsing.
 fn parse_known_hosts_sync(path: &Path) -> Result<Vec<KnownHostEntry>> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
 
     // We hand-parse here so we can capture the comment field and preserve
     // the raw host-pattern strings (the ssh-key crate decodes hashed

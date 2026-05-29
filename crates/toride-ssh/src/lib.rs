@@ -226,6 +226,11 @@ impl SshManager {
         agent::AgentService::new(&self.paths)
     }
 
+    /// `authorized_keys` management (listing, adding, removing keys).
+    pub fn authorized_keys(&self) -> authorized_keys::AuthorizedKeysService<'_> {
+        authorized_keys::AuthorizedKeysService::new(&self.paths)
+    }
+
     /// Diagnostic checks.
     pub fn doctor(&self) -> doctor::DoctorService<'_> {
         doctor::DoctorService::new(&self.paths)

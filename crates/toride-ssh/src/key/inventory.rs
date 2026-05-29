@@ -354,9 +354,10 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
                 continue;
             }
 
-            // Only consider regular files
+            // Only consider regular files (follow symlinks — users may
+            // symlink keys from other locations).
             let file_type = entry.file_type()?;
-            if !file_type.is_file() {
+            if !file_type.is_file() && !file_type.is_symlink() {
                 continue;
             }
 
