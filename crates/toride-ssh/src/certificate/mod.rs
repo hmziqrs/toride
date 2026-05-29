@@ -43,8 +43,7 @@ impl CertificateService {
     /// Creates the KRL file if it does not exist, or updates it if it does.
     /// The `key` parameter should be the path to the public key file to revoke.
     pub async fn revoke_key(&self, krl_path: &Path, key: &str) -> Result<()> {
-        let krl_str = krl_path.to_string_lossy().into_owned();
-        let key_owned = key.to_owned();
+        let krl_str = krl_path.to_string_lossy();
 
         // If the KRL already exists, use -u to update it in-place rather than
         // overwriting. Without -u, ssh-keygen -k replaces the entire KRL.
@@ -56,7 +55,7 @@ impl CertificateService {
         }
         args.push("-f");
         args.push(&krl_str);
-        args.push(&key_owned);
+        args.push(key);
 
         crate::runner::ssh_keygen(&args).await?;
 

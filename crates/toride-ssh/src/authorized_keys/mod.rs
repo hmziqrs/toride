@@ -36,7 +36,7 @@ impl<'a> AuthorizedKeysService<'a> {
     ///
     /// Returns an error if the file cannot be read or parsed.
     pub async fn list(&self) -> Result<Vec<AuthorizedKeyEntry>> {
-        parse::parse_authorized_keys(&self.paths.authorized_keys_path()).await
+        parse::parse_authorized_keys(self.paths.authorized_keys_path()).await
     }
 
     /// Append a new entry to the authorized_keys file.
@@ -56,7 +56,8 @@ impl<'a> AuthorizedKeysService<'a> {
         comment: Option<&str>,
         options: Option<&str>,
     ) -> Result<()> {
-        let path = self.paths.authorized_keys_path();
+        // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
+        let path = self.paths.authorized_keys_path().to_path_buf();
 
         // Validate the key
         let mut key_line = public_key.trim().to_string();
@@ -140,41 +141,42 @@ impl<'a> AuthorizedKeysService<'a> {
     ///
     /// Returns an error if the file cannot be read, parsed, or written.
     pub async fn remove(&self, fingerprint: &str) -> Result<usize> {
-        let path = self.paths.authorized_keys_path();
+        // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
+        let path = self.paths.authorized_keys_path().to_path_buf();
 
         let entries = self.list().await?;
-        let mut removed = 0;
 
-        // Build a set of line numbers to remove
-        let mut lines_to_remove = std::collections::HashSet::new();
-        for entry in &entries {
-            // Reconstruct the key portion to compute fingerprint
-            let key_line = format!("{} {}", entry.key_type, entry.public_key);
-            if let Ok(pk) = ssh_key::PublicKey::from_openssh(&key_line) {
-                let fp = pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
-                if fp == fingerprint {
-                    lines_to_remove.insert(entry.line_number);
-                    removed += 1;
-                }
-            }
-        }
+        // Collect line numbers of entries whose fingerprint matches.
+        let lines_to_remove: std::collections::HashSet<usize> = entries
+            .iter()
+            .filter(|e| e.fingerprint().as_deref() == Some(fingerprint))
+            .map(|e| e.line_number)
+            .collect();
 
-        if removed == 0 {
+        if lines_to_remove.is_empty() {
             return Ok(0);
         }
+
+        let removed = lines_to_remove.len();
 
         // Read the raw file to preserve formatting of kept lines
         let raw_contents = tokio::fs::read_to_string(&path).await?;
 
-        // Reconstruct the file without removed lines
-        let kept_lines: Vec<&str> = raw_contents
+        // Reconstruct the file without removed lines.
+        // Uses `fold` to avoid an intermediate `Vec` allocation.
+        let mut new_contents = raw_contents
             .lines()
             .enumerate()
             .filter(|(i, _)| !lines_to_remove.contains(&(i + 1)))
             .map(|(_, line)| line)
-            .collect();
-
-        let new_contents = format!("{}\n", kept_lines.join("\n"));
+            .fold(String::new(), |mut acc, line| {
+                if !acc.is_empty() {
+                    acc.push('\n');
+                }
+                acc.push_str(line);
+                acc
+            });
+        new_contents.push('\n');
 
         // Write atomically: write to temp file in same directory, then rename
         tokio::task::spawn_blocking(move || {
@@ -204,17 +206,8 @@ impl<'a> AuthorizedKeysService<'a> {
 
         let entries = self.list().await?;
 
-        for entry in entries {
-            let key_line = format!("{} {}", entry.key_type, entry.public_key);
-            if let Ok(pk) = ssh_key::PublicKey::from_openssh(&key_line) {
-                let fp = pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
-                if fp == target_fp {
-                    return Ok(true);
-                }
-            }
-        }
-
-        Ok(false)
+        // Use iterator `any()` for short-circuiting instead of manual loop.
+        Ok(entries.iter().any(|e| e.fingerprint().as_deref() == Some(&target_fp)))
     }
 }
 

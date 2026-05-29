@@ -42,7 +42,7 @@ pub struct KrlInfo {
 /// The dummy file (`/dev/null`) is required because `-Q` needs at least one key
 /// to query, but we only care about the listing output produced by `-l`.
 pub async fn inspect_krl(path: &Path) -> Result<KrlInfo> {
-    let path_str = path.to_string_lossy().into_owned();
+    let path_str = path.to_string_lossy();
 
     // -Q queries a KRL, -l causes it to also print the KRL contents.
     // A dummy file argument is required; /dev/null works as a no-op input.

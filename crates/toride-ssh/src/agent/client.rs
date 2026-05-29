@@ -21,11 +21,10 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
     let socket_path = std::env::var("SSH_AUTH_SOCK")
         .map_err(|_| Error::AgentNotAvailable)?;
 
-    if !std::path::Path::new(&socket_path).exists() {
+    let path = std::path::PathBuf::from(&socket_path);
+    if !path.exists() {
         return Err(Error::AgentNotAvailable);
     }
-
-    let path = std::path::PathBuf::from(&socket_path);
 
     // Connect directly via UnixStream to avoid pulling in service_binding.
     let stream = tokio::task::spawn_blocking(move || {
@@ -52,8 +51,10 @@ pub async fn list_identities() -> Result<Vec<SshKey>> {
     {
         match list_identities_native().await {
             Ok(keys) => return Ok(keys),
+            // No agent at all — propagate immediately rather than trying CLI.
             Err(Error::AgentNotAvailable) => return Err(Error::AgentNotAvailable),
-            Err(_) => { /* fall through to CLI */ }
+            // Other errors (e.g. protocol mismatch) — fall through to CLI.
+            Err(_) => {}
         }
     }
 

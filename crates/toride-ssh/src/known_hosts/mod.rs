@@ -23,7 +23,7 @@ impl<'a> KnownHostsService<'a> {
     ///
     /// Parses `~/.ssh/known_hosts` and returns every entry found.
     pub async fn list(&self) -> Result<Vec<KnownHostEntry>> {
-        parse::parse_known_hosts(&self.paths.known_hosts_path()).await
+        parse::parse_known_hosts(self.paths.known_hosts_path()).await
     }
 
     /// Scan a remote host for its public host keys.
@@ -41,7 +41,7 @@ impl<'a> KnownHostsService<'a> {
     /// form for privacy.  All keys for the host are written in a single
     /// I/O operation.
     pub async fn add(&self, host: &str) -> Result<()> {
-        scan::add_host_hashed(&self.paths.known_hosts_path(), host).await
+        scan::add_host_hashed(self.paths.known_hosts_path(), host).await
     }
 
     /// Remove all entries matching the given host from `~/.ssh/known_hosts`.
@@ -53,7 +53,8 @@ impl<'a> KnownHostsService<'a> {
     /// The removal is performed atomically (write to a temp file, then rename)
     /// so that a crash mid-write cannot corrupt the file.
     pub async fn remove(&self, host: &str) -> Result<()> {
-        let path = self.paths.known_hosts_path();
+        // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
+        let path = self.paths.known_hosts_path().to_path_buf();
         let host = host.to_owned();
 
         tokio::task::spawn_blocking(move || remove_host_sync(&path, &host))

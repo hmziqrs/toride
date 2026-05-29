@@ -68,8 +68,8 @@ pub async fn resolve(ssh_dir: &Path, host: &str) -> Result<ResolvedHost> {
                     );
                 }
             }
-            // TODO: full Match criteria parsing (host, user, exec, etc.)
-            // For now, we only support `host <pattern>` criteria.
+            // Only `host <pattern>` criteria is supported for Match blocks.
+            // Full criteria parsing (user, exec, etc.) is tracked separately.
             ConfigNode::MatchBlock { criteria, nodes, .. }
                 if match_criteria_host(criteria, host) =>
             {
@@ -283,11 +283,7 @@ fn resolve_block(
                 continue;
             }
 
-            seen.insert(key_lower.clone());
-
-            let directive = (keyword.clone(), value.clone());
-            resolved.directives.push(directive);
-
+            // Match first, then move key_lower into the set to avoid cloning.
             match key_lower.as_str() {
                 "hostname" => resolved.host_name = Some(value.clone()),
                 "user" => resolved.user = Some(value.clone()),
@@ -297,6 +293,11 @@ fn resolve_block(
                 "proxyjump" => resolved.proxy_jump = Some(value.clone()),
                 _ => {}
             }
+
+            resolved
+                .directives
+                .push((keyword.clone(), value.clone()));
+            seen.insert(key_lower);
         }
     }
 }

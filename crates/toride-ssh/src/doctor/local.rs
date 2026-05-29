@@ -13,30 +13,30 @@ use crate::Result;
 // ---------------------------------------------------------------------------
 
 /// Check that `~/.ssh` exists and is a directory.
-struct SshDirExists {
-    paths: SshPaths,
+struct SshDirExists<'a> {
+    paths: &'a SshPaths,
 }
 
 /// Check that `~/.ssh` has permission mode `0o700`.
 #[cfg(unix)]
-struct SshDirPermissions {
-    paths: SshPaths,
+struct SshDirPermissions<'a> {
+    paths: &'a SshPaths,
 }
 
 /// Check that `~/.ssh/config` exists.
-struct ConfigExists {
-    paths: SshPaths,
+struct ConfigExists<'a> {
+    paths: &'a SshPaths,
 }
 
 /// Check that `~/.ssh/known_hosts` exists.
-struct KnownHostsExists {
-    paths: SshPaths,
+struct KnownHostsExists<'a> {
+    paths: &'a SshPaths,
 }
 
 /// Check that all private key files under `~/.ssh` have mode `0o600`.
 #[cfg(unix)]
-struct PrivateKeyPermissions {
-    paths: SshPaths,
+struct PrivateKeyPermissions<'a> {
+    paths: &'a SshPaths,
 }
 
 /// Check that the SSH agent socket is reachable.
@@ -46,15 +46,15 @@ struct AgentAvailable;
 struct KeygenAvailable;
 
 /// Check that at least one default key pair exists.
-struct DefaultKeyExists {
-    paths: SshPaths,
+struct DefaultKeyExists<'a> {
+    paths: &'a SshPaths,
 }
 
 // ---------------------------------------------------------------------------
 // Check implementations
 // ---------------------------------------------------------------------------
 
-impl Check for SshDirExists {
+impl Check for SshDirExists<'_> {
     fn id(&self) -> &'static str {
         "ssh_dir_exists"
     }
@@ -96,7 +96,7 @@ impl Check for SshDirExists {
 }
 
 #[cfg(unix)]
-impl Check for SshDirPermissions {
+impl Check for SshDirPermissions<'_> {
     fn id(&self) -> &'static str {
         "ssh_dir_permissions"
     }
@@ -154,7 +154,7 @@ impl Check for SshDirPermissions {
     }
 }
 
-impl Check for ConfigExists {
+impl Check for ConfigExists<'_> {
     fn id(&self) -> &'static str {
         "config_exists"
     }
@@ -189,7 +189,7 @@ impl Check for ConfigExists {
     }
 }
 
-impl Check for KnownHostsExists {
+impl Check for KnownHostsExists<'_> {
     fn id(&self) -> &'static str {
         "known_hosts_exists"
     }
@@ -225,7 +225,7 @@ impl Check for KnownHostsExists {
 }
 
 #[cfg(unix)]
-impl Check for PrivateKeyPermissions {
+impl Check for PrivateKeyPermissions<'_> {
     fn id(&self) -> &'static str {
         "private_key_permissions"
     }
@@ -280,7 +280,7 @@ impl Check for PrivateKeyPermissions {
 
                 // Read only the first 4 KB to detect private key markers without
                 // loading potentially large files into memory.
-                let header = {
+                {
                     use tokio::io::AsyncReadExt;
                     let Ok(mut file) = tokio::fs::File::open(&path).await else {
                         continue;
@@ -289,14 +289,11 @@ impl Check for PrivateKeyPermissions {
                     let Ok(n) = file.read(&mut buf).await else {
                         continue;
                     };
-                    if n < 8 {
+                    // `from_utf8_lossy` returns `Cow<str>` so no allocation
+                    // occurs when the header is valid UTF-8 (always true for PEM).
+                    if n < 8 || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
                         continue;
                     }
-                    String::from_utf8_lossy(&buf[..n]).into_owned()
-                };
-
-                if !header.contains("PRIVATE KEY") {
-                    continue;
                 }
 
                 let mode = meta.permissions().mode() & 0o777;
@@ -427,7 +424,7 @@ impl Check for KeygenAvailable {
     }
 }
 
-impl Check for DefaultKeyExists {
+impl Check for DefaultKeyExists<'_> {
     fn id(&self) -> &'static str {
         "default_key_exists"
     }
@@ -476,35 +473,23 @@ impl Check for DefaultKeyExists {
 // ---------------------------------------------------------------------------
 
 /// Run all local diagnostic checks.
-pub async fn run_all(paths: &SshPaths) -> Result<Vec<Diagnostic>> {
-    let mut checks: Vec<Box<dyn Check>> = vec![
-        Box::new(SshDirExists {
-            paths: paths.clone(),
-        }),
+pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
+    let mut checks: Vec<Box<dyn Check + 'a>> = vec![
+        Box::new(SshDirExists { paths }),
     ];
 
     #[cfg(unix)]
-    checks.push(Box::new(SshDirPermissions {
-        paths: paths.clone(),
-    }));
+    checks.push(Box::new(SshDirPermissions { paths }));
 
-    checks.push(Box::new(ConfigExists {
-        paths: paths.clone(),
-    }));
-    checks.push(Box::new(KnownHostsExists {
-        paths: paths.clone(),
-    }));
+    checks.push(Box::new(ConfigExists { paths }));
+    checks.push(Box::new(KnownHostsExists { paths }));
 
     #[cfg(unix)]
-    checks.push(Box::new(PrivateKeyPermissions {
-        paths: paths.clone(),
-    }));
+    checks.push(Box::new(PrivateKeyPermissions { paths }));
 
     checks.push(Box::new(AgentAvailable));
     checks.push(Box::new(KeygenAvailable));
-    checks.push(Box::new(DefaultKeyExists {
-        paths: paths.clone(),
-    }));
+    checks.push(Box::new(DefaultKeyExists { paths }));
 
     let mut all_diagnostics = Vec::new();
     for check in &checks {

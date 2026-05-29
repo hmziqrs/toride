@@ -5,26 +5,26 @@ use crate::types::{Diagnostic, Severity};
 use crate::{Error, Result};
 
 /// Check whether the remote host is reachable via SSH.
-struct HostReachable {
-    host: String,
+struct HostReachable<'a> {
+    host: &'a str,
 }
 
 /// Check whether the host key is present in known_hosts.
-struct HostKeyKnown {
-    paths: SshPaths,
-    host: String,
+struct HostKeyKnown<'a> {
+    paths: &'a SshPaths,
+    host: &'a str,
 }
 
 /// Check whether agent forwarding works to the remote host.
-struct AgentForwarding {
-    host: String,
+struct AgentForwarding<'a> {
+    host: &'a str,
 }
 
 // ---------------------------------------------------------------------------
 // Check implementations
 // ---------------------------------------------------------------------------
 
-impl HostReachable {
+impl HostReachable<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
         // Verify `ssh` is available before attempting to connect.
         if !crate::runner::tool_exists("ssh") {
@@ -47,7 +47,7 @@ impl HostReachable {
                 "ConnectTimeout=5",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
-                self.host.as_str(),
+                self.host,
                 "true",
             ])
             .output()
@@ -77,7 +77,7 @@ impl HostReachable {
     }
 }
 
-impl HostKeyKnown {
+impl HostKeyKnown<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
         let kh_path = self.paths.known_hosts_path();
 
@@ -140,7 +140,7 @@ impl HostKeyKnown {
     }
 }
 
-impl AgentForwarding {
+impl AgentForwarding<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
         // The `-A` flag enables agent forwarding. This is safe for diagnostic
         // purposes (a brief `ssh-add -l` invocation) but note that agent
@@ -166,7 +166,7 @@ impl AgentForwarding {
                 "-o",
                 "StrictHostKeyChecking=accept-new",
                 "-A",
-                self.host.as_str(),
+                self.host,
                 "ssh-add -l",
             ])
             .output()
@@ -215,9 +215,7 @@ pub async fn run_all(paths: &SshPaths, host: &str) -> Result<Vec<Diagnostic>> {
     let mut all_diagnostics = Vec::new();
 
     // Host reachability
-    let check = HostReachable {
-        host: host.into(),
-    };
+    let check = HostReachable { host };
     let host_reachable = match check.run_check().await {
         Ok(d) => {
             let was_ok = d.iter().any(|d| d.severity == Severity::Ok);
@@ -231,10 +229,7 @@ pub async fn run_all(paths: &SshPaths, host: &str) -> Result<Vec<Diagnostic>> {
     };
 
     // Host key in known_hosts (local check, always runs).
-    let check = HostKeyKnown {
-        paths: paths.clone(),
-        host: host.into(),
-    };
+    let check = HostKeyKnown { paths, host };
     match check.run_check().await {
         Ok(d) => all_diagnostics.extend(d),
         Err(e) => all_diagnostics.push(err_diagnostic("host_key_known", &e)),
@@ -242,9 +237,7 @@ pub async fn run_all(paths: &SshPaths, host: &str) -> Result<Vec<Diagnostic>> {
 
     // Agent forwarding — skip if host is not reachable to avoid a slow timeout.
     if host_reachable {
-        let check = AgentForwarding {
-            host: host.into(),
-        };
+        let check = AgentForwarding { host };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
             Err(e) => all_diagnostics.push(err_diagnostic("agent_forwarding", &e)),

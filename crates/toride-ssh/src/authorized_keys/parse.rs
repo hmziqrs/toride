@@ -25,6 +25,23 @@ pub struct AuthorizedKeyEntry {
     pub raw_line: String,
 }
 
+impl AuthorizedKeyEntry {
+    /// Reconstruct the OpenSSH key line (`key-type base64-key`) for re-parsing.
+    fn openssh_key_line(&self) -> String {
+        format!("{} {}", self.key_type, self.public_key)
+    }
+
+    /// Compute the SHA-256 fingerprint of this entry's public key.
+    ///
+    /// Returns `None` if the stored key data cannot be re-parsed (corrupted entry).
+    pub(super) fn fingerprint(&self) -> Option<String> {
+        let key_line = self.openssh_key_line();
+        ssh_key::PublicKey::from_openssh(&key_line)
+            .ok()
+            .map(|pk| pk.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+    }
+}
+
 /// Parse an authorized_keys file at the given path.
 ///
 /// Blank lines and comment lines (starting with `#`) are skipped.
@@ -56,14 +73,9 @@ fn parse_authorized_keys_sync(path: &Path) -> Result<Vec<AuthorizedKeyEntry>> {
             continue;
         }
 
-        match parse_line(trimmed, line_number, raw_line) {
-            Ok(entry) => entries.push(entry),
-            Err(e) => {
-                return Err(Error::AuthorizedKeysParseFailed(format!(
-                    "line {line_number}: {e}"
-                )));
-            }
-        }
+        // `parse_line` already includes line-number context in its errors,
+        // so propagate directly to avoid double-prefixing.
+        entries.push(parse_line(trimmed, line_number, raw_line)?);
     }
 
     Ok(entries)

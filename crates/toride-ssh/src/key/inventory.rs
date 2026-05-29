@@ -1,5 +1,6 @@
 //! SSH key file discovery and parsing.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
 use crate::key::get_permissions;
@@ -31,13 +32,13 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let path = path.to_path_buf();
     let filename = path
         .file_name()
-        .unwrap_or_default()
+        .unwrap_or(OsStr::new(""))
         .to_string_lossy()
-        .to_string();
+        .into_owned();
 
     let pub_path = path.with_extension("pub");
     let cert_path = {
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        let name = path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
         path.with_file_name(format!("{name}-cert.pub"))
     };
 
@@ -58,7 +59,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
             let public_key = pk.public_key();
             let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
             let fingerprint = Some(Fingerprint {
-                hash: fp.to_string().trim_start_matches("SHA256:").to_string(),
+                hash: fp.to_string().trim_start_matches("SHA256:").to_owned(),
                 key_type,
             });
             let comment_str = pk.comment().to_string();
@@ -193,7 +194,7 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
             }
 
             // Deduplicate by base name
-            if seen_names.insert(name.to_string()) {
+            if seen_names.insert(name.into_owned()) {
                 private_key_paths.push(entry.path());
             }
         }

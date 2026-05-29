@@ -29,33 +29,33 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
     let key_type_str = key_type_to_cli_arg(params.key_type);
 
     let mut args: Vec<String> = vec![
-        "-t".to_string(),
-        key_type_str.to_string(),
-        "-f".to_string(),
-        private_path_str.to_string(),
-        "-N".to_string(),
-        params.passphrase.as_deref().unwrap_or("").to_string(),
+        "-t".to_owned(),
+        key_type_str.to_owned(),
+        "-f".to_owned(),
+        private_path_str.to_owned(),
+        "-N".to_owned(),
+        params.passphrase.as_deref().unwrap_or("").to_owned(),
     ];
 
     // RSA bit size
     if let KeyType::Rsa { bits } = params.key_type && bits > 0 {
-        args.extend(["-b".to_string(), bits.to_string()]);
+        args.extend(["-b".to_owned(), bits.to_string()]);
     }
 
     // ECDSA curve size (via -b flag)
     if let KeyType::EcdsaP384 = params.key_type {
-        args.extend(["-b".to_string(), "384".to_string()]);
+        args.extend(["-b".to_owned(), "384".to_owned()]);
     }
     if let KeyType::EcdsaP521 = params.key_type {
-        args.extend(["-b".to_string(), "521".to_string()]);
+        args.extend(["-b".to_owned(), "521".to_owned()]);
     }
 
     if let Some(ref comment) = params.comment {
-        args.extend(["-C".to_string(), comment.clone()]);
+        args.extend(["-C".to_owned(), comment.clone()]);
     }
 
     if let Some(rounds) = params.kdf_rounds {
-        args.extend(["-a".to_string(), rounds.to_string()]);
+        args.extend(["-a".to_owned(), rounds.to_string()]);
     }
 
     args
@@ -71,7 +71,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
     }
 
     if !runner::tool_exists("ssh-keygen") {
-        return Err(Error::ToolNotFound("ssh-keygen".to_string()));
+        return Err(Error::ToolNotFound("ssh-keygen".to_owned()));
     }
 
     let passphrase_nonempty = params
@@ -81,7 +81,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
 
     let private_path_str = private_path
         .to_str()
-        .ok_or_else(|| Error::KeyGenerationFailed("invalid key path".to_string()))?;
+        .ok_or_else(|| Error::KeyGenerationFailed("invalid key path".to_owned()))?;
 
     let args = build_keygen_args(&params, private_path_str);
     let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -140,7 +140,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
     let public_key = pk.public_key();
     let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
     let fingerprint = Some(Fingerprint {
-        hash: fp.to_string().trim_start_matches("SHA256:").to_string(),
+        hash: fp.to_string().trim_start_matches("SHA256:").to_owned(),
         key_type: params.key_type,
     });
 
@@ -168,8 +168,8 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
 async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
     let path_str = private_path
         .to_str()
-        .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_string()))?
-        .to_string();
+        .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+        .to_owned();
 
     tokio::task::spawn_blocking(move || {
         duct::cmd("ssh-add", [path_str.as_str()])

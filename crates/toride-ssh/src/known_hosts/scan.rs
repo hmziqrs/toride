@@ -43,38 +43,28 @@ async fn scan_host_hashed(host: &str) -> Result<Vec<ScannedHostKey>> {
 
 /// Parse raw `ssh-keyscan` output into a list of [`ScannedHostKey`] values.
 fn parse_keyscan_output(original_host: &str, raw: &str) -> Vec<ScannedHostKey> {
-    let mut keys = Vec::new();
-    for line in raw.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-
-        match parse_keyscan_line(original_host, line) {
-            Ok(key) => keys.push(key),
+    raw.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| match parse_keyscan_line(original_host, line) {
+            Ok(key) => Some(key),
             Err(e) => {
                 tracing::warn!(line, error = %e, "skipping unparseable keyscan line");
+                None
             }
-        }
-    }
-
-    keys
+        })
+        .collect()
 }
 
 /// Parse a single `ssh-keyscan` output line.
 ///
 /// Format: `hostname key-type base64-key [comment...]`
 pub(crate) fn parse_keyscan_line(original_host: &str, line: &str) -> Result<ScannedHostKey> {
+    let err = || Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"));
     let mut parts = line.split_whitespace();
-    let raw_host = parts.next().ok_or_else(|| {
-        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
-    })?;
-    let key_type = parts.next().ok_or_else(|| {
-        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
-    })?;
-    let public_key = parts.next().ok_or_else(|| {
-        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
-    })?;
+    let raw_host = parts.next().ok_or_else(&err)?;
+    let key_type = parts.next().ok_or_else(&err)?;
+    let public_key = parts.next().ok_or_else(&err)?;
 
     Ok(ScannedHostKey {
         host: original_host.to_owned(),

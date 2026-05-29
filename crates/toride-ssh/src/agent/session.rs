@@ -54,7 +54,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
             let name = path
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or("");
+                .unwrap_or_default();
             if name.starts_with("ssh-") && is_control_socket_candidate(&path).await {
                 candidates.push(path);
             }
@@ -98,7 +98,7 @@ async fn is_control_socket_candidate(path: &Path) -> bool {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or("");
+        .unwrap_or_default();
 
     let is_match = name.starts_with("cm-")
         || name.starts_with("ctrl-")

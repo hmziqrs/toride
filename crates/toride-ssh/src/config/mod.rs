@@ -7,8 +7,8 @@ mod resolve;
 
 use std::path::Path;
 
-use crate::paths::SshPaths;
 use crate::Result;
+use crate::paths::SshPaths;
 
 pub use resolve::ResolvedHost;
 
@@ -48,7 +48,7 @@ impl<'a> ConfigService<'a> {
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o644);
-            std::fs::set_permissions(&path, perms)?;
+            std::fs::set_permissions(path, perms)?;
         }
 
         Ok(())
@@ -66,25 +66,18 @@ impl<'a> ConfigService<'a> {
     /// Returns the ssh2-config-rs [`ssh2_config_rs::SshConfig`] which supports
     /// `.query(host)` for resolving parameters.
     pub async fn parse_typed(&self) -> Result<ssh2_config_rs::SshConfig> {
-        parse::parse_config(&self.paths.config_path()).await
+        parse::parse_config(self.paths.config_path()).await
     }
 
     /// Get a directive value for a host from the AST.
     ///
     /// Uses first-match-wins semantics.
-    pub fn get_host_directive(
-        ast: &ast::ConfigAst,
-        host: &str,
-        key: &str,
-    ) -> Option<String> {
+    pub fn get_host_directive(ast: &ast::ConfigAst, host: &str, key: &str) -> Option<String> {
         directives::get_directive(ast, host, key)
     }
 
     /// Get all directives for a host.
-    pub fn get_all_host_directives(
-        ast: &ast::ConfigAst,
-        host: &str,
-    ) -> Vec<(String, String)> {
+    pub fn get_all_host_directives(ast: &ast::ConfigAst, host: &str) -> Vec<(String, String)> {
         directives::get_all_directives(ast, host)
     }
 
@@ -103,11 +96,7 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Rename a Host block.
-    pub fn rename_host(
-        ast: &mut ast::ConfigAst,
-        old_name: &str,
-        new_name: &str,
-    ) -> Result<()> {
+    pub fn rename_host(ast: &mut ast::ConfigAst, old_name: &str, new_name: &str) -> Result<()> {
         editor::rename_host(ast, old_name, new_name)
     }
 
@@ -141,7 +130,7 @@ impl<'a> ConfigService<'a> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644))?;
                 std::fs::set_permissions(
                     self.paths.ssh_dir(),
                     std::fs::Permissions::from_mode(0o700),
@@ -152,7 +141,7 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Get the path to the config file.
-    pub fn config_path(&self) -> std::path::PathBuf {
+    pub fn config_path(&self) -> &Path {
         self.paths.config_path()
     }
 

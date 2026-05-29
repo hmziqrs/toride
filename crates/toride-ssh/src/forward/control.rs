@@ -147,7 +147,6 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
     //   "<addr> port <lport>"                                       (dynamic)
     let line = line.trim_start();
 
-    // Find " port " after the local address
     let port_idx = line.find(" port ")?;
     let local_addr = line[..port_idx]
         .trim()
@@ -267,16 +266,14 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
         )
     };
 
-    let flag_owned = flag.to_owned();
-    let spec_owned = spec;
     let path_owned = path_str.to_owned();
 
     tokio::task::spawn_blocking(move || {
         duct::cmd(
             "ssh",
             [
-                flag_owned.as_str(),
-                spec_owned.as_str(),
+                flag,
+                spec.as_str(),
                 "-O",
                 "cancel",
                 "-S",
@@ -300,23 +297,22 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
 /// cleaned up asynchronously by the master process).  Callers that need to
 /// verify cleanup should check for socket file removal separately.
 pub async fn exit_session(control_path: &Path) -> Result<()> {
-    let path_str = control_path
-        .to_str()
-        .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?
-        .to_owned();
-
-    let path_for_cleanup = control_path.to_path_buf();
+    let path = control_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?;
+
         // ssh -O exit returns 0 on success; stderr may contain informational text.
-        let result = duct::cmd("ssh", ["-O", "exit", "-S", &path_str])
+        let result = duct::cmd("ssh", ["-O", "exit", "-S", path_str])
             .run()
             .map_err(|e| Error::CommandFailed(format!("ssh -O exit: {e}")));
 
         // Best-effort cleanup of stale socket file.  OpenSSH normally unlinks
         // the socket, but if the master is already gone the file lingers.
-        if result.is_ok() || is_stale_socket(&path_for_cleanup) {
-            let _ = std::fs::remove_file(&path_for_cleanup);
+        if result.is_ok() || is_stale_socket(&path) {
+            let _ = std::fs::remove_file(&path);
         }
 
         result
@@ -376,8 +372,8 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     .await
     .map_err(|e| Error::CommandFailed(e.to_string()))?;
 
-    // Verify each candidate using bounded concurrency to avoid spawning
-    // many concurrent ssh processes when many stale sockets are present.
+    // Verify candidates sequentially to avoid overwhelming the system
+    // with concurrent ssh processes when many stale sockets are present.
     let mut alive = Vec::new();
     for candidate in sessions {
         if check_alive(&candidate).await {

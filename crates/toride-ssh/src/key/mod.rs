@@ -2,6 +2,8 @@ mod generate;
 mod inventory;
 mod repair;
 
+use std::ffi::OsStr;
+
 use crate::paths::SshPaths;
 use crate::{Error, KeyCreateParams, KeyDeleteParams, Result, SshKey};
 
@@ -27,16 +29,16 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<crate::Permissi
 /// Key names must not contain path separators or `..` components.
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(Error::KeyGenerationFailed("key name must not be empty".to_string()));
+        return Err(Error::KeyGenerationFailed("key name must not be empty".to_owned()));
     }
     if name.contains('/') || name.contains('\\') {
         return Err(Error::KeyGenerationFailed(
-            "key name must not contain path separators".to_string(),
+            "key name must not contain path separators".to_owned(),
         ));
     }
     if name.contains("..") {
         return Err(Error::KeyGenerationFailed(
-            "key name must not contain '..'".to_string(),
+            "key name must not contain '..'".to_owned(),
         ));
     }
     Ok(())
@@ -85,7 +87,7 @@ impl<'a> KeyService<'a> {
                 std::fs::rename(&private_path, &backup_path)?;
 
                 if params_clone.remove_public && public_path.exists() {
-                    let stem = public_path.file_stem().unwrap_or_default().to_string_lossy();
+                    let stem = public_path.file_stem().unwrap_or(OsStr::new("")).to_string_lossy();
                     let pub_backup = public_path.with_file_name(format!("{stem}.pub.bak"));
                     if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
                         tracing::warn!("failed to backup {}: {e}", public_path.display());
@@ -93,7 +95,7 @@ impl<'a> KeyService<'a> {
                 }
 
                 if params_clone.remove_certificate && cert_path.exists() {
-                    let name = cert_path.file_name().unwrap_or_default().to_string_lossy();
+                    let name = cert_path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
                     let cert_backup = cert_path.with_file_name(format!("{name}.bak"));
                     if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
                         tracing::warn!("failed to backup {}: {e}", cert_path.display());
@@ -143,7 +145,7 @@ impl<'a> KeyService<'a> {
 /// This is intentionally non-fatal: the key may not be loaded in the agent,
 /// which is a perfectly normal state. Errors are logged but not propagated.
 async fn remove_key_from_agent(private_path: &std::path::Path) {
-    let Some(path_str) = private_path.to_str().map(str::to_string) else {
+    let Some(path_str) = private_path.to_str().map(str::to_owned) else {
         tracing::warn!("invalid key path for ssh-add, skipping agent removal");
         return;
     };
@@ -169,13 +171,14 @@ async fn remove_key_from_agent(private_path: &std::path::Path) {
 /// This is a basic implementation that removes lines containing the key path.
 /// Read errors are non-fatal (the config may be unreadable due to permissions).
 async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<()> {
-    let config_path = paths.config_path();
+    // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
+    let config_path = paths.config_path().to_path_buf();
 
     if !config_path.exists() {
         return Ok(());
     }
 
-    let key_name_owned = key_name.to_string();
+    let key_name_owned = key_name.to_owned();
     let ssh_dir_str = paths.ssh_dir().to_string_lossy().into_owned();
 
     tokio::task::spawn_blocking(move || {

@@ -19,7 +19,7 @@ pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
             && host_matches_patterns(host, patterns)
             && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
         {
-            return Some(val);
+            return Some(val.to_owned());
         }
     }
     None
@@ -53,7 +53,7 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<S
             && patterns.iter().any(|p| p == name || p == "*")
             && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
         {
-            return Some(val);
+            return Some(val.to_owned());
         }
     }
     None
@@ -119,13 +119,13 @@ pub fn set_directive(
     Err(crate::Error::HostNotFound(host.to_owned()))
 }
 
-/// Find the first directive matching `key_lower` in a list of nodes (recursive).
-fn find_directive_in_nodes(nodes: &[ConfigNode], key_lower: &str) -> Option<String> {
+/// Find the first directive matching `key_lower` in a list of nodes.
+fn find_directive_in_nodes<'a>(nodes: &'a [ConfigNode], key_lower: &str) -> Option<&'a str> {
     for node in nodes {
         if let ConfigNode::Directive { keyword, value, .. } = node
             && keyword.eq_ignore_ascii_case(key_lower)
         {
-            return Some(value.clone());
+            return Some(value);
         }
     }
     None

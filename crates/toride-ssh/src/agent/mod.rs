@@ -27,16 +27,10 @@ impl<'a> AgentService<'a> {
     /// Returns `true` when `SSH_AUTH_SOCK` points to an existing socket and
     /// we can successfully connect to the agent.
     pub async fn status(&self) -> Result<bool> {
-        let Ok(socket_path) = std::env::var("SSH_AUTH_SOCK") else {
-            return Ok(false);
-        };
-
-        if !Path::new(&socket_path).exists() {
-            return Ok(false);
-        }
-
         #[cfg(feature = "agent")]
         {
+            // `connect()` already validates `SSH_AUTH_SOCK` and socket
+            // existence, so no need to duplicate those checks here.
             match client::connect().await {
                 Ok(mut c) => {
                     c.request_identities()

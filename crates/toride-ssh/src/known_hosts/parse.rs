@@ -41,35 +41,32 @@ pub async fn parse_known_hosts(path: &Path) -> Result<Vec<KnownHostEntry>> {
 fn parse_known_hosts_sync(path: &Path) -> Result<Vec<KnownHostEntry>> {
     let contents = std::fs::read_to_string(path)?;
 
-    let mut entries = Vec::new();
-
-    for (idx, raw_line) in contents.lines().enumerate() {
-        let line_number = idx + 1;
-
-        // Lines whose first non-whitespace character is '#' are full-line
-        // comments.  Blank lines are skipped.
-        let trimmed = raw_line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        // We hand-parse here so we can capture the comment field and preserve
-        // the raw host-pattern strings (the ssh-key crate decodes hashed
-        // hosts into bytes which is less useful for display).
-        match parse_line(trimmed, line_number) {
-            Ok(entry) => entries.push(entry),
-            Err(e) => {
-                // Log malformed lines but continue parsing the rest.
-                tracing::warn!(
-                    line_number,
-                    error = %e,
-                    "skipping malformed known_hosts line"
-                );
+    // We hand-parse here so we can capture the comment field and preserve
+    // the raw host-pattern strings (the ssh-key crate decodes hashed
+    // hosts into bytes which is less useful for display).
+    Ok(contents
+        .lines()
+        .enumerate()
+        .filter_map(|(idx, raw_line)| {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
             }
-        }
-    }
-
-    Ok(entries)
+            let line_number = idx + 1;
+            match parse_line(trimmed, line_number) {
+                Ok(entry) => Some(entry),
+                Err(e) => {
+                    // Log malformed lines but continue parsing the rest.
+                    tracing::warn!(
+                        line_number,
+                        error = %e,
+                        "skipping malformed known_hosts line"
+                    );
+                    None
+                }
+            }
+        })
+        .collect())
 }
 
 /// Parse a single trimmed known_hosts line.

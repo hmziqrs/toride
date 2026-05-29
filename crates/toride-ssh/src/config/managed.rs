@@ -106,22 +106,21 @@ pub fn upsert_managed_block(
             .map(|i| start + 1 + i);
 
         if let Some(end) = end {
-            // Remove old content between markers.
+            // Remove old content between markers, then splice in new content.
             ast.nodes.drain(start + 1..end);
-            // Insert new content.
-            let new_nodes: Vec<ConfigNode> = directives
-                .into_iter()
-                .map(|(key, value)| ConfigNode::Directive {
-                    keyword: key,
-                    separator: Separator::Space,
-                    value,
-                    comment: None,
-                    indent: String::new(),
-                })
-                .collect();
-            for (i, node) in new_nodes.into_iter().enumerate() {
-                ast.nodes.insert(start + 1 + i, node);
-            }
+            let insert_at = start + 1;
+            ast.nodes.splice(
+                insert_at..insert_at,
+                directives
+                    .into_iter()
+                    .map(|(key, value)| ConfigNode::Directive {
+                        keyword: key,
+                        separator: Separator::Space,
+                        value,
+                        comment: None,
+                        indent: String::new(),
+                    }),
+            );
             return;
         }
     }
@@ -129,24 +128,18 @@ pub fn upsert_managed_block(
     // No existing block — append a new one.
     let open_comment = ConfigNode::Comment { text: open, indent: String::new() };
     let close_comment = ConfigNode::Comment { text: close, indent: String::new() };
-    let directive_nodes: Vec<ConfigNode> = directives
-        .into_iter()
-        .map(|(key, value)| ConfigNode::Directive {
-            keyword: key,
-            separator: Separator::Space,
-            value,
-            comment: None,
-            indent: String::new(),
-        })
-        .collect();
 
     if !ast.nodes.is_empty() {
         ast.nodes.push(ConfigNode::BlankLine);
     }
     ast.nodes.push(open_comment);
-    for node in directive_nodes {
-        ast.nodes.push(node);
-    }
+    ast.nodes.extend(directives.into_iter().map(|(key, value)| ConfigNode::Directive {
+        keyword: key,
+        separator: Separator::Space,
+        value,
+        comment: None,
+        indent: String::new(),
+    }));
     ast.nodes.push(close_comment);
 }
 
