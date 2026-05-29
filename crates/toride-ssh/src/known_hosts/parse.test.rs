@@ -138,3 +138,163 @@ fn parse_line_glob_pattern() {
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.hosts, vec!["*.example.com"]);
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_with_trailing_whitespace() {
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl   ";
+    let entry = parse_line(line.trim(), 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+}
+
+#[test]
+fn parse_line_with_empty_comment() {
+    // Comment field that's just whitespace after the key
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ";
+    let entry = parse_line(line.trim(), 1).unwrap();
+    // Empty comment should be None
+    assert!(entry.comment.is_none() || entry.comment.as_deref() == Some(""));
+}
+
+#[test]
+fn parse_line_ipv6_address() {
+    let line = "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["[::1]:22"]);
+}
+
+#[test]
+fn parse_line_ipv6_address_no_port() {
+    let line = "::1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["::1"]);
+}
+
+#[test]
+fn parse_line_wildcard_host() {
+    let line = "* ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["*"]);
+}
+
+#[test]
+fn parse_line_with_comment_containing_spaces() {
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl this is a long comment with spaces";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.comment.as_deref(), Some("this is a long comment with spaces"));
+}
+
+#[test]
+fn parse_line_rsa_4096_key() {
+    // RSA 4096-bit keys have very long base64
+    let long_key = format!("ssh-rsa {}", "A".repeat(1000));
+    let line = format!("host {}", long_key);
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-rsa");
+}
+
+#[test]
+fn parse_line_with_multiple_markers() {
+    // Multiple markers — the parser captures only the first one
+    let line = "@cert-authority @revoked host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    // The parser treats "@revoked host" as part of the hosts field
+    assert_eq!(entry.markers.len(), 1);
+    assert_eq!(entry.markers[0], "@cert-authority");
+}
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_with_very_long_base64() {
+    let long_key = format!("ssh-ed25519 {}", "A".repeat(10000));
+    let line = format!("host {}", long_key);
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+    assert_eq!(entry.public_key.len(), 10000);
+}
+
+#[test]
+fn parse_line_with_base64_padding() {
+    // Base64 padding characters
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl==";
+    let entry = parse_line(line, 1).unwrap();
+    assert!(entry.public_key.ends_with("=="));
+}
+
+#[test]
+fn parse_line_with_comment_containing_at() {
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl user@host";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.comment.as_deref(), Some("user@host"));
+}
+
+#[test]
+fn parse_line_with_comment_containing_hash() {
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl #tag";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.comment.as_deref(), Some("#tag"));
+}
+
+#[test]
+fn parse_line_with_host_containing_underscore() {
+    let line = "my_host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["my_host"]);
+}
+
+#[test]
+fn parse_line_with_host_containing_hyphen() {
+    let line = "my-host.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["my-host.example.com"]);
+}
+
+#[test]
+fn parse_line_with_port_in_brackets() {
+    let line = "[host]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.hosts, vec!["[host]:2222"]);
+}
+
+#[test]
+fn parse_line_preserves_key_type_string() {
+    // The key_type field should be the raw string, not a parsed enum
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+}
+
+#[test]
+fn parse_line_preserves_public_key_string() {
+    let key_data = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line = format!("host ssh-ed25519 {}", key_data);
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.public_key, key_data);
+}
+
+#[test]
+fn parse_line_with_dsa_key() {
+    let line = "host ssh-dss AAAAB3NzaC1kc3MAAACBAO...";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-dss");
+}
+
+#[test]
+fn parse_line_with_ecdsa_key() {
+    let line = "host ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY...";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.key_type, "ecdsa-sha2-nistp256");
+}
+
+#[test]
+fn parse_line_line_number_preserved() {
+    let line = "host ssh-ed25519 AAAAC3...";
+    let entry = parse_line(line, 999).unwrap();
+    assert_eq!(entry.line_number, 999);
+}

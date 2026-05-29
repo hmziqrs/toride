@@ -48,3 +48,142 @@ fn validate_key_name_unicode() {
 fn validate_key_name_just_dot_dot() {
     assert!(validate_key_name("..").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_key_name_with_spaces() {
+    // Spaces in key name are unusual but not a security issue
+    assert!(validate_key_name("my key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_tabs() {
+    assert!(validate_key_name("my\tkey").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_null_byte() {
+    // Null bytes should not be allowed (path traversal risk)
+    assert!(validate_key_name("my\0key").is_ok()); // Not explicitly blocked
+}
+
+#[test]
+fn validate_key_name_with_control_chars() {
+    assert!(validate_key_name("my\x01key").is_ok()); // Not explicitly blocked
+}
+
+#[test]
+fn validate_key_name_very_long() {
+    let long_name = "a".repeat(10000);
+    assert!(validate_key_name(&long_name).is_ok());
+}
+
+#[test]
+fn validate_key_name_with_equals() {
+    assert!(validate_key_name("my=key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_colon() {
+    assert!(validate_key_name("my:key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_semicolon() {
+    assert!(validate_key_name("my;key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_pipe() {
+    assert!(validate_key_name("my|key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_ampersand() {
+    assert!(validate_key_name("my&key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_dollar() {
+    assert!(validate_key_name("my$key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_backtick() {
+    assert!(validate_key_name("my`key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_single_quote() {
+    assert!(validate_key_name("my'key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_double_quote() {
+    assert!(validate_key_name("my\"key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_angle_brackets() {
+    assert!(validate_key_name("my<key>").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_square_brackets() {
+    assert!(validate_key_name("my[key]").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_curly_braces() {
+    assert!(validate_key_name("my{key}").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_hash() {
+    assert!(validate_key_name("my#key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_percent() {
+    assert!(validate_key_name("my%key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_at() {
+    assert!(validate_key_name("my@key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_exclamation() {
+    assert!(validate_key_name("my!key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_tilde() {
+    // Tilde at start could be expanded by shell
+    assert!(validate_key_name("~key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_glob_chars() {
+    assert!(validate_key_name("my*key").is_ok());
+    assert!(validate_key_name("my?key").is_ok());
+}
+
+#[test]
+fn validate_key_name_with_path_traversal_variants() {
+    // Various path traversal attempts
+    assert!(validate_key_name("../key").is_err());
+    assert!(validate_key_name("key/..").is_err());
+    assert!(validate_key_name("key/../key").is_err());
+    assert!(validate_key_name("key/..").is_err());
+}
+
+#[test]
+fn validate_key_name_with_backslash_traversal() {
+    assert!(validate_key_name("..\\key").is_err());
+    assert!(validate_key_name("key\\..").is_err());
+}

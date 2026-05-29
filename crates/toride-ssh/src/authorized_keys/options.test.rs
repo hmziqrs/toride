@@ -216,3 +216,226 @@ fn parse_options_leading_comma() {
     let opts = parse_options(",no-pty").unwrap();
     assert!(opts.no_pty);
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_options_from_only_commas() {
+    let opts = parse_options("from=\",,,\"").unwrap();
+    // All empty segments should be filtered out
+    assert!(opts.from.is_empty());
+}
+
+#[test]
+fn parse_options_permit_open_only_commas() {
+    let opts = parse_options("permit-open=\",,,\"").unwrap();
+    assert!(opts.permit_open.is_empty());
+}
+
+#[test]
+fn parse_options_from_with_whitespace_segments() {
+    let opts = parse_options("from=\"  ,  ,  \"").unwrap();
+    // Whitespace-only segments should be filtered out
+    assert!(opts.from.is_empty());
+}
+
+#[test]
+fn parse_options_nested_single_quotes_in_double() {
+    let opts = parse_options("command=\"echo 'hello world'\"").unwrap();
+    assert_eq!(opts.command.as_deref(), Some("echo 'hello world'"));
+}
+
+#[test]
+fn parse_options_escaped_backslash_before_quote() {
+    // command="path\\\"file" should become path\"file
+    let opts = parse_options("command=\"path\\\\\\\"file\"").unwrap();
+    assert_eq!(opts.command.as_deref(), Some("path\\\"file"));
+}
+
+#[test]
+fn parse_options_very_long_value() {
+    let long_val = "x".repeat(10000);
+    let opts = parse_options(&format!("command=\"{long_val}\"")).unwrap();
+    assert_eq!(opts.command.as_deref(), Some(long_val.as_str()));
+}
+
+#[test]
+fn parse_options_multiple_commands() {
+    // Multiple command= options - last wins per OpenSSH spec
+    let opts = parse_options("command=\"first\",command=\"second\"").unwrap();
+    assert_eq!(opts.command.as_deref(), Some("second"));
+}
+
+#[test]
+fn parse_options_restrict_with_permit() {
+    // restrict disables everything, permit-pty re-enables pty
+    let opts = parse_options("restrict,permit-pty").unwrap();
+    assert!(opts.restrict);
+    // Note: permit-pty is not a recognized option in our parser,
+    // so it goes to custom
+}
+
+#[test]
+fn parse_options_environment_multiple() {
+    let opts = parse_options("environment=\"A=1\",environment=\"B=2\"").unwrap();
+    assert_eq!(opts.environment.len(), 2);
+    assert_eq!(opts.environment[0], ("A".to_string(), "1".to_string()));
+    assert_eq!(opts.environment[1], ("B".to_string(), "2".to_string()));
+}
+
+#[test]
+fn parse_options_empty_key_name() {
+    // Options like ="value" should be handled gracefully
+    let result = parse_options("=\"value\"");
+    // This should either parse or error, not panic
+    let _ = result;
+}
+
+#[test]
+fn parse_options_backslash_at_end_of_value() {
+    // Trailing backslash should be preserved
+    let opts = parse_options("command=\"path\\\\\"").unwrap();
+    assert_eq!(opts.command.as_deref(), Some("path\\"));
+}
+
+#[test]
+fn parse_options_quote_in_middle_of_unquoted_value() {
+    // This is technically malformed but should not panic
+    let result = parse_options("from=host\"name");
+    let _ = result;
+}
+
+#[test]
+fn parse_options_all_options_combined() {
+    let opts = parse_options(
+        "command=\"/bin/bash\",from=\"10.0.0.*\",no-pty,no-port-forwarding,\
+         no-X11-forwarding,no-agent-forwarding,no-user-rc,restrict,\
+         permit-open=\"host:22\",environment=\"FOO=bar\",tunnel=\"eth0\",\
+         cert-authority,principals=\"admin\",expiry-time=\"20250101T000000\",\
+         perferrp"
+    ).unwrap();
+    assert_eq!(opts.command.as_deref(), Some("/bin/bash"));
+    assert_eq!(opts.from, vec!["10.0.0.*"]);
+    assert!(opts.no_pty);
+    assert!(opts.no_port_forwarding);
+    assert!(opts.no_x11_forwarding);
+    assert!(opts.no_agent_forwarding);
+    assert!(opts.no_user_rc);
+    assert!(opts.restrict);
+    assert_eq!(opts.permit_open, vec!["host:22"]);
+    assert_eq!(opts.environment, vec![("FOO".to_string(), "bar".to_string())]);
+    assert_eq!(opts.tunnel.as_deref(), Some("eth0"));
+    assert!(opts.cert_authority);
+    assert_eq!(opts.principals, vec!["admin"]);
+    assert_eq!(opts.expiry_time.as_deref(), Some("20250101T000000"));
+    assert!(opts.perferrp);
+}
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_options_unmatched_quote_at_end() {
+    // Missing closing quote — should not panic
+    let result = parse_options("command=\"test");
+    // May error or return partial result
+    let _ = result;
+}
+
+#[test]
+fn parse_options_unmatched_quote_at_start() {
+    // Missing opening quote — should not panic
+    let result = parse_options("command=test\"");
+    let _ = result;
+}
+
+#[test]
+fn parse_options_backslash_at_very_end() {
+    // Backslash at end of quoted value
+    let opts = parse_options("command=\"path\\\\\"").unwrap();
+    assert_eq!(opts.command.as_deref(), Some("path\\"));
+}
+
+#[test]
+fn parse_options_empty_option_name() {
+    // Options like ="value" or ",value"
+    let result = parse_options("=\"value\"");
+    let _ = result;
+}
+
+#[test]
+fn parse_options_only_commas() {
+    let opts = parse_options(",,,").unwrap();
+    assert!(opts.command.is_none());
+    assert!(opts.from.is_empty());
+}
+
+#[test]
+fn parse_options_whitespace_only_between_commas() {
+    let opts = parse_options(" , , , ").unwrap();
+    assert!(opts.command.is_none());
+}
+
+#[test]
+fn parse_options_from_with_empty_segments() {
+    let opts = parse_options("from=\"host1,,host2,,\"").unwrap();
+    assert_eq!(opts.from, vec!["host1", "host2"]);
+}
+
+#[test]
+fn parse_options_permit_open_with_empty_segments() {
+    let opts = parse_options("permit-open=\"host:22,,host:80,,\"").unwrap();
+    assert_eq!(opts.permit_open, vec!["host:22", "host:80"]);
+}
+
+#[test]
+fn parse_options_environment_with_empty_value() {
+    let opts = parse_options("environment=\"VAR=\"").unwrap();
+    assert_eq!(opts.environment, vec![("VAR".to_string(), String::new())]);
+}
+
+#[test]
+fn parse_options_environment_with_equals_in_value() {
+    let opts = parse_options("environment=\"PATH=/usr/bin:/bin\"").unwrap();
+    assert_eq!(opts.environment, vec![("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+}
+
+#[test]
+fn parse_options_very_long_option_name() {
+    let long_name = "a".repeat(1000);
+    let opts = parse_options(&format!("{long_name}=\"value\"")).unwrap();
+    assert_eq!(opts.custom.len(), 1);
+    assert_eq!(opts.custom[0].0, long_name);
+}
+
+#[test]
+fn parse_options_very_many_options() {
+    let many_opts = vec!["no-pty"; 100].join(",");
+    let opts = parse_options(&many_opts).unwrap();
+    assert!(opts.no_pty);
+}
+
+#[test]
+fn parse_options_command_with_newline_in_value() {
+    // Newline inside quoted value — should be preserved or handled
+    let opts = parse_options("command=\"line1\\nline2\"").unwrap();
+    // The \n is literal backslash-n, not a newline
+    assert!(opts.command.is_some());
+}
+
+#[test]
+fn parse_options_command_with_tab_in_value() {
+    let opts = parse_options("command=\"col1\\tcol2\"").unwrap();
+    assert!(opts.command.is_some());
+}
+
+#[test]
+fn parse_options_restrict_with_multiple_permits() {
+    let opts = parse_options("restrict,permit-pty,permit-port-forwarding").unwrap();
+    assert!(opts.restrict);
+    // permit-pty and permit-port-forwarding go to custom
+    assert_eq!(opts.custom.len(), 2);
+}

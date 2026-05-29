@@ -123,3 +123,205 @@ fn parse_ssh_add_path_is_agent_identifier() {
     let key = parse_ssh_add_line(line).unwrap();
     assert!(key.path.to_str().unwrap().starts_with("agent:"));
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_ssh_add_line_with_unicode_comment() {
+    let line = "256 SHA256:AAAA utilisateur@hôte (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some("utilisateur@hôte"));
+}
+
+#[test]
+fn parse_ssh_add_line_with_very_long_comment() {
+    let long_comment = "a".repeat(1000);
+    let line = format!("256 SHA256:AAAA {long_comment} (ED25519)");
+    let key = parse_ssh_add_line(&line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some(long_comment.as_str()));
+}
+
+#[test]
+fn parse_ssh_add_line_with_empty_comment_field() {
+    // Two spaces between fingerprint and type (empty comment)
+    let line = "256 SHA256:AAAA  (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(key.comment.is_none());
+}
+
+#[test]
+fn parse_ssh_add_line_with_spaces_in_comment() {
+    let line = "256 SHA256:AAAA my ssh key (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some("my ssh key"));
+}
+
+#[test]
+fn parse_ssh_add_line_case_insensitive_type() {
+    // ssh-add output uses uppercase: (ED25519), (RSA), etc.
+    // But our parser should handle case variations
+    let line = "256 SHA256:AAAA comment (ed25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::Ed25519);
+}
+
+#[test]
+fn parse_ssh_add_line_with_special_chars_in_fingerprint() {
+    // Fingerprint with + and / characters (base64)
+    let line = "256 SHA256:abc+/def comment (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.fingerprint.unwrap().hash, "abc+/def");
+}
+
+#[test]
+fn parse_ssh_add_line_bits_field() {
+    // The bits field is parsed but not stored - verify it doesn't cause issues
+    let line = "4096 SHA256:AAAA comment (RSA)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(matches!(key.key_type, KeyType::Rsa { .. }));
+}
+
+#[test]
+fn parse_algorithm_whitespace_around() {
+    // Algorithm name with whitespace should not match
+    assert_eq!(parse_key_type_from_algorithm(" ssh-ed25519 "), None);
+    assert_eq!(parse_key_type_from_algorithm(" ssh-ed25519"), None);
+}
+
+#[test]
+fn parse_algorithm_prefix_only() {
+    // Just the prefix without the full algorithm name
+    assert_eq!(parse_key_type_from_algorithm("ssh-"), None);
+    assert_eq!(parse_key_type_from_algorithm("ecdsa"), None);
+}
+
+#[test]
+fn parse_ssh_add_line_with_extra_spaces() {
+    // Multiple spaces between fields
+    let line = "256  SHA256:AAAA  comment  (ED25519)";
+    // This should fail because split_once(' ') expects single space
+    let result = parse_ssh_add_line(line);
+    // May return None due to parsing failure
+    let _ = result;
+}
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_ssh_add_line_with_tab_in_comment() {
+    let line = "256 SHA256:AAAA comment\twith\ttabs (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(key.comment.unwrap().contains('\t'));
+}
+
+#[test]
+fn parse_ssh_add_line_with_newline_in_comment() {
+    // Newline in comment would break the line format
+    let line = "256 SHA256:AAAA comment\nextra (ED25519)";
+    // This should fail because the line is split at \n
+    let result = parse_ssh_add_line(line);
+    // May parse the first part or fail
+    let _ = result;
+}
+
+#[test]
+fn parse_ssh_add_line_bits_zero() {
+    let line = "0 SHA256:AAAA comment (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.key_type, KeyType::Ed25519);
+}
+
+#[test]
+fn parse_ssh_add_line_bits_very_large() {
+    let line = "999999 SHA256:AAAA comment (RSA)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert!(matches!(key.key_type, KeyType::Rsa { .. }));
+}
+
+#[test]
+fn parse_ssh_add_line_fingerprint_with_plus_slash() {
+    // Base64 uses + and / characters
+    let line = "256 SHA256:abc+/def+/ghi comment (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.fingerprint.unwrap().hash, "abc+/def+/ghi");
+}
+
+#[test]
+fn parse_ssh_add_line_comment_with_equals() {
+    let line = "256 SHA256:AAAA user=host (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some("user=host"));
+}
+
+#[test]
+fn parse_ssh_add_line_comment_with_colon() {
+    let line = "256 SHA256:AAAA user:host (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some("user:host"));
+}
+
+#[test]
+fn parse_ssh_add_line_comment_with_at() {
+    let line = "256 SHA256:AAAA user@host (ED25519)";
+    let key = parse_ssh_add_line(line).unwrap();
+    assert_eq!(key.comment.as_deref(), Some("user@host"));
+}
+
+#[test]
+fn parse_algorithm_with_whitespace_prefix() {
+    assert_eq!(parse_key_type_from_algorithm(" ssh-ed25519"), None);
+}
+
+#[test]
+fn parse_algorithm_with_whitespace_suffix() {
+    assert_eq!(parse_key_type_from_algorithm("ssh-ed25519 "), None);
+}
+
+#[test]
+fn parse_algorithm_with_tab() {
+    assert_eq!(parse_key_type_from_algorithm("ssh-ed25519\t"), None);
+}
+
+#[test]
+fn parse_algorithm_with_newline() {
+    assert_eq!(parse_key_type_from_algorithm("ssh-ed25519\n"), None);
+}
+
+#[test]
+fn parse_algorithm_empty() {
+    assert_eq!(parse_key_type_from_algorithm(""), None);
+}
+
+#[test]
+fn parse_algorithm_only_whitespace() {
+    assert_eq!(parse_key_type_from_algorithm("   "), None);
+}
+
+#[test]
+fn parse_ssh_add_line_no_parentheses() {
+    // Missing key type in parentheses
+    let line = "256 SHA256:AAAA comment ED25519";
+    let result = parse_ssh_add_line(line);
+    // Should fail because no parentheses
+    assert!(result.is_none());
+}
+
+#[test]
+fn parse_ssh_add_line_empty_parentheses() {
+    let line = "256 SHA256:AAAA comment ()";
+    let result = parse_ssh_add_line(line);
+    // Empty type should fail
+    assert!(result.is_none());
+}
+
+#[test]
+fn parse_ssh_add_line_unknown_type_in_parens() {
+    let line = "256 SHA256:AAAA comment (UNKNOWN)";
+    let result = parse_ssh_add_line(line);
+    // Unknown type should return None
+    assert!(result.is_none());
+}

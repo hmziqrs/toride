@@ -219,7 +219,7 @@ pub(crate) fn glob_matches(text: &str, pattern: &str) -> bool {
     if pattern.len() == 1 {
         return match pattern {
             "*" => true,
-            "?" => !text.is_empty(),
+            "?" => text.len() == 1,
             c => text == c,
         };
     }

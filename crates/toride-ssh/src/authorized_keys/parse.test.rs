@@ -127,3 +127,83 @@ fn starts_with_key_type_empty() {
 fn starts_with_key_type_partial_match() {
     assert!(!starts_with_key_type("ssh-ed2 AAAA"));
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn find_key_type_offset_with_nested_quotes() {
+    // Options with nested quotes should not confuse the parser
+    let line = "command=\"echo \\\"ssh-ed25519\\\"\" ssh-rsa AAAA";
+    let offset = find_key_type_offset(line).unwrap();
+    assert!(&line[offset..].starts_with("ssh-rsa"));
+}
+
+#[test]
+fn find_key_type_offset_with_backslash_at_end() {
+    // Backslash at end of quoted value
+    let line = "command=\"path\\\\\" ssh-rsa AAAA";
+    let offset = find_key_type_offset(line).unwrap();
+    assert!(&line[offset..].starts_with("ssh-rsa"));
+}
+
+#[test]
+fn find_key_type_offset_with_multiple_options() {
+    let line = "no-pty,from=\"10.0.0.*\",command=\"/bin/bash\" ssh-ed25519 AAAA";
+    let offset = find_key_type_offset(line).unwrap();
+    assert!(&line[offset..].starts_with("ssh-ed25519"));
+}
+
+#[test]
+fn find_key_type_offset_with_no_space_before_key() {
+    // No space between options and key type (malformed)
+    let line = "no-ptyssh-ed25519 AAAA";
+    // This should still find ssh-ed25519 if it appears after a space
+    let result = find_key_type_offset(line);
+    // Since there's no space before ssh-ed25519, it should not match
+    // (the key type must be preceded by a space or be at position 0)
+    let _ = result;
+}
+
+#[test]
+fn find_key_type_offset_with_key_at_start() {
+    let line = "ssh-ed25519 AAAA";
+    assert_eq!(find_key_type_offset(line), Some(0));
+}
+
+#[test]
+fn starts_with_key_type_with_comment() {
+    // Key type followed by comment (no space after type)
+    assert!(!starts_with_key_type("ssh-ed25519AAAA"));
+}
+
+#[test]
+fn starts_with_key_type_with_tab() {
+    // Key type followed by tab instead of space — the parser requires a space, not tab
+    assert!(!starts_with_key_type("ssh-ed25519\tAAAA"));
+}
+
+#[test]
+fn find_key_type_offset_with_very_long_options() {
+    let long_opts = "a".repeat(10000);
+    let line = format!("{long_opts} ssh-ed25519 AAAA");
+    let offset = find_key_type_offset(&line).unwrap();
+    assert!(&line[offset..].starts_with("ssh-ed25519"));
+}
+
+#[test]
+fn find_key_type_offset_with_empty_options() {
+    // Empty options field followed by space
+    let line = " ssh-ed25519 AAAA";
+    let offset = find_key_type_offset(line).unwrap();
+    assert_eq!(offset, 1);
+}
+
+#[test]
+fn find_key_type_offset_with_escaped_quote_at_boundary() {
+    // Escaped quote right before the space
+    let line = "command=\"test\\\"\" ssh-ed25519 AAAA";
+    let offset = find_key_type_offset(line).unwrap();
+    assert!(&line[offset..].starts_with("ssh-ed25519"));
+}

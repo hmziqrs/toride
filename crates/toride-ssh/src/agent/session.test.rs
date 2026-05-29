@@ -84,3 +84,61 @@ fn extract_host_only_filename() {
         "root@server"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extract_host_with_very_long_hostname() {
+    let long_host = "a".repeat(256);
+    let path = PathBuf::from(format!("cm-user@{long_host}:22"));
+    let result = extract_host_from_socket_path(&path);
+    // Should contain the long hostname (may include user@ prefix)
+    assert!(result.contains(&long_host));
+}
+
+#[test]
+fn extract_host_with_multiple_at_signs() {
+    // user@host@extra - first @ is the separator
+    let path = PathBuf::from("cm-user@host@extra:22");
+    let host = extract_host_from_socket_path(&path);
+    // Should take after first @ up to :port
+    assert!(host.contains("host"));
+}
+
+#[test]
+fn extract_host_with_no_colon_after_at() {
+    let path = PathBuf::from("cm-user@host");
+    assert_eq!(extract_host_from_socket_path(&path), "user@host");
+}
+
+#[test]
+fn extract_host_with_empty_filename() {
+    let path = PathBuf::from("");
+    let host = extract_host_from_socket_path(&path);
+    assert_eq!(host, "unknown");
+}
+
+#[test]
+fn extract_host_with_dot_prefix() {
+    let path = PathBuf::from(".cm-host:22");
+    let host = extract_host_from_socket_path(&path);
+    // Should strip known prefixes, but .cm- is not a known prefix
+    assert_eq!(host, ".cm-host");
+}
+
+#[test]
+fn extract_host_ssh_pattern_with_hash() {
+    let path = PathBuf::from("/tmp/ssh-abc123def456-48291");
+    let host = extract_host_from_socket_path(&path);
+    assert_eq!(host, "abc123def456-48291");
+}
+
+#[test]
+fn extract_host_with_unicode_in_hostname() {
+    let path = PathBuf::from("cm-user@höst:22");
+    let host = extract_host_from_socket_path(&path);
+    // Unicode hostname should be handled
+    assert!(host.contains("höst") || host.contains("host"));
+}

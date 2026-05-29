@@ -242,3 +242,205 @@ fn set_directive_host_not_found() {
     let mut ast = make_ast("");
     assert!(set_directive(&mut ast, "missing", "User", "alice").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Weird edge-case tests for glob and pattern matching
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glob_matches_consecutive_stars() {
+    // ** should match anything (same as *)
+    assert!(glob_matches("anything", "**"));
+    assert!(glob_matches("", "**"));
+    assert!(glob_matches("a.b.c", "**"));
+}
+
+#[test]
+fn glob_matches_star_at_end() {
+    assert!(glob_matches("prefix", "prefix*"));
+    assert!(glob_matches("prefix-extra", "prefix*"));
+    assert!(!glob_matches("pre", "prefix*"));
+}
+
+#[test]
+fn glob_matches_star_at_start_and_end() {
+    assert!(glob_matches("middle", "*middle*"));
+    assert!(glob_matches("a-middle-b", "*middle*"));
+    assert!(!glob_matches("midle", "*middle*"));
+}
+
+#[test]
+fn glob_matches_question_marks_sequence() {
+    assert!(glob_matches("abc", "???"));
+    assert!(!glob_matches("ab", "???"));
+    assert!(!glob_matches("abcd", "???"));
+}
+
+#[test]
+fn glob_matches_mixed_wildcards() {
+    assert!(glob_matches("test.conf", "test.*"));
+    assert!(glob_matches("test.conf", "te?t.*"));
+    // t??? matches "test" (t + 3 chars), .* matches ".conf"
+    assert!(glob_matches("test.conf", "t???.*"));
+}
+
+#[test]
+fn host_matches_patterns_leading_dot() {
+    // Leading dot is a valid hostname pattern in some contexts
+    assert!(host_matches_patterns(".example.com", &[".example.com".to_string()]));
+}
+
+#[test]
+fn host_matches_patterns_trailing_dot() {
+    // Trailing dot is valid FQDN notation
+    assert!(host_matches_patterns("example.com.", &["example.com.".to_string()]));
+}
+
+#[test]
+fn host_matches_patterns_consecutive_dots() {
+    // Unusual but should not panic
+    assert!(!host_matches_patterns("example.com", &["..example.com".to_string()]));
+}
+
+#[test]
+fn host_matches_patterns_very_long() {
+    let long_host = "a".repeat(256);
+    let patterns = vec![long_host.clone()];
+    assert!(host_matches_patterns(&long_host, &patterns));
+    assert!(!host_matches_patterns("short", &patterns));
+}
+
+#[test]
+fn host_matches_patterns_unicode() {
+    // Unicode hostnames (IDN) - should work with ASCII lowercase
+    assert!(host_matches_patterns("höst", &["höst".to_string()]));
+}
+
+#[test]
+fn get_directive_multiple_hosts_same_name() {
+    // Two Host blocks with the same name - first wins
+    let ast = make_ast("Host dup\n    User first\nHost dup\n    User second\n");
+    let val = get_directive(&ast, "dup", "User");
+    assert_eq!(val, Some("first".to_owned()));
+}
+
+#[test]
+fn get_directive_host_with_equals_separator() {
+    let ast = make_ast("Host=example\n    User=alice\n");
+    let val = get_directive(&ast, "example", "User");
+    // The value includes the = separator
+    assert!(val.is_some());
+}
+
+#[test]
+fn set_directive_preserves_other_directives() {
+    let mut ast = make_ast("Host example\n    User alice\n    Port 22\n");
+    set_directive(&mut ast, "example", "HostName", "example.com").unwrap();
+    let user = get_directive(&ast, "example", "User");
+    let port = get_directive(&ast, "example", "Port");
+    assert_eq!(user, Some("alice".to_owned()));
+    assert_eq!(port, Some("22".to_owned()));
+}
+
+#[test]
+fn set_directive_overwrites_value() {
+    let mut ast = make_ast("Host example\n    HostName old.com\n");
+    set_directive(&mut ast, "example", "HostName", "new.com").unwrap();
+    set_directive(&mut ast, "example", "HostName", "final.com").unwrap();
+    let val = get_directive(&ast, "example", "HostName");
+    assert_eq!(val, Some("final.com".to_owned()));
+}
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn host_matches_patterns_only_negation_multiple() {
+    // Multiple negation patterns with no positive match
+    let patterns = vec!["!a".to_string(), "!b".to_string(), "!c".to_string()];
+    assert!(!host_matches_patterns("d", &patterns));
+    assert!(!host_matches_patterns("a", &patterns));
+}
+
+#[test]
+fn host_matches_patterns_negation_of_wildcard() {
+    // * matches everything, !specific negates it
+    let patterns = vec!["*".to_string(), "!specific".to_string()];
+    assert!(host_matches_patterns("anything", &patterns));
+    assert!(!host_matches_patterns("specific", &patterns));
+}
+
+#[test]
+fn host_matches_patterns_empty_string_patterns() {
+    let patterns = vec![String::new()];
+    // Empty pattern matches empty host
+    assert!(host_matches_patterns("", &patterns));
+    assert!(!host_matches_patterns("host", &patterns));
+}
+
+#[test]
+fn glob_matches_only_question_marks() {
+    assert!(glob_matches("abc", "???"));
+    assert!(!glob_matches("abcd", "???"));
+    assert!(!glob_matches("ab", "???"));
+    assert!(!glob_matches("", "???"));
+}
+
+#[test]
+fn glob_matches_star_matches_empty() {
+    // * should match empty string
+    assert!(glob_matches("", "*"));
+    assert!(glob_matches("", "**"));
+    assert!(glob_matches("", "***"));
+}
+
+#[test]
+fn glob_matches_pattern_longer_than_text() {
+    assert!(!glob_matches("ab", "abcde"));
+    assert!(!glob_matches("a", "ab*"));
+}
+
+#[test]
+fn glob_matches_text_with_special_chars() {
+    // Text containing glob characters
+    assert!(glob_matches("test*file", "test*file"));
+    assert!(glob_matches("test?file", "test?file"));
+}
+
+#[test]
+fn get_directive_from_match_block() {
+    let ast = make_ast("Match host web\n    User admin\n");
+    // get_directive only looks at Host blocks, not Match blocks
+    let val = get_directive(&ast, "web", "User");
+    assert_eq!(val, None);
+}
+
+#[test]
+fn get_all_directives_empty_ast() {
+    let ast = make_ast("");
+    let dirs = get_all_directives(&ast, "host");
+    assert!(dirs.is_empty());
+}
+
+#[test]
+fn get_all_directives_no_match() {
+    let ast = make_ast("Host other\n    User alice\n");
+    let dirs = get_all_directives(&ast, "host");
+    assert!(dirs.is_empty());
+}
+
+#[test]
+fn set_directive_on_wildcard_host() {
+    let mut ast = make_ast("Host *\n    User alice\n");
+    set_directive(&mut ast, "anything", "Port", "22").unwrap();
+    let val = get_directive(&ast, "anything", "Port");
+    assert_eq!(val, Some("22".to_owned()));
+}
+
+#[test]
+fn get_directive_with_empty_value() {
+    let ast = make_ast("Host example\n    HostName\n");
+    let val = get_directive(&ast, "example", "HostName");
+    assert_eq!(val, Some(String::new()));
+}

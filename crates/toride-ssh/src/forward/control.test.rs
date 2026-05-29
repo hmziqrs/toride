@@ -229,6 +229,206 @@ fn parse_forward_line_with_extra_whitespace() {
     assert!(parse_forward_line(line, ForwardType::Local).is_none());
 }
 
+// ---------------------------------------------------------------------------
+// Weird edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_forward_line_very_high_port() {
+    let line = "127.0.0.1 port 65535, forwarding to 10.0.0.1 port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_port, 65535);
+}
+
+#[test]
+fn parse_forward_line_port_zero() {
+    let line = "127.0.0.1 port 0, forwarding to 10.0.0.1 port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_port, 0);
+}
+
+#[test]
+fn parse_forward_line_remote_with_empty_remote_addr() {
+    // When remote addr is empty, cancel_known_forward substitutes "localhost"
+    let line = "0.0.0.0 port 2222, forwarding to  port 22";
+    let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
+    assert_eq!(fwd.remote_addr, "");
+    assert_eq!(fwd.remote_port, 22);
+}
+
+#[test]
+fn parse_forward_output_with_error_before_sections() {
+    let output = "Error: some error message\nLocal connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 1);
+}
+
+#[test]
+fn parse_forward_output_with_multiple_local_sections() {
+    // Duplicate section headers - should keep parsing
+    let output = "\
+Local connections:
+  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
+Local connections:
+  127.0.0.1 port 9090, forwarding to 10.0.0.2 port 80
+";
+    let fwds = parse_forward_output(output);
+    // Both should be parsed since we don't reset the type
+    assert_eq!(fwds.len(), 2);
+}
+
+#[test]
+fn parse_forward_line_dynamic_with_remote_type() {
+    // Dynamic line parsed as Remote should return None (no "forwarding to")
+    let line = "127.0.0.1 port 1080";
+    assert!(parse_forward_line(line, ForwardType::Remote).is_none());
+}
+
+#[test]
+fn parse_forward_line_local_with_dynamic_type() {
+    // Local line parsed as Dynamic — the parser finds " port " and takes the port,
+    // but then expects the rest to be empty for Dynamic type
+    let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
+    let result = parse_forward_line(line, ForwardType::Dynamic);
+    // Dynamic type expects just "<addr> port <port>" without ", forwarding to..."
+    // The extra comma/text after the port is ignored for Dynamic type
+    // since it only reads up to the end of the port number
+    if let Some(fwd) = result {
+        assert_eq!(fwd.local_port, 8080);
+    }
+    // Whether it returns Some or None depends on how the parser handles
+    // trailing content for Dynamic type
+}
+
+#[test]
+fn extract_host_from_name_very_long() {
+    let long_name = format!("cm-user@{}:22", "a".repeat(256));
+    let host = extract_host_from_name(&long_name);
+    assert_eq!(host, "a".repeat(256));
+}
+
+#[test]
+fn extract_host_from_name_with_underscores() {
+    assert_eq!(extract_host_from_name("cm-user_name@host_name:22"), "host_name");
+}
+
+#[test]
+fn extract_host_from_name_with_hyphens() {
+    assert_eq!(extract_host_from_name("cm-user@my-host:22"), "my-host");
+}
+
+#[test]
+fn extract_pid_from_name_at_boundary() {
+    assert_eq!(extract_pid_from_name("ssh-hash-1"), Some(1));
+    assert_eq!(extract_pid_from_name("ssh-hash-4294967295"), Some(4294967295)); // u32::MAX
+}
+
+#[test]
+fn parse_forward_output_with_tabs() {
+    let output = "Local connections:\n\t127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Production-grade weird edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_forward_line_same_local_remote_port() {
+    let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 8080";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_port, fwd.remote_port);
+}
+
+#[test]
+fn parse_forward_line_with_ipv6_localhost() {
+    let line = "::1 port 8080, forwarding to ::1 port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_addr, "::1");
+    assert_eq!(fwd.remote_addr, "::1");
+}
+
+#[test]
+fn parse_forward_line_with_hostname() {
+    let line = "myhost port 8080, forwarding to remotehost port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_addr, "myhost");
+    assert_eq!(fwd.remote_addr, "remotehost");
+}
+
+#[test]
+fn parse_forward_output_with_no_newline_at_end() {
+    let output = "Local connections:\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 1);
+}
+
+#[test]
+fn parse_forward_output_with_multiple_blank_lines() {
+    let output = "Local connections:\n\n\n  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80\n";
+    let fwds = parse_forward_output(output);
+    assert_eq!(fwds.len(), 1);
+}
+
+#[test]
+fn parse_forward_line_with_port_1() {
+    let line = "127.0.0.1 port 1, forwarding to 10.0.0.1 port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_port, 1);
+}
+
+#[test]
+fn parse_forward_line_with_port_65535() {
+    let line = "127.0.0.1 port 65535, forwarding to 10.0.0.1 port 80";
+    let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+    assert_eq!(fwd.local_port, 65535);
+}
+
+#[test]
+fn extract_host_from_name_with_numbers() {
+    assert_eq!(extract_host_from_name("cm-user@192.168.1.1:22"), "192.168.1.1");
+}
+
+#[test]
+fn extract_host_from_name_with_multiple_colons() {
+    // IPv6-like pattern — takes up to first colon after @
+    let host = extract_host_from_name("cm-user@::1:22");
+    // The function splits on first colon after @, which is right after @
+    // So the result is empty (between @ and first colon)
+    assert_eq!(host, "");
+}
+
+#[test]
+fn extract_pid_from_name_with_multiple_dashes() {
+    assert_eq!(extract_pid_from_name("ssh-abc-def-123"), Some(123));
+}
+
+#[test]
+fn extract_pid_from_name_with_leading_zeros() {
+    assert_eq!(extract_pid_from_name("ssh-hash-00123"), Some(123));
+}
+
+#[test]
+fn cancel_spec_with_empty_remote_addr() {
+    let fwd = PortForward {
+        local_addr: "127.0.0.1".to_owned(),
+        local_port: 8080,
+        remote_addr: String::new(),
+        remote_port: 80,
+        forward_type: ForwardType::Local,
+    };
+    // Empty remote addr should use "localhost"
+    let spec = format!(
+        "[{}]:{}:{}:{}",
+        fwd.local_addr,
+        fwd.local_port,
+        if fwd.remote_addr.is_empty() { "localhost" } else { &fwd.remote_addr },
+        fwd.remote_port
+    );
+    assert_eq!(spec, "[127.0.0.1]:8080:localhost:80");
+}
+
 #[test]
 fn cancel_spec_local_forward() {
     let fwd = PortForward {
