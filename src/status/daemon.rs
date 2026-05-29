@@ -204,10 +204,7 @@ fn check_stale_socket(path: &Path) -> bool {
     }
 
     // Try to connect with a short timeout.
-    match UnixStream::connect(path) {
-        Ok(_) => false,
-        Err(_) => true,
-    }
+    UnixStream::connect(path).is_err()
 }
 
 #[cfg(not(unix))]

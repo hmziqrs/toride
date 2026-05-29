@@ -125,10 +125,7 @@ fn validate_control_path(path: &Path) -> bool {
 fn check_socket_connectable(path: &Path) -> bool {
     use std::os::unix::net::UnixStream;
 
-    match UnixStream::connect(path) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    UnixStream::connect(path).is_ok()
 }
 
 /// Check if the SSH mux master is alive by running `ssh -O check`.
@@ -140,7 +137,7 @@ fn check_mux_master(control_path: &Path) -> bool {
             "-O",
             "check",
             "-S",
-            &control_path.to_string_lossy().to_string(),
+            control_path.to_string_lossy().as_ref(),
             "dummy",
         ])
         .stdout(std::process::Stdio::null())
@@ -155,7 +152,7 @@ fn check_mux_master(control_path: &Path) -> bool {
 /// Runs `ssh -G -F <config>` and checks the exit status.
 fn check_config(config_path: &Path) -> bool {
     Command::new("ssh")
-        .args(["-G", "-F", &config_path.to_string_lossy().to_string()])
+        .args(["-G", "-F", config_path.to_string_lossy().as_ref()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
