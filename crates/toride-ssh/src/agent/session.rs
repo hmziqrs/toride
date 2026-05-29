@@ -157,7 +157,7 @@ async fn is_control_socket_candidate(path: &Path) -> bool {
 /// - `cm-root@server.example.com:22` -> `root@server.example.com`
 /// - `ctrl-1234abcd` -> `1234abcd`
 /// - `ssh-user@host:22-abc` -> `user@host`
-fn extract_host_from_socket_path(path: &Path) -> String {
+pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -232,42 +232,5 @@ async fn verify_control_session(socket_path: &Path) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extract_host_from_cm_pattern() {
-        let path = PathBuf::from("/home/user/.ssh/cm-root@server.example.com:22");
-        assert_eq!(
-            extract_host_from_socket_path(&path),
-            "root@server.example.com"
-        );
-    }
-
-    #[test]
-    fn extract_host_from_ctrl_pattern() {
-        let path = PathBuf::from("/home/user/.ssh/ctrl-abc123def");
-        assert_eq!(
-            extract_host_from_socket_path(&path),
-            "abc123def"
-        );
-    }
-
-    #[test]
-    fn extract_host_from_ssh_tmp_pattern() {
-        let path = PathBuf::from("/tmp/ssh-deploy@web01:22-mUXnBz");
-        assert_eq!(
-            extract_host_from_socket_path(&path),
-            "deploy@web01"
-        );
-    }
-
-    #[test]
-    fn extract_host_no_prefix() {
-        let path = PathBuf::from("/home/user/.ssh/some-host:22");
-        assert_eq!(
-            extract_host_from_socket_path(&path),
-            "some-host"
-        );
-    }
-}
+#[path = "session.test.rs"]
+mod tests;
