@@ -1,9 +1,183 @@
-//! SSH key generation via ssh-key crate and ssh-keygen CLI.
+//! SSH key generation via ssh-keygen CLI and ssh-key crate for parsing.
 
+use crate::key::get_permissions;
 use crate::paths::SshPaths;
-use crate::{KeyCreateParams, Result, SshKey};
+use crate::runner;
+use crate::{Error, Fingerprint, KeyCreateParams, KeySource, KeyType, Result, SshKey};
+
+/// Convert our [`KeyType`] to the ssh-keygen `-t` argument value.
+fn key_type_to_cli_arg(kt: &KeyType) -> &'static str {
+    match kt {
+        KeyType::Ed25519 => "ed25519",
+        KeyType::Rsa { .. } => "rsa",
+        KeyType::EcdsaP256 => "ecdsa",
+        KeyType::EcdsaP384 => "ecdsa",
+        KeyType::EcdsaP521 => "ecdsa",
+        KeyType::Dsa => "dsa",
+        KeyType::SkEd25519 => "sk-ssh-ed25519@openssh.com",
+        KeyType::SkEcdsaP256 => "sk-ecdsa-sha2-nistp256@openssh.com",
+    }
+}
 
 /// Generate a new SSH key pair.
-pub async fn generate_key(_paths: &SshPaths, _params: KeyCreateParams) -> Result<SshKey> {
-    todo!()
+pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<SshKey> {
+    let private_path = paths.ssh_dir().join(&params.name);
+    let public_path = {
+        let mut p = private_path.clone();
+        p.set_extension("pub");
+        p
+    };
+
+    // Check if key already exists
+    if private_path.exists() {
+        return Err(Error::KeyExists(params.name.clone()));
+    }
+
+    // Ensure ssh-keygen is available
+    if !runner::tool_exists("ssh-keygen") {
+        return Err(Error::ToolNotFound("ssh-keygen".to_string()));
+    }
+
+    // Build the ssh-keygen command arguments.
+    //
+    // SECURITY NOTE: The passphrase is passed via `-N` as a command-line
+    // argument, which makes it visible through `/proc/<pid>/cmdline` or `ps`
+    // on multi-user systems. This is the standard approach used by most SSH
+    // wrappers. A more secure alternative would be to generate the key without
+    // a passphrase and then use `ssh-keygen -p` with the passphrase piped
+    // through stdin, but that requires more complex process spawning.
+    let passphrase_nonempty = params
+        .passphrase
+        .as_deref()
+        .is_some_and(|p| !p.is_empty());
+
+    let key_type_str = key_type_to_cli_arg(&params.key_type);
+    let private_path_str = private_path
+        .to_str()
+        .ok_or_else(|| Error::KeyGenerationFailed("invalid key path".to_string()))?;
+
+    let mut args: Vec<String> = vec![
+        "-t".to_string(),
+        key_type_str.to_string(),
+        "-f".to_string(),
+        private_path_str.to_string(),
+        "-N".to_string(),
+        params.passphrase.as_deref().unwrap_or("").to_string(),
+    ];
+
+    // RSA bit size
+    if let KeyType::Rsa { bits } = params.key_type {
+        if bits > 0 {
+            args.extend(["-b".to_string(), bits.to_string()]);
+        }
+    }
+
+    // ECDSA curve size (via -b flag)
+    if let KeyType::EcdsaP384 = params.key_type {
+        args.extend(["-b".to_string(), "384".to_string()]);
+    }
+    if let KeyType::EcdsaP521 = params.key_type {
+        args.extend(["-b".to_string(), "521".to_string()]);
+    }
+
+    // Comment
+    if let Some(ref comment) = params.comment {
+        args.extend(["-C".to_string(), comment.clone()]);
+    }
+
+    // KDF rounds
+    if let Some(rounds) = params.kdf_rounds {
+        args.extend(["-a".to_string(), rounds.to_string()]);
+    }
+
+    let args_ref: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    runner::ssh_keygen(&args_ref).await?;
+
+    // Set file permissions and read the generated key in a blocking context
+    // to avoid blocking the async runtime with synchronous filesystem ops.
+    let private_path_clone = private_path.clone();
+    let public_path_clone = public_path.clone();
+    let ssh_dir = paths.ssh_dir().to_path_buf();
+
+    let result = tokio::task::spawn_blocking(move || {
+        // Set file permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &ssh_dir,
+                std::fs::Permissions::from_mode(0o700),
+            );
+            let _ = std::fs::set_permissions(
+                &private_path_clone,
+                std::fs::Permissions::from_mode(0o600),
+            );
+            let _ = std::fs::set_permissions(
+                &public_path_clone,
+                std::fs::Permissions::from_mode(0o644),
+            );
+        }
+
+        let permissions = get_permissions(&private_path_clone);
+
+        let private_key_data = std::fs::read_to_string(&private_path_clone)
+            .map_err(|e| Error::KeyParseFailed(format!("failed to read generated key: {e}")))?;
+
+        let pk = ssh_key::PrivateKey::from_openssh(&private_key_data)
+            .map_err(|e| Error::KeyParseFailed(format!("failed to parse generated key: {e}")))?;
+
+        Ok::<_, Error>((permissions, pk, public_path_clone.exists()))
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(format!("post-generation task failed: {e}")))??;
+
+    let (permissions, pk, has_public_pair) = result;
+
+    // Add to agent if requested
+    if params.add_to_agent {
+        add_key_to_agent(&private_path).await?;
+    }
+
+    let public_key = pk.public_key();
+    let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
+    let fingerprint = Some(Fingerprint {
+        hash: fp.to_string().trim_start_matches("SHA256:").to_string(),
+        key_type: params.key_type,
+    });
+
+    let comment_str = pk.comment().to_string();
+    let comment = if comment_str.is_empty() {
+        None
+    } else {
+        Some(comment_str)
+    };
+
+    Ok(SshKey {
+        path: private_path,
+        key_type: params.key_type,
+        fingerprint,
+        comment,
+        encrypted: passphrase_nonempty,
+        source: KeySource::Filesystem,
+        permissions,
+        has_public_pair,
+        has_certificate: false,
+    })
+}
+
+/// Add a key to the SSH agent.
+async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
+    let path_str = private_path
+        .to_str()
+        .ok_or_else(|| Error::CommandFailed("invalid key path for ssh-add".to_string()))?
+        .to_string();
+
+    tokio::task::spawn_blocking(move || {
+        duct::cmd("ssh-add", [path_str.as_str()])
+            .read()
+            .map_err(|e| Error::CommandFailed(format!("ssh-add failed: {e}")))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(format!("ssh-add task failed: {e}")))?
 }

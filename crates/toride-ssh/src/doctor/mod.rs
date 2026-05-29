@@ -22,7 +22,7 @@ impl<'a> DoctorService<'a> {
     }
 
     /// Run remote diagnostic checks for a host.
-    pub async fn run_remote_checks(&self, _host: &str) -> Result<Vec<Diagnostic>> {
-        todo!()
+    pub async fn run_remote_checks(&self, host: &str) -> Result<Vec<Diagnostic>> {
+        remote::run_all(self.paths, host).await
     }
 }

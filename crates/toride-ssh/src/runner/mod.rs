@@ -22,10 +22,28 @@ pub async fn ssh_keygen(args: &[&str]) -> Result<String> {
 }
 
 /// Run `ssh-keyscan -H <host>` and return the host key lines.
+///
+/// The `-H` flag hashes hostnames in the output for privacy.
 pub async fn ssh_keyscan(host: &str) -> Result<String> {
     let host = host.to_owned();
     tokio::task::spawn_blocking(move || {
         duct::cmd("ssh-keyscan", ["-H", &host])
+            .read()
+            .map_err(|e| Error::CommandFailed(e.to_string()))
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(e.to_string()))?
+}
+
+/// Run `ssh-keyscan <host>` (without `-H`) and return the host key lines.
+///
+/// Hostnames appear in plaintext in the output, which is useful when the
+/// caller wants to display or inspect the keys before deciding whether to
+/// add them to `known_hosts`.
+pub async fn ssh_keyscan_no_hash(host: &str) -> Result<String> {
+    let host = host.to_owned();
+    tokio::task::spawn_blocking(move || {
+        duct::cmd("ssh-keyscan", [&host])
             .read()
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })

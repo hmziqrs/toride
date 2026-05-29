@@ -1,8 +1,291 @@
 //! Managed config block markers: `# >>> toride name` / `# <<< toride name`.
+//!
+//! Toride-managed blocks are delimited by special comment markers so the tool
+//! can add, replace, and remove them without touching user-edited content.
 
+use super::ast::{ConfigAst, ConfigNode, Separator};
 use crate::Result;
 
+/// The prefix for a managed block opening marker.
+const OPEN_PREFIX: &str = "# >>> toride ";
+
+/// The prefix for a managed block closing marker.
+const CLOSE_PREFIX: &str = "# <<< toride ";
+
+/// A managed block extracted from the AST, with its name and directive nodes.
+#[derive(Debug, Clone)]
+pub struct ManagedBlock {
+    /// The name of this managed block (the part after `toride`).
+    pub name: String,
+    /// The directive nodes inside this managed block.
+    pub nodes: Vec<ConfigNode>,
+}
+
 /// Extract a managed block by name.
-pub fn extract_managed_block(_name: &str) -> Result<()> {
-    todo!()
+///
+/// Scans top-level nodes looking for `# >>> toride {name}` /
+/// `# <<< toride {name}` comment pairs at the *top level* of the config.
+/// Returns the directive nodes between the markers.
+pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Result<Option<ManagedBlock>> {
+    let open = format!("{OPEN_PREFIX}{name}");
+    let close = format!("{CLOSE_PREFIX}{name}");
+
+    let mut inside = false;
+    let mut nodes = Vec::new();
+
+    for node in &ast.nodes {
+        match node {
+            ConfigNode::Comment { text, .. } if text.trim() == open => {
+                inside = true;
+                continue;
+            }
+            ConfigNode::Comment { text, .. } if text.trim() == close => {
+                return Ok(Some(ManagedBlock {
+                    name: name.to_owned(),
+                    nodes,
+                }));
+            }
+            _ if inside => {
+                nodes.push(node.clone());
+            }
+            _ => {}
+        }
+    }
+
+    // If we were inside but never hit the closing marker, that is a malformed
+    // block — return what we have.
+    if inside {
+        Ok(Some(ManagedBlock {
+            name: name.to_owned(),
+            nodes,
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+/// List all managed block names in the config.
+pub fn list_managed_blocks(ast: &ConfigAst) -> Vec<String> {
+    let mut names = Vec::new();
+
+    for node in &ast.nodes {
+        if let ConfigNode::Comment { text, .. } = node {
+            let trimmed = text.trim();
+            if let Some(rest) = trimmed.strip_prefix(OPEN_PREFIX) {
+                names.push(rest.to_owned());
+            }
+        }
+    }
+
+    names
+}
+
+/// Add or replace a managed block.
+///
+/// If a block with the same name already exists, it is replaced in place.
+/// Otherwise the block is appended at the end of the config file.
+pub fn upsert_managed_block(
+    ast: &mut ConfigAst,
+    name: &str,
+    directives: Vec<(String, String)>,
+) -> Result<()> {
+    // Try to find and replace existing block.
+    let open = format!("{OPEN_PREFIX}{name}");
+    let close = format!("{CLOSE_PREFIX}{name}");
+
+    let open_idx = ast.nodes.iter().position(|node| {
+        matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
+    });
+
+    if let Some(start) = open_idx {
+        // Find the closing marker.
+        let end = ast.nodes[start + 1..]
+            .iter()
+            .position(|node| {
+                matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close)
+            })
+            .map(|i| start + 1 + i);
+
+        if let Some(end) = end {
+            // Remove old content between markers.
+            ast.nodes.drain(start + 1..end);
+            // Insert new content.
+            let new_nodes: Vec<ConfigNode> = directives
+                .into_iter()
+                .map(|(key, value)| ConfigNode::Directive {
+                    keyword: key,
+                    separator: Separator::Space,
+                    value,
+                    comment: None,
+                    indent: String::new(),
+                })
+                .collect();
+            for (i, node) in new_nodes.into_iter().enumerate() {
+                ast.nodes.insert(start + 1 + i, node);
+            }
+            return Ok(());
+        }
+    }
+
+    // No existing block — append a new one.
+    let open_comment = ConfigNode::Comment { text: open, indent: String::new() };
+    let close_comment = ConfigNode::Comment { text: close, indent: String::new() };
+    let directive_nodes: Vec<ConfigNode> = directives
+        .into_iter()
+        .map(|(key, value)| ConfigNode::Directive {
+            keyword: key,
+            separator: Separator::Space,
+            value,
+            comment: None,
+            indent: String::new(),
+        })
+        .collect();
+
+    if !ast.nodes.is_empty() {
+        ast.nodes.push(ConfigNode::BlankLine);
+    }
+    ast.nodes.push(open_comment);
+    for node in directive_nodes {
+        ast.nodes.push(node);
+    }
+    ast.nodes.push(close_comment);
+
+    Ok(())
+}
+
+/// Remove a managed block by name.
+///
+/// Removes the marker comments, all content between them, and any adjacent
+/// blank line to keep the config clean.
+pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
+    let open = format!("{OPEN_PREFIX}{name}");
+    let close = format!("{CLOSE_PREFIX}{name}");
+
+    let open_idx = ast.nodes.iter().position(|node| {
+        matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
+    });
+
+    let Some(start) = open_idx else {
+        return Err(crate::Error::HostNotFound(format!(
+            "managed block {name} not found"
+        )));
+    };
+
+    let end = ast.nodes[start + 1..]
+        .iter()
+        .position(|node| {
+            matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close)
+        })
+        .map(|i| start + 1 + i);
+
+    let Some(end) = end else {
+        return Err(crate::Error::HostNotFound(format!(
+            "managed block {name} closing marker not found"
+        )));
+    };
+
+    // Remove from end+1 down to start (inclusive).
+    ast.nodes.drain(start..=end);
+
+    // Remove preceding blank line if present.
+    if start > 0 && matches!(ast.nodes.get(start - 1), Some(ConfigNode::BlankLine)) {
+        ast.nodes.remove(start - 1);
+    }
+
+    Ok(())
+}
+
+/// Check whether a managed block with the given name exists.
+pub fn has_managed_block(ast: &ConfigAst, name: &str) -> bool {
+    let open = format!("{OPEN_PREFIX}{name}");
+    ast.nodes
+        .iter()
+        .any(|node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_ast_with_managed() -> ConfigAst {
+        super::super::ast::parse(
+            "\
+Host existing
+    HostName existing.com
+
+# >>> toride test-block
+    HostName managed.com
+    User managed
+# <<< toride test-block
+
+Host other
+    HostName other.com
+",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn extract_managed_block_works() {
+        let ast = make_ast_with_managed();
+        let block = extract_managed_block(&ast, "test-block").unwrap();
+        assert!(block.is_some());
+        let block = block.unwrap();
+        assert_eq!(block.name, "test-block");
+        assert_eq!(block.nodes.len(), 2);
+    }
+
+    #[test]
+    fn extract_missing_returns_none() {
+        let ast = make_ast_with_managed();
+        let block = extract_managed_block(&ast, "nonexistent").unwrap();
+        assert!(block.is_none());
+    }
+
+    #[test]
+    fn list_managed_blocks_works() {
+        let ast = make_ast_with_managed();
+        let names = list_managed_blocks(&ast);
+        assert_eq!(names, vec!["test-block"]);
+    }
+
+    #[test]
+    fn upsert_new_block_appends() {
+        let mut ast = super::super::ast::parse("Host foo\n    HostName foo.com\n").unwrap();
+        upsert_managed_block(
+            &mut ast,
+            "myblock",
+            vec![("HostName".to_owned(), "new.com".to_owned())],
+        )
+        .unwrap();
+
+        assert!(has_managed_block(&ast, "myblock"));
+        let block = extract_managed_block(&ast, "myblock").unwrap().unwrap();
+        assert_eq!(block.nodes.len(), 1);
+    }
+
+    #[test]
+    fn upsert_replaces_existing() {
+        let mut ast = make_ast_with_managed();
+        upsert_managed_block(
+            &mut ast,
+            "test-block",
+            vec![("HostName".to_owned(), "replaced.com".to_owned())],
+        )
+        .unwrap();
+
+        let block = extract_managed_block(&ast, "test-block").unwrap().unwrap();
+        assert_eq!(block.nodes.len(), 1);
+        assert_eq!(
+            block.nodes[0].as_directive().unwrap().1,
+            "replaced.com"
+        );
+    }
+
+    #[test]
+    fn remove_managed_block_works() {
+        let mut ast = make_ast_with_managed();
+        remove_managed_block(&mut ast, "test-block").unwrap();
+        assert!(!has_managed_block(&ast, "test-block"));
+    }
 }

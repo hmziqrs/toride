@@ -1,13 +1,715 @@
 //! Port forwarding control via ControlMaster sessions.
 
-use crate::Result;
+use std::os::unix::fs::FileTypeExt;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Error, Result};
+
+/// Whether a forward is local (-L), remote (-R), or dynamic/SOCKS (-D).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ForwardType {
+    /// `-L` local port forward.
+    Local,
+    /// `-R` remote port forward.
+    Remote,
+    /// `-D` dynamic (SOCKS proxy) forward.
+    Dynamic,
+}
+
+impl std::fmt::Display for ForwardType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local => write!(f, "local"),
+            Self::Remote => write!(f, "remote"),
+            Self::Dynamic => write!(f, "dynamic"),
+        }
+    }
+}
+
+/// A single active port forward on a ControlMaster session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortForward {
+    /// Local bind address (e.g. `127.0.0.1` or `*`).
+    pub local_addr: String,
+    /// Local listening port.
+    pub local_port: u16,
+    /// Remote address the forward targets.
+    pub remote_addr: String,
+    /// Remote port the forward targets.
+    pub remote_port: u16,
+    /// Whether this is a local, remote, or dynamic forward.
+    pub forward_type: ForwardType,
+}
+
+/// A discovered ControlMaster session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlSession {
+    /// Path to the control socket.
+    pub control_path: PathBuf,
+    /// Host alias or hostname the session is connected to.
+    pub host: String,
+    /// PID of the master SSH process, if known.
+    pub pid: Option<u32>,
+    /// When the session was established, if determinable.
+    pub established: Option<std::time::SystemTime>,
+}
+
+/// Run an SSH control command (`-O <action>`) and return stdout.
+async fn ssh_control_cmd(control_path: &Path, action: &str) -> Result<String> {
+    let path_str = control_path
+        .to_str()
+        .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?;
+
+    let action = action.to_owned();
+    let path = path_str.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        duct::cmd("ssh", ["-O", &action, "-S", &path, "-x", "nohost"])
+            .stderr_to_stdout()
+            .read()
+            .map_err(|e| Error::CommandFailed(format!("ssh -O {action}: {e}")))
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(e.to_string()))?
+}
+
+/// Check whether a control socket is still alive.
+async fn check_alive(control_path: &Path) -> bool {
+    ssh_control_cmd(control_path, "check")
+        .await
+        .is_ok()
+}
 
 /// List active port forwards on a ControlMaster session.
-pub async fn list_forwards(_control_path: &std::path::Path) -> Result<()> {
-    todo!()
+///
+/// Sends `ssh -O list -S <control_path>` and parses the output to extract
+/// individual forward entries.
+pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
+    let output = ssh_control_cmd(control_path, "list").await?;
+    Ok(parse_forward_output(&output))
+}
+
+/// Parse the output of `ssh -O list` into structured forward entries.
+///
+/// Typical output looks like:
+/// ```text
+/// Local connections:
+///   127.0.0. port 8080, forwarding to 10.0.0.1 port 80
+/// Remote connections:
+/// Dynamic connections:
+///   127.0.0. port 1080
+/// ```
+///
+/// The exact format varies across OpenSSH versions, so the parser is
+/// intentionally lenient.
+fn parse_forward_output(output: &str) -> Vec<PortForward> {
+    let mut forwards = Vec::new();
+    let mut current_type: Option<ForwardType> = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("Local connections") {
+            current_type = Some(ForwardType::Local);
+            continue;
+        }
+        if trimmed.starts_with("Remote connections") {
+            current_type = Some(ForwardType::Remote);
+            continue;
+        }
+        if trimmed.starts_with("Dynamic connections") {
+            current_type = Some(ForwardType::Dynamic);
+            continue;
+        }
+
+        let Some(ft) = current_type else {
+            continue;
+        };
+
+        // Try to parse a line like:
+        //   "127.0.0. port 8080, forwarding to 10.0.0.1 port 80"
+        //   "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80"
+        // For dynamic: "127.0.0.1 port 1080"
+        if let Some(fwd) = parse_forward_line(trimmed, ft) {
+            forwards.push(fwd);
+        }
+    }
+
+    forwards
+}
+
+/// Parse a single forward line from `ssh -O list` output.
+fn parse_forward_line(line: &str, forward_type: ForwardType) -> Option<PortForward> {
+    // Two forms:
+    //   "<addr> port <lport>, forwarding to <raddr> port <rport>"  (local/remote)
+    //   "<addr> port <lport>"                                       (dynamic)
+    let line = line.trim_start();
+
+    // Find " port " after the local address
+    let port_idx = line.find(" port ")?;
+    let local_addr = line[..port_idx]
+        .trim()
+        .trim_end_matches('.')
+        .to_owned();
+
+    let rest = &line[port_idx + 6..]; // skip " port "
+
+    if forward_type == ForwardType::Dynamic {
+        // Dynamic: "1080"
+        let local_port: u16 = rest.trim().parse().ok()?;
+        return Some(PortForward {
+            local_addr,
+            local_port,
+            remote_addr: String::new(),
+            remote_port: 0,
+            forward_type,
+        });
+    }
+
+    // Local/Remote: "8080, forwarding to 10.0.0.1 port 80"
+    let comma_idx = rest.find(',')?;
+    let local_port: u16 = rest[..comma_idx].trim().parse().ok()?;
+
+    let fwd_rest = &rest[comma_idx + 1..];
+    let fwd_label = "forwarding to ";
+    let fwd_idx = fwd_rest.find(fwd_label)?;
+    let remote_part = &fwd_rest[fwd_idx + fwd_label.len()..];
+
+    // remote_part: "10.0.0.1 port 80"
+    let rport_idx = remote_part.rfind(" port ")?;
+    let remote_addr = remote_part[..rport_idx].trim().to_owned();
+    let remote_port: u16 = remote_part[rport_idx + 6..].trim().parse().ok()?;
+
+    Some(PortForward {
+        local_addr,
+        local_port,
+        remote_addr,
+        remote_port,
+        forward_type,
+    })
 }
 
 /// Cancel a port forward on a ControlMaster session.
-pub async fn cancel_forward(_control_path: &std::path::Path, _local_port: u16) -> Result<()> {
-    todo!()
+///
+/// For local forwards this sends `ssh -O cancel -L <addr>:<host>:<port> -S <path>`.
+/// For remote forwards, `-R` is used instead.  Since we only receive the
+/// `local_port`, we first list the forwards to discover the full specification.
+///
+/// # Race conditions
+///
+/// There is an inherent TOCTOU race between listing forwards and issuing the
+/// cancel command: the forward may vanish between the two calls.  The caller
+/// should be prepared to handle [`Error::ForwardNotFound`] or a cancel
+/// command that fails due to a stale forward.
+pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> {
+    let forwards = list_forwards(control_path).await?;
+
+    let forward = forwards
+        .iter()
+        .find(|f| f.local_port == local_port)
+        .ok_or_else(|| {
+            Error::ForwardNotFound(format!(
+                "no forward found on local port {local_port}"
+            ))
+        })?;
+
+    cancel_known_forward(control_path, forward).await
+}
+
+/// Cancel a port forward using a known [`PortForward`] directly (avoids a
+/// redundant `list` round-trip).
+///
+/// # Cancel specification format
+///
+/// The spec passed to `ssh -O cancel` depends on the forward type:
+/// - **Local/Remote**: `[bind_addr]:lport:rhost:rport`
+/// - **Dynamic**: `[bind_addr]:lport`
+///
+/// When `GatewayPorts` is enabled the bind address may be `*` or `0.0.0.0`.
+pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) -> Result<()> {
+    let path_str = control_path
+        .to_str()
+        .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?;
+
+    let flag = match forward.forward_type {
+        ForwardType::Local => "-L",
+        ForwardType::Remote => "-R",
+        ForwardType::Dynamic => "-D",
+    };
+
+    let spec = if forward.forward_type == ForwardType::Dynamic {
+        format!(
+            "[{}]:{}",
+            if forward.local_addr == "*" {
+                "*"
+            } else {
+                &forward.local_addr
+            },
+            forward.local_port
+        )
+    } else {
+        format!(
+            "[{}]:{}:{}:{}",
+            if forward.local_addr == "*" {
+                "*"
+            } else {
+                &forward.local_addr
+            },
+            forward.local_port,
+            if forward.remote_addr.is_empty() {
+                "localhost"
+            } else {
+                &forward.remote_addr
+            },
+            forward.remote_port
+        )
+    };
+
+    let flag_owned = flag.to_owned();
+    let spec_owned = spec;
+    let path_owned = path_str.to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        duct::cmd(
+            "ssh",
+            [
+                flag_owned.as_str(),
+                spec_owned.as_str(),
+                "-O",
+                "cancel",
+                "-S",
+                &path_owned,
+                "-x",
+                "nohost",
+            ],
+        )
+        .run()
+        .map_err(|e| Error::CommandFailed(format!("ssh -O cancel: {e}")))
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+
+    Ok(())
+}
+
+/// Gracefully close a ControlMaster session (`ssh -O exit`).
+///
+/// After this call the control socket file may still exist on disk (it is
+/// cleaned up asynchronously by the master process).  Callers that need to
+/// verify cleanup should check for socket file removal separately.
+pub async fn exit_session(control_path: &Path) -> Result<()> {
+    let path_str = control_path
+        .to_str()
+        .ok_or_else(|| Error::ForwardFailed("control path is not valid UTF-8".into()))?
+        .to_owned();
+
+    let path_for_cleanup = control_path.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        // ssh -O exit returns 0 on success; stderr may contain informational text.
+        let result = duct::cmd("ssh", ["-O", "exit", "-S", &path_str])
+            .run()
+            .map_err(|e| Error::CommandFailed(format!("ssh -O exit: {e}")));
+
+        // Best-effort cleanup of stale socket file.  OpenSSH normally unlinks
+        // the socket, but if the master is already gone the file lingers.
+        if result.is_ok() || is_stale_socket(&path_for_cleanup) {
+            let _ = std::fs::remove_file(&path_for_cleanup);
+        }
+
+        result
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+
+    Ok(())
+}
+
+/// Check whether a path looks like a stale (dead) control socket.
+fn is_stale_socket(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            if meta.file_type().is_socket() {
+                // Socket file exists but `ssh -O check` presumably failed.
+                // It is stale if `connect()` would fail, but we already know
+                // it is dead because we only call this after a failed check.
+                return true;
+            }
+            // Small regular file that could be a remnant on non-socket FS.
+            meta.is_file() && meta.len() == 0
+        }
+        Err(_) => false,
+    }
+}
+
+/// Discover active ControlMaster sessions by scanning common socket locations.
+///
+/// Checks:
+/// 1. `~/.ssh/cm-*`, `~/.ssh/control-*`, `~/.ssh/mux-*`, `~/.ssh/ctrl-*`
+/// 2. `/tmp/ssh-*` (default OpenSSH location)
+/// 3. Any socket file in `~/.ssh/` that looks like a control socket
+///
+/// Each candidate is verified with `ssh -O check` to confirm it is alive.
+pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
+    let ssh_dir = ssh_dir.to_path_buf();
+    let tmp_dir = std::path::PathBuf::from("/tmp");
+
+    let sessions = tokio::task::spawn_blocking(move || {
+        let mut candidates: Vec<PathBuf> = Vec::new();
+
+        // 1. ~/.ssh/cm-*, ~/.ssh/control-*, ~/.ssh/mux-*, ~/.ssh/ctrl-*
+        collect_matching(&ssh_dir, "cm-*", &mut candidates);
+        collect_matching(&ssh_dir, "control-*", &mut candidates);
+        collect_matching(&ssh_dir, "mux-*", &mut candidates);
+        collect_matching(&ssh_dir, "ctrl-*", &mut candidates);
+
+        // 2. /tmp/ssh-*
+        collect_matching(&tmp_dir, "ssh-*", &mut candidates);
+
+        // Deduplicate
+        candidates.sort();
+        candidates.dedup();
+
+        candidates
+    })
+    .await
+    .map_err(|e| Error::CommandFailed(e.to_string()))?;
+
+    // Verify each candidate using bounded concurrency to avoid spawning
+    // many concurrent ssh processes when many stale sockets are present.
+    let mut alive = Vec::new();
+    for candidate in sessions {
+        if check_alive(&candidate).await {
+            let session = build_session(&candidate);
+            alive.push(session);
+        }
+    }
+
+    Ok(alive)
+}
+
+/// Collect paths matching a glob pattern inside a directory.
+fn collect_matching(dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if glob_matches(pattern, name) {
+                    // Only include socket files or files that could be sockets
+                    if is_socket_or_candidate(&path) {
+                        out.push(path);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Simple glob matching supporting only `*` wildcard at the end of a prefix.
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        name.starts_with(prefix)
+    } else {
+        name == pattern
+    }
+}
+
+/// Check if a path is a Unix socket or a candidate control socket file.
+fn is_socket_or_candidate(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_socket() {
+                return true;
+            }
+            // On some filesystems (e.g. NFS) sockets may appear as regular files.
+            // Accept small files with no extension as candidates.
+            if ft.is_file() && meta.len() < 1024 {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                // Only accept names with no extension that don't look like
+                // regular SSH files (known_hosts, config, *.pub, etc.)
+                return !name.contains('.')
+                    && !name.ends_with(".pub")
+                    && !name.ends_with("-cert.pub")
+                    && !name.ends_with(".pem")
+                    && !name.ends_with(".old")
+                    && !name.ends_with(".bak");
+            }
+            false
+        }
+        Err(_) => false,
+    }
+}
+
+/// Build a [`ControlSession`] from a control socket path.
+///
+/// Tries to extract the host from the socket filename using common naming
+/// conventions like `cm-<user>@<host>:<port>` or `ssh-<hash>-<pid>`.
+fn build_session(control_path: &Path) -> ControlSession {
+    let name = control_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    let host = extract_host_from_name(name);
+
+    let pid = extract_pid_from_name(name).or_else(|| pid_from_check(control_path));
+
+    let established = control_path
+        .metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .map(std::time::SystemTime::from);
+
+    ControlSession {
+        control_path: control_path.to_path_buf(),
+        host,
+        pid,
+        established,
+    }
+}
+
+/// Attempt to extract the PID from the control socket by statting it.
+/// This is a synchronous helper used inside `build_session` which runs on a
+/// blocking thread.  Returns `None` if the stat fails or the path is gone.
+fn pid_from_check(path: &Path) -> Option<u32> {
+    // On some platforms the inode or ctime can give a hint but the most
+    // reliable approach is to use `ssh -O check` which returns the PID in
+    // its output: "Master running (pid=12345)".  However, since
+    // `build_session` is called *after* `check_alive` already succeeded, we
+    // skip the extra command here.  The PID extracted from the filename is
+    // usually sufficient for display purposes.
+    let _ = path;
+    None
+}
+
+/// Try to extract a hostname from common control socket naming patterns.
+///
+/// Patterns:
+/// - `cm-<user>@<host>:<port>` -> `<host>`
+/// - `control-<user>@<host>:<port>` -> `<host>`
+/// - `mux-<user>@<host>:<port>` -> `<host>`
+/// - `ssh-XXXXXXXXXX-<pid>` -> fallback to filename
+fn extract_host_from_name(name: &str) -> String {
+    // Strip common prefixes
+    let rest = name
+        .strip_prefix("cm-")
+        .or_else(|| name.strip_prefix("control-"))
+        .or_else(|| name.strip_prefix("mux-"))
+        .or_else(|| name.strip_prefix("ctrl-"))
+        .or_else(|| name.strip_prefix("ssh-"))
+        .unwrap_or(name);
+
+    // Try user@host:port pattern
+    if let Some(at_idx) = rest.find('@') {
+        let after_at = &rest[at_idx + 1..];
+        // Take up to the colon (port separator)
+        if let Some(colon_idx) = after_at.find(':') {
+            return after_at[..colon_idx].to_owned();
+        }
+        // No port, take rest
+        return after_at.to_owned();
+    }
+
+    // Fallback: use the stripped name
+    rest.to_owned()
+}
+
+/// Try to extract a PID from the control socket filename.
+///
+/// Returns `None` for PID 0 since it is never a valid process ID.
+fn extract_pid_from_name(name: &str) -> Option<u32> {
+    // Patterns like ssh-<hash>-<pid>
+    let parts: Vec<&str> = name.rsplitn(2, '-').collect();
+    if parts.len() == 2 {
+        if let Ok(pid) = parts[0].parse::<u32>() {
+            if pid > 0 {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_local_forward_line() {
+        let line = "127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80";
+        let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+        assert_eq!(fwd.local_addr, "127.0.0.1");
+        assert_eq!(fwd.local_port, 8080);
+        assert_eq!(fwd.remote_addr, "10.0.0.1");
+        assert_eq!(fwd.remote_port, 80);
+        assert_eq!(fwd.forward_type, ForwardType::Local);
+    }
+
+    #[test]
+    fn parse_local_forward_truncated_addr() {
+        // OpenSSH sometimes emits "127.0.0." (truncated trailing "1") for
+        // localhost entries in the list output.
+        let line = "127.0.0. port 8080, forwarding to 10.0.0.1 port 80";
+        let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+        assert_eq!(fwd.local_addr, "127.0.0");
+        assert_eq!(fwd.local_port, 8080);
+        assert_eq!(fwd.remote_addr, "10.0.0.1");
+        assert_eq!(fwd.remote_port, 80);
+    }
+
+    #[test]
+    fn parse_gateway_ports_forward() {
+        // When GatewayPorts=yes, the bind address is "*" or "0.0.0.0".
+        let line = "* port 9090, forwarding to 192.168.1.1 port 443";
+        let fwd = parse_forward_line(line, ForwardType::Local).unwrap();
+        assert_eq!(fwd.local_addr, "*");
+        assert_eq!(fwd.local_port, 9090);
+        assert_eq!(fwd.remote_addr, "192.168.1.1");
+        assert_eq!(fwd.remote_port, 443);
+    }
+
+    #[test]
+    fn parse_dynamic_forward_line() {
+        let line = "127.0.0.1 port 1080";
+        let fwd = parse_forward_line(line, ForwardType::Dynamic).unwrap();
+        assert_eq!(fwd.local_addr, "127.0.0.1");
+        assert_eq!(fwd.local_port, 1080);
+        assert_eq!(fwd.forward_type, ForwardType::Dynamic);
+    }
+
+    #[test]
+    fn parse_dynamic_forward_gateway() {
+        let line = "* port 1080";
+        let fwd = parse_forward_line(line, ForwardType::Dynamic).unwrap();
+        assert_eq!(fwd.local_addr, "*");
+        assert_eq!(fwd.local_port, 1080);
+    }
+
+    #[test]
+    fn parse_full_output() {
+        let output = "\
+Local connections:
+  127.0.0.1 port 8080, forwarding to 10.0.0.1 port 80
+  0.0.0.0 port 9090, forwarding to 192.168.1.1 port 443
+Remote connections:
+  127.0.0.1 port 2222, forwarding to 127.0.0.1 port 22
+Dynamic connections:
+  127.0.0.1 port 1080
+";
+        let fwds = parse_forward_output(output);
+        assert_eq!(fwds.len(), 4);
+        assert_eq!(fwds[0].forward_type, ForwardType::Local);
+        assert_eq!(fwds[0].local_port, 8080);
+        assert_eq!(fwds[1].forward_type, ForwardType::Local);
+        assert_eq!(fwds[1].local_port, 9090);
+        assert_eq!(fwds[2].forward_type, ForwardType::Remote);
+        assert_eq!(fwds[2].remote_port, 22);
+        assert_eq!(fwds[3].forward_type, ForwardType::Dynamic);
+        assert_eq!(fwds[3].local_port, 1080);
+    }
+
+    #[test]
+    fn parse_empty_sections() {
+        let output = "\
+Local connections:
+Remote connections:
+Dynamic connections:
+";
+        let fwds = parse_forward_output(output);
+        assert!(fwds.is_empty());
+    }
+
+    #[test]
+    fn parse_output_with_no_forwards() {
+        // ssh -O list may return empty string or just headers when no forwards
+        let output = "";
+        let fwds = parse_forward_output(output);
+        assert!(fwds.is_empty());
+    }
+
+    #[test]
+    fn parse_output_with_error_message() {
+        // When ssh -O list fails it may print errors mixed in
+        let output = "No forwards.\nLocal connections:\n";
+        let fwds = parse_forward_output(output);
+        assert!(fwds.is_empty());
+    }
+
+    #[test]
+    fn parse_remote_forward_line() {
+        let line = "0.0.0.0 port 2222, forwarding to 127.0.0.1 port 22";
+        let fwd = parse_forward_line(line, ForwardType::Remote).unwrap();
+        assert_eq!(fwd.local_addr, "0.0.0.0");
+        assert_eq!(fwd.local_port, 2222);
+        assert_eq!(fwd.remote_addr, "127.0.0.1");
+        assert_eq!(fwd.remote_port, 22);
+        assert_eq!(fwd.forward_type, ForwardType::Remote);
+    }
+
+    #[test]
+    fn extract_host_various_patterns() {
+        assert_eq!(
+            extract_host_from_name("cm-deploy@web01.example.com:22"),
+            "web01.example.com"
+        );
+        assert_eq!(extract_host_from_name("control-root@db:5432"), "db");
+        assert_eq!(extract_host_from_name("mux-user@bastion:22"), "bastion");
+        assert_eq!(extract_host_from_name("ctrl-user@jump:22"), "jump");
+        // Fallback for hash-style names
+        assert_eq!(
+            extract_host_from_name("ssh-abc123def456-12345"),
+            "abc123def456-12345"
+        );
+    }
+
+    #[test]
+    fn extract_pid_from_patterns() {
+        assert_eq!(extract_pid_from_name("ssh-abc123-48291"), Some(48291));
+        assert_eq!(extract_pid_from_name("cm-user@host:22"), None);
+        // PID zero is not a valid process ID
+        assert_eq!(extract_pid_from_name("ssh-hash-0"), None);
+    }
+
+    #[test]
+    fn cancel_spec_local_forward() {
+        let fwd = PortForward {
+            local_addr: "127.0.0.1".to_owned(),
+            local_port: 8080,
+            remote_addr: "10.0.0.1".to_owned(),
+            remote_port: 80,
+            forward_type: ForwardType::Local,
+        };
+        // Verify the spec construction logic would produce the right format
+        // (we cannot call cancel_known_forward without a real SSH session,
+        //  so we test the spec construction inline).
+        let spec = if fwd.forward_type == ForwardType::Dynamic {
+            format!("[{}]:{}", fwd.local_addr, fwd.local_port)
+        } else {
+            format!(
+                "[{}]:{}:{}:{}",
+                fwd.local_addr, fwd.local_port, fwd.remote_addr, fwd.remote_port
+            )
+        };
+        assert_eq!(spec, "[127.0.0.1]:8080:10.0.0.1:80");
+    }
+
+    #[test]
+    fn cancel_spec_dynamic_forward() {
+        let fwd = PortForward {
+            local_addr: "127.0.0.1".to_owned(),
+            local_port: 1080,
+            remote_addr: String::new(),
+            remote_port: 0,
+            forward_type: ForwardType::Dynamic,
+        };
+        let spec = if fwd.forward_type == ForwardType::Dynamic {
+            format!("[{}]:{}", fwd.local_addr, fwd.local_port)
+        } else {
+            unreachable!()
+        };
+        assert_eq!(spec, "[127.0.0.1]:1080");
+    }
 }

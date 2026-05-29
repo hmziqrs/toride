@@ -19,6 +19,7 @@ pub mod agent;
 /// `authorized_keys` file parsing and management.
 pub mod authorized_keys;
 /// SSH certificate and CA operations.
+#[cfg(feature = "certificate")]
 pub mod certificate;
 /// SSH config file parsing, editing, and resolution.
 pub mod config;
@@ -122,12 +123,15 @@ pub enum Error {
 
     // Certificate
     /// Failed to parse an SSH certificate.
+    #[cfg(feature = "certificate")]
     #[error("certificate parse failed: {0}")]
     CertificateParseFailed(String),
     /// Certificate has expired.
+    #[cfg(feature = "certificate")]
     #[error("certificate expired: {0}")]
     CertificateExpired(String),
     /// Certificate is not yet valid.
+    #[cfg(feature = "certificate")]
     #[error("certificate not yet valid: {0}")]
     CertificateNotYetValid(String),
 
@@ -196,5 +200,21 @@ impl SshManager {
     /// Diagnostic checks.
     pub fn doctor(&self) -> doctor::DoctorService<'_> {
         doctor::DoctorService::new(&self.paths)
+    }
+
+    /// Known hosts management (listing, scanning, adding, removing).
+    pub fn known_hosts(&self) -> known_hosts::KnownHostsService<'_> {
+        known_hosts::KnownHostsService::new(&self.paths)
+    }
+
+    /// SSH certificate and CA operations (inspection, validity, KRL).
+    #[cfg(feature = "certificate")]
+    pub fn certificate(&self) -> certificate::CertificateService {
+        certificate::CertificateService::new()
+    }
+
+    /// Port forwarding management via ControlMaster.
+    pub fn forward(&self) -> forward::ForwardService<'_> {
+        forward::ForwardService::new(&self.paths)
     }
 }

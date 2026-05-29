@@ -1,8 +1,162 @@
 //! Host key scanning via `ssh-keyscan`.
 
-use crate::Result;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::runner;
+use crate::{Error, Result};
+
+/// A host key discovered by `ssh-keyscan`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScannedHostKey {
+    /// The original hostname or IP that was scanned.
+    pub host: String,
+    /// Key type label, e.g. `ssh-ed25519`.
+    pub key_type: String,
+    /// Base64-encoded public key blob.
+    pub public_key: String,
+    /// The host field as it appears in keyscan output.
+    /// When `-H` is used this will be a `|1|salt|hash` string; otherwise it
+    /// matches [`host`](ScannedHostKey::host).
+    pub raw_host: String,
+}
 
 /// Scan a host for its public host keys.
-pub async fn scan_host(_host: &str) -> Result<()> {
-    todo!()
+///
+/// Runs `ssh-keyscan <host>` (without `-H`) so that the returned keys contain
+/// the plaintext hostname. Callers that need hashed entries should use
+/// [`add_host_hashed`] or [`add_to_known_hosts`].
+pub async fn scan_host(host: &str) -> Result<Vec<ScannedHostKey>> {
+    let raw = runner::ssh_keyscan_no_hash(host).await?;
+    parse_keyscan_output(host, &raw)
+}
+
+/// Scan a host with `-H` (hashed hostname) and parse the output.
+///
+/// Used internally by [`add_to_known_hosts`] so that written entries contain
+/// hashed hostnames for privacy.
+async fn scan_host_hashed(host: &str) -> Result<Vec<ScannedHostKey>> {
+    let raw = runner::ssh_keyscan(host).await?;
+    parse_keyscan_output(host, &raw)
+}
+
+/// Parse raw `ssh-keyscan` output into a list of [`ScannedHostKey`] values.
+fn parse_keyscan_output(original_host: &str, raw: &str) -> Result<Vec<ScannedHostKey>> {
+    let mut keys = Vec::new();
+    for line in raw.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        match parse_keyscan_line(original_host, line) {
+            Ok(key) => keys.push(key),
+            Err(e) => {
+                tracing::warn!(line, error = %e, "skipping unparseable keyscan line");
+            }
+        }
+    }
+
+    Ok(keys)
+}
+
+/// Parse a single `ssh-keyscan` output line.
+///
+/// Format: `hostname key-type base64-key [comment...]`
+fn parse_keyscan_line(original_host: &str, line: &str) -> Result<ScannedHostKey> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.len() < 3 {
+        return Err(Error::CommandParseFailed(format!(
+            "expected at least 3 fields in keyscan output, got {}: {line}",
+            parts.len()
+        )));
+    }
+
+    Ok(ScannedHostKey {
+        host: original_host.to_owned(),
+        key_type: parts[1].to_owned(),
+        public_key: parts[2].to_owned(),
+        raw_host: parts[0].to_owned(),
+    })
+}
+
+/// Append a batch of scanned host keys to a known_hosts file.
+///
+/// Creates the file (and parent directories) if it does not already exist.
+/// All keys are written in a single I/O operation to avoid interleaved
+/// partial writes.
+pub async fn add_to_known_hosts(
+    known_hosts_path: &Path,
+    keys: &[ScannedHostKey],
+) -> Result<()> {
+    let mut buf = String::new();
+    for key in keys {
+        buf.push_str(&key.raw_host);
+        buf.push(' ');
+        buf.push_str(&key.key_type);
+        buf.push(' ');
+        buf.push_str(&key.public_key);
+        buf.push('\n');
+    }
+    let path: PathBuf = known_hosts_path.to_path_buf();
+
+    tokio::task::spawn_blocking(move || {
+        // Ensure the parent directory exists.
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        file.write_all(buf.as_bytes())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| Error::KnownHostsParseFailed(e.to_string()))?
+}
+
+/// Scan a host (with `-H` hashing) and append all discovered keys to
+/// `known_hosts`.
+pub async fn add_host_hashed(known_hosts_path: &Path, host: &str) -> Result<()> {
+    let keys = scan_host_hashed(host).await?;
+    if keys.is_empty() {
+        return Err(Error::CommandFailed(format!(
+            "ssh-keyscan returned no keys for {host}"
+        )));
+    }
+    add_to_known_hosts(known_hosts_path, &keys).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid_keyscan_line() {
+        let line = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let key = parse_keyscan_line("example.com", line).unwrap();
+        assert_eq!(key.host, "example.com");
+        assert_eq!(key.raw_host, "example.com");
+        assert_eq!(key.key_type, "ssh-ed25519");
+        assert_eq!(key.public_key, "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl");
+    }
+
+    #[test]
+    fn parse_hashed_keyscan_line_preserves_original_host() {
+        let line = "|1|JfKTdBh7rNbXkVAQCRp4OQoPfmI=|USECr3SWf1JUPsms5AqfD5QfxkM= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let key = parse_keyscan_line("example.com", line).unwrap();
+        // The original host is preserved for display, raw_host is the hashed form.
+        assert_eq!(key.host, "example.com");
+        assert_eq!(key.raw_host, "|1|JfKTdBh7rNbXkVAQCRp4OQoPfmI=|USECr3SWf1JUPsms5AqfD5QfxkM=");
+    }
+
+    #[test]
+    fn reject_malformed_line() {
+        assert!(parse_keyscan_line("host", "only-one-field").is_err());
+        assert!(parse_keyscan_line("host", "two fields").is_err());
+    }
 }

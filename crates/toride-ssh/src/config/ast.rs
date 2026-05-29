@@ -3,9 +3,489 @@
 //! Preserves whitespace, `=` separators, comments, and blank lines.
 //! Every byte of the original file is representable.
 
+use serde::{Deserialize, Serialize};
+
 use crate::Result;
 
-/// Parse an SSH config file into a lossless AST.
-pub fn parse(_input: &str) -> Result<()> {
-    todo!()
+/// Top-level SSH config AST.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigAst {
+    /// Top-level nodes in the config file.
+    pub nodes: Vec<ConfigNode>,
+}
+
+/// Separator between a keyword and its value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Separator {
+    /// Space or tab separator: `Host example.com`
+    Space,
+    /// Equals sign separator: `Host=example.com`
+    Equals,
+}
+
+impl Separator {
+    /// Render the separator as a string.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Space => " ",
+            Self::Equals => "=",
+        }
+    }
+}
+
+/// The default indentation string used when creating new blocks
+/// (4 spaces, matching the OpenSSH convention).
+const DEFAULT_INDENT: &str = "    ";
+
+/// A single node in the SSH config AST.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConfigNode {
+    /// An empty / blank line.
+    BlankLine,
+    /// A comment line (including the leading `#`).
+    Comment {
+        /// The comment text (including the leading `#`).
+        text: String,
+        /// The leading whitespace before this comment (preserved for round-trip).
+        indent: String,
+    },
+    /// A standalone directive (not inside a Host/Match block).
+    Directive {
+        /// The directive keyword (e.g. `HostName`, `User`, `Include`).
+        keyword: String,
+        /// Separator between keyword and value.
+        separator: Separator,
+        /// The raw value string.
+        value: String,
+        /// Optional trailing inline comment (without the `#`).
+        comment: Option<String>,
+        /// The leading whitespace/indentation before this directive.
+        indent: String,
+    },
+    /// A `Host` block containing nested directives.
+    HostBlock {
+        /// The full raw `Host` header line (e.g. `"Host example.com *.example.com"`).
+        header: String,
+        /// Parsed host patterns (e.g. `["example.com", "*.example.com"]`).
+        patterns: Vec<String>,
+        /// Nodes inside this Host block.
+        nodes: Vec<ConfigNode>,
+    },
+    /// A `Match` block containing nested directives.
+    MatchBlock {
+        /// The full raw `Match` header line.
+        header: String,
+        /// The raw criteria string (e.g. `"host *.example.com user alice"`).
+        criteria: String,
+        /// Nodes inside this Match block.
+        nodes: Vec<ConfigNode>,
+    },
+}
+
+impl ConfigAst {
+    /// Render the AST back to a string suitable for writing to disk.
+    pub fn to_string_lossless(&self) -> String {
+        let mut out = String::new();
+        for node in &self.nodes {
+            node.render(&mut out, 0);
+        }
+        out
+    }
+}
+
+impl ConfigNode {
+    /// Render this node (and children) into `out` at the given indent level.
+    ///
+    /// For nodes that carry their own `indent` string (parsed from the original
+    /// file), that string is used instead of the computed prefix, preserving the
+    /// original whitespace exactly.
+    fn render(&self, out: &mut String, indent_level: usize) {
+        let computed_prefix = DEFAULT_INDENT.repeat(indent_level);
+        match self {
+            Self::BlankLine => {
+                out.push('\n');
+            }
+            Self::Comment { text, indent } => {
+                if indent.is_empty() && indent_level > 0 {
+                    out.push_str(&computed_prefix);
+                } else {
+                    out.push_str(indent);
+                }
+                out.push_str(text);
+                out.push('\n');
+            }
+            Self::Directive {
+                keyword,
+                separator,
+                value,
+                comment,
+                indent,
+            } => {
+                if indent.is_empty() && indent_level > 0 {
+                    out.push_str(&computed_prefix);
+                } else {
+                    out.push_str(indent);
+                }
+                out.push_str(keyword);
+                out.push_str(separator.as_str());
+                out.push_str(value);
+                if let Some(c) = comment {
+                    out.push_str(" #");
+                    out.push_str(c);
+                }
+                out.push('\n');
+            }
+            Self::HostBlock {
+                header,
+                nodes,
+                ..
+            } => {
+                out.push_str(&computed_prefix);
+                out.push_str(header);
+                out.push('\n');
+                for child in nodes {
+                    child.render(out, indent_level + 1);
+                }
+            }
+            Self::MatchBlock {
+                header,
+                nodes,
+                ..
+            } => {
+                out.push_str(&computed_prefix);
+                out.push_str(header);
+                out.push('\n');
+                for child in nodes {
+                    child.render(out, indent_level + 1);
+                }
+            }
+        }
+    }
+
+    /// If this is a `HostBlock`, return its patterns and inner nodes.
+    pub fn as_host_block(&self) -> Option<(&[String], &[ConfigNode])> {
+        match self {
+            Self::HostBlock { patterns, nodes, .. } => Some((patterns, nodes)),
+            _ => None,
+        }
+    }
+
+    /// If this is a `HostBlock`, return mutable access to its nodes.
+    pub fn as_host_block_mut(&mut self) -> Option<&mut Vec<ConfigNode>> {
+        match self {
+            Self::HostBlock { nodes, .. } => Some(nodes),
+            _ => None,
+        }
+    }
+
+    /// If this is a `Directive`, return its keyword and value.
+    pub fn as_directive(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Directive { keyword, value, .. } => Some((keyword, value)),
+            _ => None,
+        }
+    }
+
+    /// If this is a `Directive`, return mutable access to its fields.
+    pub fn as_directive_mut(&mut self) -> Option<(&mut String, &mut String)> {
+        match self {
+            Self::Directive { keyword, value, .. } => Some((keyword, value)),
+            _ => None,
+        }
+    }
+}
+
+/// Parse an SSH config file string into a lossless AST.
+///
+/// Handles `Host` and `Match` blocks with proper nesting, preserves
+/// whitespace, comments, blank lines, and both `=` and space separators.
+pub fn parse(input: &str) -> Result<ConfigAst> {
+    let mut nodes = Vec::new();
+    let mut lines = input.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        let trimmed = line.trim();
+        let indent = line_indent(line);
+
+        // Blank line
+        if trimmed.is_empty() {
+            nodes.push(ConfigNode::BlankLine);
+            continue;
+        }
+
+        // Comment
+        if trimmed.starts_with('#') {
+            nodes.push(ConfigNode::Comment {
+                text: trimmed.to_owned(),
+                indent: indent.to_owned(),
+            });
+            continue;
+        }
+
+        // Parse keyword and value
+        let (keyword, separator, rest) = parse_directive_parts(trimmed);
+        let keyword_lower = keyword.to_lowercase();
+
+        if keyword_lower == "host" {
+            let patterns = parse_patterns(&rest);
+            let header = line.trim().to_owned();
+            let inner = parse_block_body(&mut lines);
+            nodes.push(ConfigNode::HostBlock {
+                header,
+                patterns,
+                nodes: inner,
+            });
+        } else if keyword_lower == "match" {
+            let header = line.trim().to_owned();
+            let criteria = rest.to_owned();
+            let inner = parse_block_body(&mut lines);
+            nodes.push(ConfigNode::MatchBlock {
+                header,
+                criteria,
+                nodes: inner,
+            });
+        } else {
+            // Regular directive — check for trailing inline comment
+            let (value, comment) = split_trailing_comment(&rest);
+            nodes.push(ConfigNode::Directive {
+                keyword: keyword.to_owned(),
+                separator,
+                value,
+                comment,
+                indent: indent.to_owned(),
+            });
+        }
+    }
+
+    Ok(ConfigAst { nodes })
+}
+
+/// Extract the leading whitespace from a line.
+fn line_indent(line: &str) -> &str {
+    let end = line.len() - line.trim_start().len();
+    &line[..end]
+}
+
+/// Parse the body of a Host/Match block, consuming indented lines.
+fn parse_block_body<'a, I>(lines: &mut std::iter::Peekable<I>) -> Vec<ConfigNode>
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut body = Vec::new();
+
+    while let Some(line) = lines.peek() {
+        // A line that starts with whitespace is inside the block.
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            break;
+        }
+
+        let line = lines.next().unwrap();
+        let trimmed = line.trim();
+        let indent = line_indent(line);
+
+        if trimmed.is_empty() {
+            // A blank indented line is still part of the block.
+            body.push(ConfigNode::BlankLine);
+            continue;
+        }
+
+        if trimmed.starts_with('#') {
+            body.push(ConfigNode::Comment {
+                text: trimmed.to_owned(),
+                indent: indent.to_owned(),
+            });
+            continue;
+        }
+
+        let (keyword, separator, rest) = parse_directive_parts(trimmed);
+
+        // Nested Host/Match inside a block is not standard, but we handle it
+        // gracefully by treating it as a directive.
+        let (value, comment) = split_trailing_comment(&rest);
+        body.push(ConfigNode::Directive {
+            keyword: keyword.to_owned(),
+            separator,
+            value,
+            comment,
+            indent: indent.to_owned(),
+        });
+        let _ = keyword; // could be used for nested blocks if needed
+    }
+
+    body
+}
+
+/// Split a directive line into (keyword, separator, rest-of-line).
+///
+/// An `=` is only treated as the separator when it appears immediately after
+/// the keyword token with **no intervening whitespace** — i.e. `Key=Value`.
+/// If there is whitespace before the `=` (e.g. `SetEnv FOO=bar`) the `=` is
+/// part of the value, not the separator.
+fn parse_directive_parts(line: &str) -> (&str, Separator, &str) {
+    // Find the first whitespace boundary.
+    let ws_pos = line.find(|c: char| c.is_whitespace());
+
+    // Check for `=` separator: only valid if it appears before any whitespace
+    // (i.e. `Keyword=Value`, not `Keyword Value=thing`).
+    if let Some(eq_pos) = line.find('=') {
+        let before_eq_has_space = line[..eq_pos].contains(' ') || line[..eq_pos].contains('\t');
+        if !before_eq_has_space {
+            let keyword = line[..eq_pos].trim();
+            let rest = line[eq_pos + 1..].trim();
+            return (keyword, Separator::Equals, rest);
+        }
+    }
+
+    // Fall back to whitespace separator.
+    if let Some(ws) = ws_pos {
+        let keyword = &line[..ws];
+        let rest = line[ws..].trim_start();
+        return (keyword, Separator::Space, rest);
+    }
+
+    // Keyword only, no value.
+    (line, Separator::Space, "")
+}
+
+/// Parse space-separated host patterns from a `Host` value string.
+fn parse_patterns(value: &str) -> Vec<String> {
+    value
+        .split_whitespace()
+        .map(|s| s.to_owned())
+        .collect()
+}
+
+/// Split a value string into (value, optional_trailing_comment).
+///
+/// Handles `# comment` at the end of a line. Quotes are respected so that
+/// `#` inside quotes is not treated as a comment.
+fn split_trailing_comment(value: &str) -> (String, Option<String>) {
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut comment_start = None;
+
+    for (i, ch) in value.char_indices() {
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+        } else if ch == '\'' && !in_double {
+            in_single = !in_single;
+        } else if ch == '#' && !in_double && !in_single {
+            comment_start = Some(i);
+            break;
+        }
+    }
+
+    match comment_start {
+        Some(pos) => {
+            let val = value[..pos].trim_end().to_owned();
+            let comment = value[pos + 1..].trim().to_owned();
+            (val, Some(comment))
+        }
+        None => (value.to_owned(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_simple_host_block() {
+        let input = "\
+Host example
+    HostName example.com
+    User alice
+    IdentityFile ~/.ssh/id_ed25519
+
+Host *
+    ServerAliveInterval 60
+";
+        let ast = parse(input).unwrap();
+        assert_eq!(ast.nodes.len(), 3); // HostBlock("example"), HostBlock("*"), BlankLine
+
+        match &ast.nodes[0] {
+            ConfigNode::HostBlock { patterns, nodes, .. } => {
+                assert_eq!(patterns, &["example"]);
+                assert_eq!(nodes.len(), 3);
+            }
+            _ => panic!("expected HostBlock"),
+        }
+    }
+
+    #[test]
+    fn round_trip_preserves_content() {
+        let input = "\
+# My SSH config
+Host example
+    HostName=example.com
+    User alice
+
+Host *
+    ServerAliveInterval 60
+";
+        let ast = parse(input).unwrap();
+        let output = ast.to_string_lossless();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn parse_equals_separator() {
+        let input = "Host=myserver\n    HostName=192.168.1.1\n";
+        let ast = parse(input).unwrap();
+        match &ast.nodes[0] {
+            ConfigNode::HostBlock { header, .. } => {
+                assert_eq!(header, "Host=myserver");
+            }
+            _ => panic!("expected HostBlock"),
+        }
+    }
+
+    #[test]
+    fn split_trailing_comment_works() {
+        let (val, comment) = split_trailing_comment("hello # a comment");
+        assert_eq!(val, "hello");
+        assert_eq!(comment, Some("a comment".to_owned()));
+
+        let (val, comment) = split_trailing_comment("no comment");
+        assert_eq!(val, "no comment");
+        assert_eq!(comment, None);
+
+        let (val, comment) = split_trailing_comment("\"path # here\" # real comment");
+        assert_eq!(val, "\"path # here\"");
+        assert_eq!(comment, Some("real comment".to_owned()));
+    }
+
+    #[test]
+    fn parse_directive_with_equals_in_value() {
+        // SetEnv FOO=bar should parse as keyword=SetEnv, value=FOO=bar
+        let (keyword, sep, rest) = parse_directive_parts("SetEnv FOO=bar");
+        assert_eq!(keyword, "SetEnv");
+        assert_eq!(sep, Separator::Space);
+        assert_eq!(rest, "FOO=bar");
+    }
+
+    #[test]
+    fn parse_directive_equals_separator() {
+        // HostName=value should use Equals separator
+        let (keyword, sep, rest) = parse_directive_parts("HostName=example.com");
+        assert_eq!(keyword, "HostName");
+        assert_eq!(sep, Separator::Equals);
+        assert_eq!(rest, "example.com");
+    }
+
+    #[test]
+    fn round_trip_preserves_tab_indentation() {
+        let input = "Host example\n\tHostName example.com\n\tUser alice\n";
+        let ast = parse(input).unwrap();
+        let output = ast.to_string_lossless();
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn round_trip_with_comment_in_block() {
+        let input = "Host example\n    # inline comment\n    HostName example.com\n";
+        let ast = parse(input).unwrap();
+        let output = ast.to_string_lossless();
+        assert_eq!(output, input);
+    }
 }

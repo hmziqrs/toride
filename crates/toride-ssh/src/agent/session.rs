@@ -1,8 +1,273 @@
 //! ControlMaster session management.
 
-use crate::Result;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-/// List active ControlMaster sessions by scanning control sockets.
-pub async fn list_sessions() -> Result<()> {
-    todo!()
+use crate::{Error, Result};
+
+/// A single active SSH ControlMaster session.
+#[derive(Debug, Clone)]
+pub struct ControlSession {
+    /// Path to the control socket.
+    pub control_path: PathBuf,
+    /// Host alias or `[user@]host` from the session.
+    pub host: String,
+    /// When the control socket was created (file modification time).
+    pub established: SystemTime,
+}
+
+/// List active ControlMaster sessions by scanning for control sockets.
+///
+/// Scans the SSH directory (and any `ControlPath` pattern locations) for Unix
+/// domain socket files that resemble OpenSSH ControlMaster sockets, then
+/// verifies each is still alive using `ssh -O check`.
+///
+/// # Common socket patterns
+///
+/// OpenSSH places control sockets at the path specified by `ControlPath` in
+/// `~/.ssh/config`. The default location varies by distro but common patterns
+/// include:
+///
+/// - `~/.ssh/cm-%r@%h:%p`
+/// - `~/.ssh/ctrl-%C`
+/// - `/tmp/ssh-%r@%h:%p-*`
+///
+/// This function scans `ssh_dir` and `/tmp` for files that look like control
+/// sockets.
+pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
+    let mut sessions = Vec::new();
+
+    // Gather candidate socket paths from common locations.
+    let mut candidates = Vec::new();
+
+    // 1. Scan ~/.ssh/ for socket files (cm-*, ctrl-*, mux-*).
+    if ssh_dir.exists() {
+        let dir_entries = tokio::fs::read_dir(ssh_dir)
+            .await
+            .map_err(|e| Error::Io(e))?;
+
+        let mut entries = dir_entries;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| Error::Io(e))?
+        {
+            let path = entry.path();
+            if is_control_socket_candidate(&path).await {
+                candidates.push(path);
+            }
+        }
+    }
+
+    // 2. Scan /tmp for ssh control socket patterns.
+    if let Ok(tmp_entries) = tokio::fs::read_dir("/tmp").await {
+        let mut entries = tmp_entries;
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| Error::Io(e))?
+        {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("");
+            if name.starts_with("ssh-") && is_control_socket_candidate(&path).await {
+                candidates.push(path);
+            }
+        }
+    }
+
+    // For each candidate, try to extract host info and verify with ssh -O check.
+    for socket_path in candidates {
+        let host = extract_host_from_socket_path(&socket_path);
+
+        // Verify the session is still alive.
+        if verify_control_session(&socket_path).await {
+            // The socket may have disappeared between the check above and now
+            // (race with another process cleaning it up). Treat a missing file
+            // as "session gone" rather than a fatal error.
+            let metadata = match tokio::fs::metadata(&socket_path).await {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            let established = metadata
+                .modified()
+                .unwrap_or_else(|_| SystemTime::UNIX_EPOCH);
+
+            sessions.push(ControlSession {
+                control_path: socket_path,
+                host,
+                established,
+            });
+        } else {
+            // Dead socket — clean it up.
+            let _ = tokio::fs::remove_file(&socket_path).await;
+        }
+    }
+
+    // Sort by establishment time (most recent first).
+    sessions.sort_by(|a, b| b.established.cmp(&a.established));
+
+    Ok(sessions)
+}
+
+/// Check if a file looks like an SSH control socket.
+///
+/// On Unix, control sockets are Unix domain sockets. We check the file type
+/// heuristically by looking at the name pattern first, then verifying it's
+/// a socket.
+async fn is_control_socket_candidate(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+
+    // Common prefixes for control socket files.
+    let is_match = name.starts_with("cm-")
+        || name.starts_with("ctrl-")
+        || name.starts_with("mux-")
+        || name.starts_with("ssh-")
+        || name.contains("@");
+
+    if !is_match {
+        return false;
+    }
+
+    // On Unix, verify it's a socket (or at least that it exists).
+    #[cfg(unix)]
+    {
+        let metadata = match tokio::fs::metadata(path).await {
+            Ok(m) => m,
+            Err(_) => return false,
+        };
+        use std::os::unix::fs::FileTypeExt;
+        metadata.file_type().is_socket()
+    }
+
+    #[cfg(not(unix))]
+    {
+        path.exists()
+    }
+}
+
+/// Try to extract a host identifier from the socket path.
+///
+/// Socket paths often contain the host, e.g.:
+/// - `cm-root@server.example.com:22` -> `root@server.example.com`
+/// - `ctrl-1234abcd` -> `1234abcd`
+/// - `ssh-user@host:22-abc` -> `user@host`
+fn extract_host_from_socket_path(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown");
+
+    // Strip common prefixes.
+    let stripped = name
+        .strip_prefix("cm-")
+        .or_else(|| name.strip_prefix("ctrl-"))
+        .or_else(|| name.strip_prefix("mux-"))
+        .or_else(|| name.strip_prefix("ssh-"))
+        .unwrap_or(name);
+
+    // Strip trailing port and random suffix, e.g. "root@host:22-abc" -> "root@host".
+    if let Some(at_pos) = stripped.find('@') {
+        let after_at = &stripped[at_pos..];
+        // Remove `:port` part.
+        if let Some(colon) = after_at.find(':') {
+            return stripped[..at_pos + colon].to_string();
+        }
+        // Remove trailing `-random`.
+        if let Some(dash) = after_at.find('-') {
+            return stripped[..at_pos + dash].to_string();
+        }
+        return stripped.to_string();
+    }
+
+    // If there's no `@`, try to strip `:port` from any position.
+    if let Some(colon) = stripped.find(':') {
+        return stripped[..colon].to_string();
+    }
+
+    stripped.to_string()
+}
+
+/// Verify a control socket is still active using `ssh -O check`.
+///
+/// Returns `true` if `ssh -O check` via the control path succeeds.
+async fn verify_control_session(socket_path: &Path) -> bool {
+    let path_str = match socket_path.to_str() {
+        Some(s) => s.to_owned(),
+        None => return false,
+    };
+
+    // We need a dummy host argument for ssh -O check.  The host can be
+    // anything since the -S option specifies the control socket path.
+    // Using "localhost" as a placeholder.
+    let result = tokio::task::spawn_blocking(move || {
+        duct::cmd(
+            "ssh",
+            ["-S", &path_str, "-O", "check", "localhost"],
+        )
+        .stderr_to_stdout()
+        .read()
+    })
+    .await;
+
+    match result {
+        Ok(_) => true,
+        // ssh returns exit code 1 with a message like "Master running (pid=N)"
+        // on stderr when the session IS alive. A non-zero exit from `duct::cmd::read`
+        // means the command failed entirely. We treat any output as a sign the
+        // session might be alive -- a truly dead socket produces "No such file or
+        // directory" or similar errors.
+        Err(e) => {
+            let msg = e.to_string();
+            // If the master is running, ssh still exits with non-zero but prints
+            // "Master running" to stderr. duct with stderr_to_stdout captures it.
+            msg.contains("Master running")
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_host_from_cm_pattern() {
+        let path = PathBuf::from("/home/user/.ssh/cm-root@server.example.com:22");
+        assert_eq!(
+            extract_host_from_socket_path(&path),
+            "root@server.example.com"
+        );
+    }
+
+    #[test]
+    fn extract_host_from_ctrl_pattern() {
+        let path = PathBuf::from("/home/user/.ssh/ctrl-abc123def");
+        assert_eq!(
+            extract_host_from_socket_path(&path),
+            "abc123def"
+        );
+    }
+
+    #[test]
+    fn extract_host_from_ssh_tmp_pattern() {
+        let path = PathBuf::from("/tmp/ssh-deploy@web01:22-mUXnBz");
+        assert_eq!(
+            extract_host_from_socket_path(&path),
+            "deploy@web01"
+        );
+    }
+
+    #[test]
+    fn extract_host_no_prefix() {
+        let path = PathBuf::from("/home/user/.ssh/some-host:22");
+        assert_eq!(
+            extract_host_from_socket_path(&path),
+            "some-host"
+        );
+    }
 }
