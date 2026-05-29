@@ -495,6 +495,21 @@ For apps behind Traefik, NGINX, Cloudflare, or a VPS proxy:
 
 ## Existing crate choices
 
+### Audit findings and corrections (2026-05-30)
+
+High-priority corrections to keep this plan strict and implementable:
+
+* **Single spawn path required**: every external process must go through `command::Runner` backed by `duct` in v1, including:
+  * `fail2ban-client`
+  * `fail2ban-regex`
+  * `systemctl`
+  * `nft` / `iptables` / `ip6tables`
+  * any optional doctor probe commands
+* **No side-channel process spawning**: no ad-hoc `std::process::Command` in `doctor`, `service`, `regex_test`, or integration helpers.
+* **Avoid over-promising parser guarantees**: keep `status`/`statistics` parsing best-effort and return raw output alongside parsed summaries.
+* **Locking caveat must be explicit**: `fd-lock` is advisory locking for coordination, not a security boundary.
+* **Keep generic INI mutation out of scope**: generated-file rendering remains the safer baseline for Fail2Ban's interpolation/multiline semantics.
+
 ### Audit update (2026-05-30)
 
 Deep audit outcome for "use crates before home-cooked":
@@ -503,11 +518,13 @@ Deep audit outcome for "use crates before home-cooked":
 * Keep command execution centralized behind one trait (`Runner`) with a single `duct` implementation in v1.
 * Keep `fail2ban-client`/`fail2ban-regex` as source of truth for Fail2Ban semantics instead of re-implementing parser/daemon behavior.
 * Keep generated-file rendering (typed model -> template output) instead of generic INI mutation.
+* Keep all command execution sync in MVP (through `duct`) and avoid introducing async process stacks unless a real need appears.
 
 Fail2Ban-related crates checked:
 
 * `fail2ban-rs` is a full replacement daemon ("pure-Rust replacement for fail2ban"), so it does **not** match this crate's "manage existing Fail2Ban" scope.
 * `fail2ban-log-parser-core` is parser-focused and does not cover full config/control/doctor workflow.
+* Context7 discovery currently exposes `nftables-rs` docs but does not provide strong coverage for several proposed utility crates (`duct`, `fs-err`, `fd-lock`, etc.), so maintenance checks should be validated from upstream repositories and crate metadata.
 
 Conclusion: stay with the current architecture (wrapper around installed Fail2Ban) and avoid importing replacement-daemon crates into core design.
 
@@ -527,6 +544,10 @@ Avoid:
 * raw repeated `std::process::Command`
 * shell string concatenation
 * `sh -c` unless explicitly required and gated
+
+Hard rule:
+
+* all spawned tasks in this crate must use the centralized `duct` runner abstraction
 
 ### Paths and filesystem
 
