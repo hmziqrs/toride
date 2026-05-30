@@ -75,6 +75,7 @@ impl SshStatus {
     /// println!("Mux alive: {}", status.mux_master_alive);
     /// println!("Keys loaded: {}", status.key_count);
     /// ```
+    #[must_use]
     pub fn collect() -> Self {
         let control_path = default_control_path();
         let config_path = default_config_path();
@@ -86,6 +87,7 @@ impl SshStatus {
     ///
     /// This is the testable entry point — all subprocess and filesystem
     /// interaction is confined to the paths passed here.
+    #[must_use]
     pub fn collect_with_paths(control_path: &Path, config_path: &Path) -> Self {
         let control_path_valid = validate_control_path(control_path);
         let mux_master_alive = check_mux_master(control_path);
@@ -167,6 +169,7 @@ fn check_socket_connectable(path: &Path) -> bool {
 /// Check if the SSH mux master is alive by running `ssh -O check`.
 ///
 /// Returns `true` if the command exits with status 0.
+#[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_mux_master(control_path: &Path) -> bool {
     let mut cmd = Command::new("ssh");
     cmd.arg("-O")
@@ -185,6 +188,7 @@ fn check_mux_master(control_path: &Path) -> bool {
 ///
 /// Runs `ssh -G -F <config> localhost` and checks the exit status.
 /// A hostname argument is required by `ssh -G`; without it, ssh exits 255.
+#[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_config(config_path: &Path) -> bool {
     let mut cmd = Command::new("ssh");
     cmd.arg("-G")
@@ -243,6 +247,7 @@ fn count_keys() -> u32 {
                     return 0;
                 };
                 let stdout = String::from_utf8_lossy(&output.stdout);
+                #[allow(clippy::cast_possible_truncation)] // SSH key count will never exceed u32::MAX
                 return stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32;
             }
             Ok(None) => {

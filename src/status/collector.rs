@@ -37,6 +37,7 @@ pub struct SystemDelta {
 
 impl Collector {
     /// Create a new collector with the given interval and preset.
+    #[must_use]
     pub fn new(interval: Duration, preset: Preset) -> Self {
         Self {
             interval,
@@ -46,16 +47,19 @@ impl Collector {
     }
 
     /// Create a collector with default settings (1 second, Diagnostics preset).
+    #[must_use]
     pub fn default_collector() -> Self {
         Self::new(Duration::from_secs(1), Preset::default())
     }
 
     /// Get the collection interval.
+    #[must_use]
     pub fn interval(&self) -> Duration {
         self.interval
     }
 
     /// Get the current preset.
+    #[must_use]
     pub fn preset(&self) -> Preset {
         self.preset
     }
@@ -92,6 +96,7 @@ impl Collector {
     }
 }
 
+#[allow(clippy::cast_precision_loss)] // u64->f64 for rate calculation display; negligible precision loss
 fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration) -> SystemDelta {
     let elapsed_secs = elapsed.as_secs_f64();
     let bytes_received_delta = curr
@@ -132,7 +137,12 @@ impl std::fmt::Display for SystemDelta {
             writeln!(f, "  CPU delta: {:+.1}%", cpu)?;
         }
         writeln!(f, "  Network RX: {} bytes ({:.1} B/s)", self.bytes_received_delta, self.bytes_received_rate)?;
-        writeln!(f, "  Network TX: {} bytes ({:.1} B/s)", self.bytes_transmitted_delta, self.bytes_transmitted_rate)
+        writeln!(
+            f,
+            "  Network TX: {} bytes ({:.1} B/s)",
+            self.bytes_transmitted_delta, self.bytes_transmitted_rate
+        )
+
     }
 }
 

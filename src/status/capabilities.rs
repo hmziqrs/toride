@@ -46,6 +46,7 @@ pub struct SshCapabilities {
 
 impl Capabilities {
     /// Detect capabilities of the current platform.
+    #[must_use]
     pub fn detect() -> Self {
         Self {
             system: SystemCapabilities::detect(),

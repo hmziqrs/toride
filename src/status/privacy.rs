@@ -53,6 +53,7 @@ impl Redactor {
     ///
     /// * `Safe` -- returns `"[redacted]"`.
     /// * `Diagnostics` / `Full` -- returns the original value.
+    #[must_use]
     pub fn redact_hostname(&self, hostname: &str) -> String {
         match self.mode {
             PrivacyMode::Safe => "[redacted]".to_string(),
@@ -64,6 +65,7 @@ impl Redactor {
     ///
     /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
     /// * `Full` -- returns the original value.
+    #[must_use]
     pub fn redact_mac(&self, mac: &str) -> String {
         match self.mode {
             PrivacyMode::Safe | PrivacyMode::Diagnostics => "[redacted]".to_string(),
@@ -75,6 +77,7 @@ impl Redactor {
     ///
     /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
     /// * `Full` -- returns the original value.
+    #[must_use]
     pub fn redact_serial(&self, serial: &str) -> String {
         match self.mode {
             PrivacyMode::Safe | PrivacyMode::Diagnostics => "[redacted]".to_string(),
@@ -87,6 +90,7 @@ impl Redactor {
     /// * `Safe` -- returns `"[redacted]"`.
     /// * `Diagnostics` -- returns only the command name (first token).
     /// * `Full` -- returns the original value.
+    #[must_use]
     pub fn redact_command_line(&self, cmd: &str) -> String {
         match self.mode {
             PrivacyMode::Safe => "[redacted]".to_string(),
@@ -102,6 +106,7 @@ impl Redactor {
     }
 
     /// Returns `true` when the current mode permits showing usernames.
+    #[must_use]
     pub fn should_show_username(&self) -> bool {
         self.mode == PrivacyMode::Full
     }

@@ -52,6 +52,7 @@ pub enum CheckStatus {
 
 impl DoctorReport {
     /// Run all health checks and return a report.
+    #[must_use]
     pub fn check() -> Self {
         let system = SystemStatus::collect();
         let daemon = DaemonStatus::collect();
@@ -60,6 +61,7 @@ impl DoctorReport {
     }
 
     /// Run health checks against provided status snapshots.
+    #[must_use]
     pub fn check_with(system: &SystemStatus, daemon: &DaemonStatus, ssh: &SshStatus) -> Self {
         let mut checks = Vec::new();
         checks.extend(check_system(system));
@@ -69,11 +71,13 @@ impl DoctorReport {
     }
 
     /// Returns true if all checks passed (no failures).
+    #[must_use]
     pub fn all_passed(&self) -> bool {
         self.checks.iter().all(|c| c.status != CheckStatus::Fail)
     }
 
     /// Count checks by status.
+    #[must_use]
     pub fn summary(&self) -> (usize, usize, usize) {
         let mut pass = 0;
         let mut warn = 0;
@@ -98,10 +102,10 @@ impl fmt::Display for DoctorReport {
                 CheckStatus::Warn => "\u{26A0}",
                 CheckStatus::Fail => "\u{2717}",
             };
-            writeln!(f, "  {} {}: {}", icon, check.name, check.message)?;
+            writeln!(f, "  {icon} {}: {}", check.name, check.message)?;
         }
         let (pass, warn, fail) = self.summary();
-        writeln!(f, "--- {} passed, {} warnings, {} failures", pass, warn, fail)?;
+        writeln!(f, "--- {pass} passed, {warn} warnings, {fail} failures")?;
         Ok(())
     }
 }
@@ -131,7 +135,7 @@ fn check_system(system: &SystemStatus) -> Vec<DoctorCheck> {
             CheckStatus::Warn
         },
         message: match system.cpu_usage {
-            Some(u) => format!("CPU usage: {:.1}%", u),
+            Some(u) => format!("CPU usage: {u:.1}%"),
             None => "CPU usage unavailable".to_string(),
         },
     });
@@ -168,8 +172,7 @@ fn check_system(system: &SystemStatus) -> Vec<DoctorCheck> {
         },
         message: match &system.os_info.name {
             Some(n) => format!(
-                "OS: {} {}",
-                n,
+                "OS: {n} {}",
                 system.os_info.version.as_deref().unwrap_or("unknown")
             ),
             None => "OS info unavailable".to_string(),

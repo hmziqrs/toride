@@ -47,6 +47,7 @@ impl DaemonStatus {
     ///     println!("Daemon is alive (PID {:?})", status.pid);
     /// }
     /// ```
+    #[must_use]
     pub fn collect() -> Self {
         let pid_path = default_pid_path();
         let socket_path = default_socket_path();
@@ -126,7 +127,7 @@ fn read_pid_file(path: &Path) -> Option<u32> {
 fn is_process_alive(pid: u32) -> bool {
     use nix::sys::signal;
     use nix::unistd::Pid;
-    signal::kill(Pid::from_raw(pid as i32), None).is_ok()
+    signal::kill(Pid::from_raw(pid.cast_signed()), None).is_ok()
 }
 
 /// # Platform behavior
@@ -210,7 +211,8 @@ fn parse_elapsed_time(s: &str) -> Option<u64> {
 }
 
 /// Read the restart count from an append-only file.
-/// Parses as u64 first, then clamps to u32::MAX to avoid silent zero on overflow.
+/// Parses as u64 first, then clamps to `u32::MAX` to avoid silent zero on overflow.
+#[allow(clippy::cast_possible_truncation)] // Intentional: clamped to u32::MAX before cast
 fn read_restart_count(path: &Path) -> u32 {
     fs::read_to_string(path)
         .ok()

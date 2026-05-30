@@ -25,41 +25,49 @@ pub enum Preset {
 
 impl Preset {
     /// Whether this preset includes per-core CPU data.
+    #[must_use]
     pub fn includes_per_core_cpu(self) -> bool {
         matches!(self, Self::TaskManager | Self::Diagnostics)
     }
 
     /// Whether this preset includes swap data.
+    #[must_use]
     pub fn includes_swap(self) -> bool {
         matches!(self, Self::Diagnostics | Self::ServerMonitoring)
     }
 
     /// Whether this preset includes sensor data.
+    #[must_use]
     pub fn includes_sensors(self) -> bool {
         matches!(self, Self::TaskManager | Self::Diagnostics)
     }
 
     /// Whether this preset includes process data.
+    #[must_use]
     pub fn includes_processes(self) -> bool {
         matches!(self, Self::TaskManager | Self::Diagnostics)
     }
 
     /// Whether this preset includes network interface details.
+    #[must_use]
     pub fn includes_network_interfaces(self) -> bool {
         matches!(self, Self::Diagnostics | Self::ServerMonitoring)
     }
 
     /// Whether this preset includes all disk partitions.
+    #[must_use]
     pub fn includes_all_disks(self) -> bool {
         matches!(self, Self::Diagnostics | Self::TaskManager)
     }
 
     /// Whether this preset includes OS info.
+    #[must_use]
     pub fn includes_os_info(self) -> bool {
         true // always useful
     }
 
     /// The human-readable name of this preset.
+    #[must_use]
     pub fn name(self) -> &'static str {
         match self {
             Self::Minimal => "Minimal",

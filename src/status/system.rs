@@ -127,7 +127,7 @@ pub struct OsInfo {
     pub version: Option<String>,
     /// Kernel version string.
     pub kernel_version: Option<String>,
-    /// CPU architecture (e.g., "x86_64", "aarch64").
+    /// CPU architecture (e.g., `x86_64`, `aarch64`).
     pub arch: String,
 }
 
@@ -237,6 +237,7 @@ pub struct ProcessSnapshot {
 
 impl ProcessSnapshot {
     /// Get top N processes by CPU usage.
+    #[must_use]
     pub fn top_by_cpu(&self, n: usize) -> Vec<&ProcessStatus> {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
         sorted.sort_by(|a, b| {
@@ -248,6 +249,7 @@ impl ProcessSnapshot {
     }
 
     /// Get top N processes by memory usage.
+    #[must_use]
     pub fn top_by_memory(&self, n: usize) -> Vec<&ProcessStatus> {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
         sorted.sort_by_key(|b| std::cmp::Reverse(b.memory_bytes));
@@ -271,6 +273,7 @@ impl SystemStatus {
     /// println!("CPU: {:?}", status.cpu_usage);
     /// println!("Memory: {} / {}", status.memory.used_bytes, status.memory.total_bytes);
     /// ```
+    #[must_use]
     pub fn collect() -> Self {
         let mut sys = System::new_with_specifics(
             RefreshKind::nothing()
@@ -333,10 +336,11 @@ impl SystemStatus {
         if cpus.is_empty() {
             return None;
         }
-        let total: f64 = cpus.iter().map(|c| c.cpu_usage() as f64).sum();
+        let total: f64 = cpus.iter().map(|c| f64::from(c.cpu_usage())).sum();
         Some(total / cpus.len() as f64)
     }
 
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
     fn read_memory(sys: &System) -> MemoryStatus {
         let total = sys.total_memory();
         let used = sys.used_memory().min(total);
@@ -382,6 +386,7 @@ impl SystemStatus {
     }
 
     #[cfg(unix)]
+    #[allow(clippy::unnecessary_wraps)] // non-unix version returns None; signature must accommodate both platforms
     fn read_load_average() -> Option<LoadAverage> {
         let load = sysinfo::System::load_average();
         Some(LoadAverage {
@@ -423,12 +428,13 @@ impl SystemStatus {
             .iter()
             .map(|c| CpuCore {
                 name: c.name().to_string(),
-                usage: c.cpu_usage() as f64,
+                usage: f64::from(c.cpu_usage()),
                 frequency: c.frequency(),
             })
             .collect()
     }
 
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
     fn read_swap(sys: &System) -> Option<SwapStatus> {
         let total = sys.total_swap();
         if total == 0 {
@@ -443,6 +449,7 @@ impl SystemStatus {
         })
     }
 
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
     fn read_disks() -> Vec<DiskStatus> {
         let disks = Disks::new_with_refreshed_list();
         disks
@@ -519,6 +526,7 @@ impl SystemStatus {
     }
 
     /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
+    #[allow(clippy::cast_precision_loss)] // f64->u64 for VRAM display; values fit in f64 mantissa
     fn parse_vram_to_bytes(v: &str) -> Option<u64> {
         let v = v.trim();
         if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
@@ -813,6 +821,7 @@ const PB: u64 = TB * 1024;
 const EB: u64 = PB * 1024;
 
 /// Write bytes in human-readable form directly to the formatter.
+#[allow(clippy::cast_precision_loss)] // u64->f64 for display formatting; negligible precision loss
 fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
     if bytes >= EB {
         write!(f, "{:.1} EiB", bytes as f64 / EB as f64)

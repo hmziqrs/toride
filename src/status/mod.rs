@@ -78,6 +78,7 @@ impl TorideStatus {
     /// let status = TorideStatus::collect();
     /// println!("{}", status.system.hostname);
     /// ```
+    #[must_use]
     pub fn collect() -> Self {
         let system = SystemStatus::collect();
         let daemon = DaemonStatus::collect();
@@ -104,7 +105,7 @@ impl fmt::Display for TorideStatus {
         if !self.warnings.is_empty() {
             writeln!(f, "Warnings:")?;
             for w in &self.warnings {
-                writeln!(f, "  \u{26a0} {}", w)?;
+                writeln!(f, "  \u{26a0} {w}")?;
             }
         }
         Ok(())
