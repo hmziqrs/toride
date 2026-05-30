@@ -739,3 +739,165 @@ fn load_with_malformed_field_types() {
     let result = Fail2BanConfig::load(&path);
     assert!(result.is_err());
 }
+
+// ===========================================================================
+// Additional edge-case tests
+// ===========================================================================
+
+#[test]
+fn validate_rejects_invalid_regex_pattern() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "some content").unwrap();
+
+    let jail = JailConfig {
+        pattern: "(((invalid".into(),
+        ..sample_jail_config(log_path)
+    };
+    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let result = config.validate();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("invalid regex"), "unexpected error: {msg}");
+}
+
+#[test]
+fn validate_rejects_zero_defaults_find_time() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "some content").unwrap();
+
+    let config = Fail2BanConfig {
+        defaults: DefaultConfig {
+            find_time: 0,
+            ..DefaultConfig::default()
+        },
+        ..make_config_with_jail(log_path, None)
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("find_time"), "unexpected error: {msg}");
+}
+
+#[test]
+fn validate_rejects_zero_defaults_max_retry() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "some content").unwrap();
+
+    let config = Fail2BanConfig {
+        defaults: DefaultConfig {
+            max_retry: 0,
+            ..DefaultConfig::default()
+        },
+        ..make_config_with_jail(log_path, None)
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("max_retry"), "unexpected error: {msg}");
+}
+
+#[test]
+fn validate_rejects_zero_defaults_ban_time() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "some content").unwrap();
+
+    let config = Fail2BanConfig {
+        defaults: DefaultConfig {
+            ban_time: 0,
+            ..DefaultConfig::default()
+        },
+        ..make_config_with_jail(log_path, None)
+    };
+    let result = config.validate();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("ban_time"), "unexpected error: {msg}");
+}
+
+#[test]
+fn resolve_jail_with_all_overrides() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "").unwrap();
+
+    let jail = JailConfig {
+        enabled: false,
+        find_time: Some(120),
+        ban_time: Some(7200),
+        max_retry: Some(20),
+        ban_action: Some("my_ban".into()),
+        unban_action: Some("my_unban".into()),
+        ignore_ips: vec!["10.0.0.0/8".into(), "::1".into()],
+        ..sample_jail_config(log_path.clone())
+    };
+    let config = make_config_with_jail(log_path, Some(jail));
+
+    let resolved = config.resolve_jail("sshd").unwrap();
+    assert!(!resolved.enabled);
+    assert_eq!(resolved.find_time, 120);
+    assert_eq!(resolved.ban_time, 7200);
+    assert_eq!(resolved.max_retry, 20);
+    assert_eq!(resolved.ban_action, "my_ban");
+    assert_eq!(resolved.unban_action, "my_unban");
+    assert_eq!(resolved.ignore_ips, vec!["10.0.0.0/8", "::1"]);
+}
+
+#[test]
+fn enabled_jails_returns_empty_when_all_disabled() {
+    let dir = tempdir().unwrap();
+    let mut jails = HashMap::new();
+    for name in &["jail1", "jail2", "jail3"] {
+        let log_path = dir.path().join(format!("{name}.log"));
+        fs::write(&log_path, "").unwrap();
+        jails.insert(
+            name.to_string(),
+            JailConfig {
+                enabled: false,
+                ..sample_jail_config(log_path)
+            },
+        );
+    }
+
+    let config = Fail2BanConfig {
+        jails,
+        ..Default::default()
+    };
+    assert!(config.enabled_jails().is_empty());
+}
+
+#[test]
+fn save_load_preserves_ignore_ips() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "log content").unwrap();
+
+    let jail = JailConfig {
+        ignore_ips: vec!["10.0.0.0/8".into(), "::1".into()],
+        ..sample_jail_config(log_path)
+    };
+    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config_path = dir.path().join("config.json");
+    config.save(&config_path).unwrap();
+
+    let loaded = Fail2BanConfig::load(&config_path).unwrap();
+    let resolved = loaded.resolve_jail("sshd").unwrap();
+    assert_eq!(resolved.ignore_ips, vec!["10.0.0.0/8", "::1"]);
+}
+
+#[test]
+fn config_with_extra_unknown_fields_is_ignored() {
+    let dir = tempdir().unwrap();
+    let config_path = dir.path().join("config.json");
+    // Serde ignores unknown fields by default (no deny_unknown_fields attribute).
+    let json = r#"{"unknown_field": "value", "another_extra": 42}"#;
+    fs::write(&config_path, json).unwrap();
+
+    let result = Fail2BanConfig::load(&config_path);
+    assert!(result.is_ok(), "serde should ignore unknown fields");
+    let config = result.unwrap();
+    assert!(config.jails.is_empty());
+}

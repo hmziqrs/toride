@@ -208,7 +208,9 @@ impl Fail2BanManager {
     pub fn purge_expired(&self) -> crate::Result<Vec<crate::types::BanEntry>> {
         let purged = self.store.clear_expired()?;
         // Trim history to configured max.
-        let _ = self.store.trim_history(self.config.global.max_history);
+        if let Err(e) = self.store.trim_history(self.config.global.max_history) {
+            tracing::warn!(error = %e, "failed to trim ban history");
+        }
         Ok(purged)
     }
 

@@ -166,7 +166,6 @@ pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
     }
 }
 
-
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()
 }

@@ -632,3 +632,113 @@ fn match_line_with_host_group_containing_hostname() {
     assert!(detail.ip.is_none(), "hostname is not an IP address");
     assert_eq!(detail.line, "example.com auth failure");
 }
+
+// ===========================================================================
+// Additional edge-case tests (line endings, binary, long lines, etc.)
+// ===========================================================================
+
+#[test]
+fn scan_crlf_line_endings() {
+    let content = "Failed password from 10.0.0.1\r\nFailed password from 10.0.0.2\r\n";
+    let (mut detector, _tmp) = detector_with_content(
+        content,
+        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
+    );
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 2);
+    assert_eq!(result.matches_found, 2);
+    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+}
+
+#[test]
+fn scan_mixed_line_endings() {
+    let content =
+        "Failed password from 10.0.0.1\nFailed password from 10.0.0.2\r\nFailed password from 10.0.0.3\n";
+    let (mut detector, _tmp) = detector_with_content(
+        content,
+        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
+    );
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 3);
+    assert_eq!(result.matches_found, 3);
+    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+    assert_eq!(result.new_bans[1].ip.to_string(), "10.0.0.2");
+    assert_eq!(result.new_bans[2].ip.to_string(), "10.0.0.3");
+}
+
+#[test]
+fn scan_binary_content_with_text() {
+    let tmp = NamedTempFile::new().expect("failed to create temp file");
+    let mut file = tmp.reopen().expect("failed to reopen temp file");
+    file.write_all(&[0xFF, 0xFE, b'h', b'e', b'l', b'l', b'o', b'\n'])
+        .unwrap();
+    file.flush().unwrap();
+
+    let mut detector =
+        LogDetector::new("test-jail", tmp.path(), "hello").expect("LogDetector::new");
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 1);
+    assert_eq!(result.matches_found, 1);
+}
+
+#[test]
+fn scan_very_long_line_100kb() {
+    let ip = "10.0.0.1";
+    let padding = "x".repeat(102_400);
+    let line = format!("Failed {} {}\n", ip, padding);
+    let (mut detector, _tmp) = detector_with_content(
+        &line,
+        r"Failed (?P<ip>\d+\.\d+\.\d+\.\d+)",
+    );
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 1);
+    assert_eq!(result.matches_found, 1);
+    assert_eq!(result.new_bans[0].ip.to_string(), "10.0.0.1");
+}
+
+#[test]
+fn match_line_case_sensitive_pattern() {
+    let (detector, _tmp) = detector_with_content("anything\n", "ERROR");
+    assert!(detector.match_line("ERROR occurred", 1).is_some());
+    assert!(detector.match_line("error occurred", 1).is_none());
+    assert!(detector.match_line("Error occurred", 1).is_none());
+}
+
+#[test]
+fn scan_file_with_only_empty_lines() {
+    let content = "\n\n\n\n\n";
+    let (mut detector, _tmp) = detector_with_content(content, ".+");
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 5);
+    assert_eq!(result.matches_found, 0);
+    assert!(result.new_bans.is_empty());
+}
+
+#[test]
+fn scan_file_with_no_newline_at_all() {
+    let content = "no newline here";
+    let (mut detector, _tmp) = detector_with_content(content, ".+");
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 1);
+    assert_eq!(result.matches_found, 1);
+}
+
+#[test]
+fn set_position_to_middle_of_line() {
+    // Content: "aaa line one\nbbb line two\n"
+    // "aaa line one\n" = 13 bytes. Position 4 is at 'l' in "line one".
+    let content = "aaa line one\nbbb line two\n";
+    let tmp = NamedTempFile::new().unwrap();
+    let mut file = tmp.reopen().unwrap();
+    file.write_all(content.as_bytes()).unwrap();
+    file.flush().unwrap();
+
+    let mut detector = LogDetector::new("test-jail", tmp.path(), ".").unwrap();
+    detector.set_position(4, 0);
+
+    let result = detector.scan().expect("scan should succeed");
+    // Should read partial "line one\n" and then "bbb line two\n".
+    assert_eq!(result.lines_scanned, 2);
+    assert_eq!(result.matches_found, 2);
+}

@@ -137,6 +137,16 @@ impl ExecutionMode {
     }
 }
 
+/// Get the default CIDR prefix length for an IP address.
+/// Returns 32 for IPv4, 128 for IPv6.
+#[must_use]
+pub const fn default_prefix(ip: std::net::IpAddr) -> u8 {
+    match ip {
+        std::net::IpAddr::V4(_) => 32,
+        std::net::IpAddr::V6(_) => 128,
+    }
+}
+
 #[cfg(test)]
 #[path = "types.test.rs"]
 mod tests;

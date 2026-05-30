@@ -718,3 +718,366 @@ fn mixed_ignore_list_only_affects_matching_family() {
     // IPv6 outside ignored range.
     assert!(jail.ban_ip("2001:db8::1".parse().unwrap(), ExecutionMode::DryRun).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: find_time window prunes old failures
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_find_time_window_prunes_old_failures() {
+    // With find_time=2 and max_retry=1, a single scan triggers a ban.
+    // After the find_time window, a second scan should treat the IP as fresh
+    // (failure_tracker was cleared when the ban triggered).
+    let dir = tempdir().unwrap();
+    let log_file = NamedTempFile::new_in(dir.path()).unwrap();
+    let store = make_store(dir.path());
+    let config = crate::config::ResolvedJail {
+        name: "test-jail".to_string(),
+        enabled: true,
+        log_path: log_file.path().to_path_buf(),
+        pattern: r"Failed login from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
+        find_time: 2,
+        ban_time: 3600,
+        max_retry: 1,
+        ban_action: "ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+    let mut jail = Jail::new(config, store).unwrap();
+
+    let mut f = log_file.reopen().unwrap();
+
+    // First scan: one match -> triggers ban immediately (max_retry=1).
+    writeln!(f, "Failed login from 10.0.0.1").unwrap();
+    f.flush().unwrap();
+    let r1 = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(r1.new_bans.len(), 1);
+    assert_eq!(r1.new_bans[0].ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+
+    // Unban so we can test re-banning after the failure tracker resets.
+    jail.unban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::DryRun).unwrap();
+
+    // The failure_tracker was cleared when the ban triggered (failures.clear()).
+    // A subsequent scan for the same IP starts fresh, so it should ban again.
+    writeln!(f, "Failed login from 10.0.0.1").unwrap();
+    f.flush().unwrap();
+    let r2 = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(r2.new_bans.len(), 1);
+    assert_eq!(r2.new_bans[0].ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: max_retry boundary triggers ban
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_max_retry_boundary_triggers_ban() {
+    let dir = tempdir().unwrap();
+    let log_file = NamedTempFile::new_in(dir.path()).unwrap();
+    let store = make_store(dir.path());
+    let config = crate::config::ResolvedJail {
+        name: "test-jail".to_string(),
+        enabled: true,
+        log_path: log_file.path().to_path_buf(),
+        pattern: r"Failed login from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
+        find_time: 600,
+        ban_time: 3600,
+        max_retry: 3,
+        ban_action: "ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+    let mut jail = Jail::new(config, store).unwrap();
+
+    // Write 3 matching lines for the same IP in one go.
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "Failed login from 192.168.1.100").unwrap();
+    writeln!(f, "Failed login from 192.168.1.100").unwrap();
+    writeln!(f, "Failed login from 192.168.1.100").unwrap();
+    f.flush().unwrap();
+
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(result.lines_scanned, 3);
+    assert_eq!(result.matches_found, 3);
+    // Exactly 1 ban entry (3rd failure reaches the threshold).
+    assert_eq!(result.new_bans.len(), 1);
+    assert_eq!(result.new_bans[0].ip, "192.168.1.100".parse::<std::net::IpAddr>().unwrap());
+    assert_eq!(result.new_bans[0].jail_name, "test-jail");
+
+    // Verify persisted in store.
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: max_retry below threshold, no ban
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_max_retry_below_threshold_no_ban() {
+    let dir = tempdir().unwrap();
+    let log_file = NamedTempFile::new_in(dir.path()).unwrap();
+    let store = make_store(dir.path());
+    let config = crate::config::ResolvedJail {
+        name: "test-jail".to_string(),
+        enabled: true,
+        log_path: log_file.path().to_path_buf(),
+        pattern: r"Failed login from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
+        find_time: 600,
+        ban_time: 3600,
+        max_retry: 3,
+        ban_action: "ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+    let mut jail = Jail::new(config, store).unwrap();
+
+    // Write only 2 matching lines -- below the threshold of 3.
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "Failed login from 192.168.1.100").unwrap();
+    writeln!(f, "Failed login from 192.168.1.100").unwrap();
+    f.flush().unwrap();
+
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(result.lines_scanned, 2);
+    assert_eq!(result.matches_found, 2);
+    // 0 bans -- below the max_retry threshold.
+    assert_eq!(result.new_bans.len(), 0);
+
+    // Nothing persisted.
+    let bans = jail.list_bans().unwrap();
+    assert!(bans.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: scan multiple different IPs
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_multiple_different_ips() {
+    let (mut jail, log_file, _dir) = setup_test_jail();
+
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "Failed login from 10.0.0.1").unwrap();
+    writeln!(f, "Failed login from 10.0.0.2").unwrap();
+    writeln!(f, "Failed login from 10.0.0.3").unwrap();
+    writeln!(f, "Failed login from 10.0.0.4").unwrap();
+    writeln!(f, "Failed login from 10.0.0.5").unwrap();
+    f.flush().unwrap();
+
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(result.matches_found, 5);
+    assert_eq!(result.new_bans.len(), 5);
+
+    let mut ips: Vec<std::net::IpAddr> = result.new_bans.iter().map(|b| b.ip).collect();
+    ips.sort();
+    let expected: Vec<std::net::IpAddr> = (1..=5)
+        .map(|i| format!("10.0.0.{i}").parse().unwrap())
+        .collect();
+    assert_eq!(ips, expected);
+
+    // All 5 persisted.
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: ban_ip then scan same IP is skipped (AlreadyBanned)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ban_ip_then_scan_same_ip_skipped() {
+    let (mut jail, log_file, _dir) = setup_test_jail();
+    let ip: std::net::IpAddr = "192.168.1.10".parse().unwrap();
+
+    // Ban the IP manually first.
+    jail.ban_ip(ip, ExecutionMode::DryRun).unwrap();
+    assert_eq!(jail.list_bans().unwrap().len(), 1);
+
+    // Write the same IP to the log and scan.
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "Failed login from 192.168.1.10").unwrap();
+    f.flush().unwrap();
+
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
+    // AlreadyBanned is caught and skipped -- no duplicate.
+    assert_eq!(result.new_bans.len(), 0);
+
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].ip, ip);
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: unban then scan re-bans the IP
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_unban_then_scan_same_ip_rebanned() {
+    let (mut jail, mut log_file, _dir) = setup_test_jail();
+    let ip: std::net::IpAddr = "192.168.1.10".parse().unwrap();
+
+    // Write a line, scan to ban.
+    writeln!(log_file, "Failed login from 192.168.1.10").unwrap();
+    log_file.flush().unwrap();
+    let r1 = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(r1.new_bans.len(), 1);
+    assert_eq!(jail.list_bans().unwrap().len(), 1);
+
+    // Unban it.
+    jail.unban_ip(ip, ExecutionMode::DryRun).unwrap();
+    assert!(jail.list_bans().unwrap().is_empty());
+
+    // Write the same IP again and scan -- it should get re-banned.
+    writeln!(log_file, "Failed login from 192.168.1.10").unwrap();
+    log_file.flush().unwrap();
+    let r2 = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(r2.new_bans.len(), 1);
+    assert_eq!(r2.new_bans[0].ip, ip);
+
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].ip, ip);
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: pattern matching everything produces matches but no bans
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_scan_with_pattern_matching_everything() {
+    let dir = tempdir().unwrap();
+    let log_file = NamedTempFile::new_in(dir.path()).unwrap();
+    let store = make_store(dir.path());
+    // Pattern ".*" matches every line but has no `ip` capture group.
+    let config = crate::config::ResolvedJail {
+        name: "test-jail".to_string(),
+        enabled: true,
+        log_path: log_file.path().to_path_buf(),
+        pattern: ".*".to_string(),
+        find_time: 600,
+        ban_time: 3600,
+        max_retry: 1,
+        ban_action: "ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+    let mut jail = Jail::new(config, store).unwrap();
+
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "some arbitrary text").unwrap();
+    writeln!(f, "another line").unwrap();
+    writeln!(f, "third line").unwrap();
+    f.flush().unwrap();
+
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(result.lines_scanned, 3);
+    // All 3 lines match the pattern.
+    assert_eq!(result.matches_found, 3);
+    // But no bans -- no IP capture group means ip is None, so no BanEntry is created.
+    assert_eq!(result.new_bans.len(), 0);
+
+    let bans = jail.list_bans().unwrap();
+    assert!(bans.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: ban_ip in DryRun then Execute returns AlreadyBanned
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ban_ip_dry_run_then_execute() {
+    let (mut jail, _log, _dir) = setup_test_jail();
+    let ip: std::net::IpAddr = "203.0.113.50".parse().unwrap();
+
+    // Ban in dry-run -- succeeds and persists to store.
+    let entry = jail.ban_ip(ip, ExecutionMode::DryRun).unwrap();
+    assert_eq!(entry.ip, ip);
+    assert_eq!(entry.prefix, 32);
+
+    // Ban the same IP in execute mode -- fails because ban_ip runs the
+    // firewall command first (CommandFailed) before reaching the store's
+    // AlreadyBanned check.
+    let result = jail.ban_ip(ip, ExecutionMode::Execute);
+    assert!(result.is_err());
+
+    // Verify the store still has exactly one entry (the original dry-run ban).
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].ip, ip);
+
+    // A second dry-run attempt also fails with AlreadyBanned since the
+    // store already has the entry.
+    let result2 = jail.ban_ip(ip, ExecutionMode::DryRun);
+    assert!(result2.is_err());
+    match result2.unwrap_err() {
+        crate::Error::AlreadyBanned(_) => {}
+        other => panic!("expected AlreadyBanned, got: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: list_bans preserves insertion order
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_list_bans_preserves_order() {
+    let (mut jail, _log, _dir) = setup_test_jail();
+
+    let ips: Vec<std::net::IpAddr> = [
+        "10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4", "10.0.0.5",
+    ]
+    .iter()
+    .map(|s| s.parse().unwrap())
+    .collect();
+
+    for ip in &ips {
+        jail.ban_ip(*ip, ExecutionMode::DryRun).unwrap();
+    }
+
+    let bans = jail.list_bans().unwrap();
+    assert_eq!(bans.len(), 5);
+
+    // Store uses a Vec, so insertion order is preserved.
+    for (ban, expected_ip) in bans.iter().zip(&ips) {
+        assert_eq!(ban.ip, *expected_ip);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: invalid entry in ignore_ips is silently skipped
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ignore_ips_with_invalid_entry_skipped() {
+    let dir = tempdir().unwrap();
+    let log_file = NamedTempFile::new_in(dir.path()).unwrap();
+    let store = make_store(dir.path());
+    let config = make_resolved_jail(log_file.path());
+    let mut jail = Jail::new(config, store)
+        .unwrap()
+        .with_ignore_ips(vec![
+            "not-an-ip".to_string(), // invalid -- should be silently skipped
+            "10.0.0.1".to_string(),  // valid -- should be ignored
+        ]);
+
+    // The valid entry should still work: 10.0.0.1 is ignored.
+    let result = jail.ban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::DryRun);
+    assert!(result.is_err());
+
+    // The invalid entry doesn't prevent banning other IPs.
+    let result = jail.ban_ip("192.168.1.1".parse().unwrap(), ExecutionMode::DryRun);
+    assert!(result.is_ok());
+
+    // Scan should also work: 10.0.0.5 is not ignored, 10.0.0.1 is.
+    let mut f = log_file.reopen().unwrap();
+    writeln!(f, "Failed login from 10.0.0.1").unwrap();
+    writeln!(f, "Failed login from 10.0.0.5").unwrap();
+    f.flush().unwrap();
+
+    let scan_result = jail.scan(ExecutionMode::DryRun).unwrap();
+    assert_eq!(scan_result.matches_found, 2);
+    // Only 10.0.0.5 should be banned (10.0.0.1 is ignored).
+    assert_eq!(scan_result.new_bans.len(), 1);
+    assert_eq!(scan_result.new_bans[0].ip, "10.0.0.5".parse::<std::net::IpAddr>().unwrap());
+}

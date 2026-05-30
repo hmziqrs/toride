@@ -656,3 +656,78 @@ fn exec_empty_platform_commands_succeeds() {
     // No commands to run means nothing can fail.
     assert!(exec.exec(&vars).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// Additional edge-case tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shell_escape_empty_string() {
+    let vars = ActionVars::new("", 32, "test", 1, 1, "/dev/null");
+    let result = ActionExec::expand_command("block <ip>", &vars);
+    assert_eq!(result, "block ''");
+}
+
+#[test]
+fn shell_escape_with_single_quotes() {
+    let vars = ActionVars::new("1.2.3.4'test", 32, "test", 1, 1, "/dev/null");
+    let result = ActionExec::expand_command("block <ip>", &vars);
+    assert_eq!(result, "block '1.2.3.4'\\''test'");
+}
+
+#[test]
+fn shell_escape_with_dollar_sign() {
+    let vars = default_vars();
+    // $HOME in jail_name should be shell-escaped to prevent expansion.
+    let vars = ActionVars::new("10.0.0.1", 32, "$HOME", 1, 1, "/dev/null");
+    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars);
+    assert_eq!(result, "set '$HOME' banip 10.0.0.1");
+}
+
+#[test]
+fn shell_escape_with_semicolon() {
+    // Semicolons in log_path should be shell-escaped to prevent injection.
+    let vars = ActionVars::new("10.0.0.1", 32, "test", 1, 1, "; rm -rf /");
+    let result = ActionExec::expand_command("tail -f <log-path>", &vars);
+    assert_eq!(result, "tail -f '; rm -rf /'");
+}
+
+#[test]
+fn expand_command_placeholder_in_middle_of_word() {
+    // str::replace does substring matching, so <ip> inside a larger token
+    // IS replaced. This verifies the actual behavior.
+    let vars = ActionVars::new("10.0.0.1", 32, "test", 1, 1, "/dev/null");
+    let result = ActionExec::expand_command("block<ip>more", &vars);
+    assert_eq!(result, "block10.0.0.1more");
+}
+
+#[test]
+fn exec_with_empty_env() {
+    let cmds = make_platform_commands(&["true"], &["true"], &["true"]);
+    let exec = make_exec("empty-env", cmds);
+    let vars = default_vars();
+
+    assert!(exec.exec(&vars).is_ok());
+    assert!(exec.env.is_empty());
+}
+
+#[test]
+fn validate_with_all_dummy_values() {
+    let cmds = make_platform_commands(&[], &[], &[]);
+    let mut exec = make_exec("all-dummies", cmds);
+    exec.validate.push(
+        "test <ip> = 127.0.0.1 && test <prefix> = 32 && test <jail> = test && \
+         test <ban-time> = 1 && test <fail-count> = 1 && test <log-path> = /dev/null"
+            .to_string(),
+    );
+
+    assert!(exec.validate().is_ok());
+}
+
+#[test]
+fn expand_command_unicode_in_jail_name() {
+    let vars = ActionVars::new("10.0.0.1", 32, "\u{6d4b}\u{8bd5}-jail", 1, 1, "/dev/null");
+    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars);
+    // Unicode characters trigger shell escaping (single-quote wrapping).
+    assert_eq!(result, "set '\u{6d4b}\u{8bd5}-jail' banip 10.0.0.1");
+}

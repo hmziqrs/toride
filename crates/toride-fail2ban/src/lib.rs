@@ -3,12 +3,15 @@
 //! Provides log parsing, IP banning, and automated response capabilities
 //! with support for iptables, nftables, pf, and firewalld backends.
 
+#![deny(unsafe_code)]
+#![warn(missing_docs)]
 #![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 #![expect(clippy::doc_markdown, reason = "Fail2Ban is a well-known name")]
 #![cfg_attr(
     test,
     expect(
+        unsafe_code,
         clippy::needless_raw_string_hashes,
         clippy::uninlined_format_args,
         clippy::clone_on_copy,

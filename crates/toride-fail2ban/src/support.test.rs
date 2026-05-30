@@ -498,3 +498,164 @@ fn default_ban_and_unban_commands_same_structure_per_firewall() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: <ip> placeholder presence in all non-Unknown firewall commands
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_ban_commands_all_firewalls_have_ip_placeholder() {
+    let firewalls = [
+        Firewall::Iptables,
+        Firewall::Nftables,
+        Firewall::Pf,
+        Firewall::Firewalld,
+        Firewall::WindowsFirewall,
+    ];
+
+    for fw in &firewalls {
+        let cmds = default_ban_commands(*fw);
+        let has_ip = cmds.linux.iter().any(|c| c.contains("<ip>"))
+            || cmds.macos.iter().any(|c| c.contains("<ip>"))
+            || cmds.freebsd.iter().any(|c| c.contains("<ip>"));
+        assert!(
+            has_ip,
+            "default_ban_commands({:?}) should contain at least one command with <ip>",
+            fw
+        );
+    }
+}
+
+#[test]
+fn default_unban_commands_all_firewalls_have_ip_placeholder() {
+    let firewalls = [
+        Firewall::Iptables,
+        Firewall::Nftables,
+        Firewall::Pf,
+        Firewall::Firewalld,
+        Firewall::WindowsFirewall,
+    ];
+
+    for fw in &firewalls {
+        let cmds = default_unban_commands(*fw);
+        let has_ip = cmds.linux.iter().any(|c| c.contains("<ip>"))
+            || cmds.macos.iter().any(|c| c.contains("<ip>"))
+            || cmds.freebsd.iter().any(|c| c.contains("<ip>"));
+        assert!(
+            has_ip,
+            "default_unban_commands({:?}) should contain at least one command with <ip>",
+            fw
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: detect functions do not panic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn detect_firewall_does_not_panic() {
+    // Edge case: ensure platform detection gracefully handles any environment.
+    let _fw = detect_firewall();
+}
+
+#[test]
+fn detect_init_does_not_panic() {
+    // Edge case: ensure init system detection gracefully handles any environment.
+    let _init = detect_init();
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: platform info defaults
+// ---------------------------------------------------------------------------
+
+#[test]
+fn platform_info_version_is_unknown_by_default() {
+    let info = detect_platform();
+    assert_eq!(
+        info.version, "unknown",
+        "detect_platform should set version to \"unknown\" since real version detection is not implemented"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: serialization of all variants to known strings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn firewall_all_variants_serialize_to_known_strings() {
+    let known = [
+        "Iptables",
+        "Nftables",
+        "Pf",
+        "Firewalld",
+        "WindowsFirewall",
+        "Unknown",
+    ];
+
+    let variants = [
+        Firewall::Iptables,
+        Firewall::Nftables,
+        Firewall::Pf,
+        Firewall::Firewalld,
+        Firewall::WindowsFirewall,
+        Firewall::Unknown,
+    ];
+
+    for variant in &variants {
+        let json = serde_json::to_string(variant).expect("serialization should succeed");
+        // serde_json::to_string wraps enum variants in quotes; strip them for comparison.
+        let inner = &json[1..json.len() - 1];
+        assert!(
+            known.contains(&inner),
+            "Firewall::{:?} serialized to unexpected string: {}",
+            variant,
+            json
+        );
+    }
+}
+
+#[test]
+fn init_system_all_variants_serialize_to_known_strings() {
+    let known = ["Systemd", "OpenRC", "Launchd", "Rc", "Unknown"];
+
+    let variants = [
+        InitSystem::Systemd,
+        InitSystem::OpenRC,
+        InitSystem::Launchd,
+        InitSystem::Rc,
+        InitSystem::Unknown,
+    ];
+
+    for variant in &variants {
+        let json = serde_json::to_string(variant).expect("serialization should succeed");
+        // serde_json::to_string wraps enum variants in quotes; strip them for comparison.
+        let inner = &json[1..json.len() - 1];
+        assert!(
+            known.contains(&inner),
+            "InitSystem::{:?} serialized to unexpected string: {}",
+            variant,
+            json
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: Unknown firewall has empty commands
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_ban_and_unban_commands_empty_for_unknown() {
+    let ban = default_ban_commands(Firewall::Unknown);
+    let unban = default_unban_commands(Firewall::Unknown);
+
+    assert!(ban.linux.is_empty(), "Unknown ban linux should be empty");
+    assert!(ban.macos.is_empty(), "Unknown ban macos should be empty");
+    assert!(ban.freebsd.is_empty(), "Unknown ban freebsd should be empty");
+    assert!(unban.linux.is_empty(), "Unknown unban linux should be empty");
+    assert!(unban.macos.is_empty(), "Unknown unban macos should be empty");
+    assert!(
+        unban.freebsd.is_empty(),
+        "Unknown unban freebsd should be empty"
+    );
+}

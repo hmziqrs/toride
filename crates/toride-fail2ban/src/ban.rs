@@ -24,10 +24,7 @@ pub struct CidrBlock {
 impl CidrBlock {
     /// Create a new CIDR block.
     pub fn new(addr: IpAddr, prefix: u8) -> crate::Result<Self> {
-        let max_prefix = match addr {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        };
+        let max_prefix = crate::types::default_prefix(addr);
         if prefix > max_prefix {
             return Err(crate::Error::InvalidIp(format!(
                 "Prefix /{prefix} exceeds maximum /{max_prefix} for {addr}"

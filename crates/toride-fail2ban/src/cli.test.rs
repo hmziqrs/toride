@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ExecutionMode;
 use clap::Parser;
 use std::path::PathBuf;
 
@@ -302,4 +303,131 @@ fn default_jail_for_unban_is_default() {
         Commands::Unban { jail, .. } => assert_eq!(jail, "default"),
         _ => panic!("expected Unban command"),
     }
+}
+
+// -----------------------------------------------------------------------
+// Edge case: IPv6 addresses
+// -----------------------------------------------------------------------
+
+#[test]
+fn parse_ban_with_ipv6() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "ban", "::1"]).unwrap();
+    match cli.command {
+        Commands::Ban { ip, .. } => {
+            assert_eq!(ip, "::1".parse::<std::net::IpAddr>().unwrap());
+        }
+        _ => panic!("expected Ban command"),
+    }
+}
+
+#[test]
+fn parse_unban_with_ipv6() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "unban", "2001:db8::1"]).unwrap();
+    match cli.command {
+        Commands::Unban { ip, .. } => {
+            assert_eq!(ip, "2001:db8::1".parse::<std::net::IpAddr>().unwrap());
+        }
+        _ => panic!("expected Unban command"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// Edge case: status with no args
+// -----------------------------------------------------------------------
+
+#[test]
+fn parse_status_no_args() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "status"]).unwrap();
+    match cli.command {
+        Commands::Status { jail } => assert!(jail.is_none()),
+        _ => panic!("expected Status command"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// Edge case: add-jail defaults without optional flags
+// -----------------------------------------------------------------------
+
+#[test]
+fn parse_addjail_defaults_max_retry() {
+    let cli = Cli::try_parse_from([
+        "toride-fail2ban",
+        "add-jail",
+        "sshd",
+        "--log-path",
+        "/var/log/auth.log",
+        "--pattern",
+        "Failed password",
+    ])
+    .unwrap();
+    match cli.command {
+        Commands::AddJail { max_retry, .. } => assert_eq!(max_retry, 5),
+        _ => panic!("expected AddJail command"),
+    }
+}
+
+#[test]
+fn parse_addjail_defaults_ban_time() {
+    let cli = Cli::try_parse_from([
+        "toride-fail2ban",
+        "add-jail",
+        "sshd",
+        "--log-path",
+        "/var/log/auth.log",
+        "--pattern",
+        "Failed password",
+    ])
+    .unwrap();
+    match cli.command {
+        Commands::AddJail { ban_time, .. } => assert_eq!(ban_time, 3600),
+        _ => panic!("expected AddJail command"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// Edge case: multiple global flags combined
+// -----------------------------------------------------------------------
+
+#[test]
+fn parse_multiple_global_flags() {
+    let cli =
+        Cli::try_parse_from(["toride-fail2ban", "--verbose", "--dry-run", "status"]).unwrap();
+    assert!(cli.verbose);
+    assert!(cli.dry_run);
+}
+
+// -----------------------------------------------------------------------
+// Edge case: set command with special characters
+// -----------------------------------------------------------------------
+
+#[test]
+fn parse_set_with_special_characters() {
+    let cli = Cli::try_parse_from([
+        "toride-fail2ban",
+        "set",
+        "sshd",
+        "bantime",
+        "hello world",
+    ])
+    .unwrap();
+    match cli.command {
+        Commands::Set { value, .. } => assert_eq!(value, "hello world"),
+        _ => panic!("expected Set command"),
+    }
+}
+
+// -----------------------------------------------------------------------
+// Edge case: execution_mode from dry_run flag
+// -----------------------------------------------------------------------
+
+#[test]
+fn execution_mode_dry_run_true() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "--dry-run", "status"]).unwrap();
+    assert!(matches!(cli.execution_mode(), ExecutionMode::DryRun));
+}
+
+#[test]
+fn execution_mode_dry_run_false() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "status"]).unwrap();
+    assert!(matches!(cli.execution_mode(), ExecutionMode::Execute));
 }

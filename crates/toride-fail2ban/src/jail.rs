@@ -160,7 +160,10 @@ impl Jail {
                         if let Err(e) = self.ban_action.exec(&vars) {
                             tracing::error!(jail = %self.config.name, ip = %entry.ip, error = %e, "ban action failed");
                             // Rollback: remove from store since firewall command failed.
-                            let _ = self.ban_manager.unban(entry.ip, &self.config.name);
+                            if let Err(e) = self.ban_manager.unban(entry.ip, &self.config.name) {
+                                tracing::error!(jail = %self.config.name, ip = %entry.ip, error = %e,
+                                    "rollback unban failed after ban action error");
+                            }
                             return Err(e);
                         }
                     }
@@ -177,7 +180,9 @@ impl Jail {
         let journal = self.detector.journal();
         // Store journal if we have a store reference (we do via ban_manager).
         // This is a best-effort operation.
-        let _ = self.ban_manager.store().update_journal(journal);
+        if let Err(e) = self.ban_manager.store().update_journal(journal) {
+            tracing::warn!(jail = %self.config.name, error = %e, "failed to persist journal");
+        }
 
         Ok(result)
     }
@@ -198,10 +203,7 @@ impl Jail {
             )));
         }
 
-        let prefix = match ip {
-            IpAddr::V4(_) => 32,
-            IpAddr::V6(_) => 128,
-        };
+        let prefix = crate::types::default_prefix(ip);
 
         // Execute ban action FIRST (skip in dry-run).
         if !mode.is_dry_run() {
@@ -257,10 +259,7 @@ fn parse_ignore_list(entries: &[String]) -> CidrSet {
     let mut set = CidrSet::new();
     for s in entries {
         if let Ok(ip) = s.parse::<IpAddr>() {
-            let prefix = match ip {
-                IpAddr::V4(_) => 32,
-                IpAddr::V6(_) => 128,
-            };
+            let prefix = crate::types::default_prefix(ip);
             if let Ok(block) = CidrBlock::new(ip, prefix) {
                 set.insert(block);
             }

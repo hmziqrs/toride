@@ -810,3 +810,129 @@ fn fail2ban_status_display_config_path_preserved() {
     let output = format!("{}", status);
     assert!(output.contains(path));
 }
+
+// ===========================================================================
+// Additional edge-case tests
+// ===========================================================================
+
+#[test]
+fn ban_entry_ipv6_mapped_ipv4() {
+    let entry = BanEntry {
+        ip: "::ffff:192.168.1.1".parse().unwrap(),
+        prefix: 128,
+        banned_at: Utc.with_ymd_and_hms(2025, 6, 15, 10, 30, 0).unwrap(),
+        expires_at: Some(Utc.with_ymd_and_hms(2025, 6, 15, 11, 30, 0).unwrap()),
+        jail_name: "sshd".to_string(),
+        fail_count: 3,
+        last_fail_at: Utc.with_ymd_and_hms(2025, 6, 15, 10, 29, 55).unwrap(),
+        reason: Some("IPv4-mapped IPv6 test".to_string()),
+    };
+    let json = serde_json::to_string(&entry).expect("serialization failed");
+    let deserialized: BanEntry = serde_json::from_str(&json).expect("deserialization failed");
+    assert_eq!(entry, deserialized);
+    assert_eq!(entry.ip.to_string(), "::ffff:192.168.1.1");
+}
+
+#[test]
+fn ban_entry_very_long_reason() {
+    let entry = BanEntry {
+        reason: Some("x".repeat(10_000)),
+        ..sample_ban_entry()
+    };
+    let json = serde_json::to_string(&entry).expect("serialization failed");
+    let deserialized: BanEntry = serde_json::from_str(&json).expect("deserialization failed");
+    assert_eq!(entry, deserialized);
+    assert_eq!(deserialized.reason.as_ref().unwrap().len(), 10_000);
+}
+
+#[test]
+fn ban_entry_very_long_jail_name() {
+    let entry = BanEntry {
+        jail_name: "a".repeat(1_000),
+        ..sample_ban_entry()
+    };
+    let json = serde_json::to_string(&entry).expect("serialization failed");
+    let deserialized: BanEntry = serde_json::from_str(&json).expect("deserialization failed");
+    assert_eq!(entry, deserialized);
+    assert_eq!(deserialized.jail_name.len(), 1_000);
+}
+
+#[test]
+fn fail2ban_status_with_many_jails() {
+    let jails: Vec<JailStatus> = (0..50)
+        .map(|i| JailStatus {
+            name: format!("jail-{i}"),
+            active: true,
+            banned_ips: vec![],
+            total_bans: 0,
+            log_path: PathBuf::from(format!("/var/log/jail-{i}.log")),
+            pattern: String::new(),
+        })
+        .collect();
+    let status = Fail2BanStatus {
+        running: true,
+        jails,
+        config_path: PathBuf::from("/etc/fail2ban/jail.conf"),
+    };
+    let output = format!("{status}");
+    assert!(output.contains("Jails: 50"));
+    assert_eq!(status.jails.len(), 50);
+}
+
+#[test]
+fn execution_mode_is_dry_run_variants() {
+    assert!(!ExecutionMode::Execute.is_dry_run());
+    assert!(ExecutionMode::DryRun.is_dry_run());
+}
+
+#[test]
+fn scan_result_with_empty_duration() {
+    let result = ScanResult {
+        new_bans: vec![],
+        lines_scanned: 42,
+        matches_found: 0,
+        scan_duration: Duration::ZERO,
+    };
+    assert_eq!(result.scan_duration, Duration::ZERO);
+    assert_eq!(result.lines_scanned, 42);
+}
+
+#[test]
+fn jail_status_serialization_with_many_bans() {
+    let banned_ips: Vec<BanEntry> = (0..100)
+        .map(|i| BanEntry {
+            ip: IpAddr::V4(Ipv4Addr::new(10, 0, 0, u8::try_from(i % 256).unwrap())),
+            prefix: 32,
+            banned_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            expires_at: None,
+            jail_name: "sshd".to_string(),
+            fail_count: 1,
+            last_fail_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            reason: None,
+        })
+        .collect();
+    let status = JailStatus {
+        name: "mass-ban".to_string(),
+        active: true,
+        banned_ips,
+        total_bans: 100,
+        log_path: PathBuf::from("/var/log/auth.log"),
+        pattern: String::new(),
+    };
+    let json = serde_json::to_string(&status).expect("serialization failed");
+    let deserialized: JailStatus = serde_json::from_str(&json).expect("deserialization failed");
+    assert_eq!(deserialized.banned_ips.len(), 100);
+    assert_eq!(deserialized.total_bans, 100);
+    assert_eq!(deserialized.name, "mass-ban");
+}
+
+#[test]
+fn platform_commands_for_current_platform_always_returns_valid_slice() {
+    // Verify that for_current_platform never panics and returns a valid
+    // reference on any platform (linux, macos, freebsd, or unsupported).
+    let cmds = sample_platform_commands();
+    let result = cmds.for_current_platform();
+    // The returned slice must be one of the three platform slices.
+    // On unsupported platforms it returns an empty slice (&[]).
+    let _ = result.len();
+}

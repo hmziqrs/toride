@@ -929,3 +929,160 @@ fn remove_ban_with_malformed_ip() {
         assert!(result.is_err(), "expected parse error for '{bad}', got Ok({result:?})");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: very long jail name
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_ban_with_very_long_jail_name() {
+    let (_dir, store) = tmp_store();
+
+    let long_name = "a".repeat(1000);
+    let entry = BanEntry {
+        ip: "10.0.0.1".parse().unwrap(),
+        prefix: 32,
+        banned_at: Utc::now(),
+        expires_at: None,
+        jail_name: long_name.clone(),
+        fail_count: 1,
+        last_fail_at: Utc::now(),
+        reason: None,
+    };
+    store.add_ban(entry).unwrap();
+
+    let bans = store.get_bans(Some(&long_name)).unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].jail_name, long_name);
+    assert_eq!(bans[0].ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: unicode jail name
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_ban_with_unicode_jail_name() {
+    let (_dir, store) = tmp_store();
+
+    let entry = BanEntry {
+        ip: "10.0.0.1".parse().unwrap(),
+        prefix: 32,
+        banned_at: Utc::now(),
+        expires_at: None,
+        jail_name: "测试监狱".to_string(),
+        fail_count: 1,
+        last_fail_at: Utc::now(),
+        reason: None,
+    };
+    store.add_ban(entry).unwrap();
+
+    let bans = store.get_bans(Some("测试监狱")).unwrap();
+    assert_eq!(bans.len(), 1);
+    assert_eq!(bans[0].jail_name, "测试监狱");
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: large dataset (500 bans)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn get_bans_large_dataset() {
+    let (_dir, store) = tmp_store();
+
+    for i in 0..500 {
+        let ip = format!("10.{}.{}.{}", (i >> 16) & 0xFF, (i >> 8) & 0xFF, i & 0xFF);
+        store.add_ban(make_ban(&ip, "sshd")).unwrap();
+    }
+
+    let bans = store.get_bans(None).unwrap();
+    assert_eq!(bans.len(), 500, "should retrieve all 500 bans");
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: clear_expired with expires_at exactly == now
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_expired_boundary_exactly_now() {
+    let (_dir, store) = tmp_store();
+
+    // An entry whose expires_at is set to Utc::now() should be cleared
+    // because the check is exp <= now.
+    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(Utc::now()))).unwrap();
+
+    let cleared = store.clear_expired().unwrap();
+    assert_eq!(cleared.len(), 1, "ban expiring exactly now should be cleared");
+    assert_eq!(cleared[0].ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+
+    let active = store.get_bans(None).unwrap();
+    assert!(active.is_empty(), "no active bans should remain");
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: save/load preserves timestamp nanosecond precision
+// ---------------------------------------------------------------------------
+
+#[test]
+fn save_load_preserves_timestamps_precision() {
+    let (_dir, store) = tmp_store();
+
+    // Create a ban with a specific nanosecond-precision timestamp.
+    let ts = DateTime::parse_from_rfc3339("2026-05-30T12:34:56.123456789Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let entry = BanEntry {
+        ip: "10.0.0.1".parse().unwrap(),
+        prefix: 32,
+        banned_at: ts,
+        expires_at: Some(ts + Duration::seconds(3600)),
+        jail_name: "sshd".to_string(),
+        fail_count: 1,
+        last_fail_at: ts,
+        reason: Some("precision test".to_string()),
+    };
+
+    let data = StoreData {
+        active_bans: vec![entry],
+        history: vec![],
+        journals: vec![],
+    };
+    store.save(&data).unwrap();
+
+    let loaded = store.load().unwrap();
+    assert_eq!(loaded.active_bans.len(), 1);
+    assert_eq!(
+        loaded.active_bans[0].banned_at, ts,
+        "banned_at timestamp must survive save/load round-trip"
+    );
+    assert_eq!(
+        loaded.active_bans[0].last_fail_at, ts,
+        "last_fail_at timestamp must survive save/load round-trip"
+    );
+    assert_eq!(
+        loaded.active_bans[0].expires_at.unwrap(), ts + Duration::seconds(3600),
+        "expires_at timestamp must survive save/load round-trip"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: journal entry with empty jail name
+// ---------------------------------------------------------------------------
+
+#[test]
+fn journal_entry_with_empty_jail_name() {
+    let (_dir, store) = tmp_store();
+
+    let entry = JournalEntry {
+        jail_name: String::new(),
+        log_path: "/var/log/auth.log".into(),
+        offset: 0,
+        line_number: 0,
+        updated_at: Utc::now(),
+    };
+    store.update_journal(entry).unwrap();
+
+    let loaded = store.get_journal("", "/var/log/auth.log".as_ref()).unwrap();
+    assert!(loaded.is_some(), "journal with empty jail name should persist");
+    assert_eq!(loaded.unwrap().jail_name, "");
+}

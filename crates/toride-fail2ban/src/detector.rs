@@ -181,12 +181,7 @@ impl LogDetector {
     }
 }
 
-const fn default_prefix(ip: IpAddr) -> u8 {
-    match ip {
-        IpAddr::V4(_) => 32,
-        IpAddr::V6(_) => 128,
-    }
-}
+use crate::types::default_prefix;
 
 #[cfg(test)]
 #[path = "detector.test.rs"]

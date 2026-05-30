@@ -712,3 +712,160 @@ fn ban_manager_ban_ipv6() {
     // Verify the ban is visible through is_banned.
     assert!(manager.is_banned(ip).unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: CIDR block with host bits set
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_block_host_bits_set() {
+    // Creating a /24 with a host address (.5) in the network position is allowed;
+    // contains() applies the mask so containment works correctly.
+    let block = CidrBlock::new("192.168.1.5".parse().unwrap(), 24);
+    assert!(block.is_ok(), "host bits in the network address should be allowed");
+    let block = block.unwrap();
+
+    assert!(
+        block.contains("192.168.1.10".parse().unwrap()),
+        "/24 block with host bits set should still contain other hosts in the subnet"
+    );
+    assert!(block.contains("192.168.1.0".parse().unwrap()));
+    assert!(block.contains("192.168.1.255".parse().unwrap()));
+    assert!(!block.contains("192.168.2.1".parse().unwrap()));
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: CidrSet with many blocks performance
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_set_many_blocks_performance() {
+    let mut set = CidrSet::new();
+
+    // Insert 100 different /24 blocks: 10.0.0.0/24, 10.0.1.0/24, ..., 10.0.99.0/24
+    for i in 0..100u8 {
+        let addr: IpAddr = format!("10.0.{i}.0").parse().unwrap();
+        let block = CidrBlock::new(addr, 24).unwrap();
+        set.insert(block);
+    }
+
+    assert!(!set.is_empty(), "set with 100 blocks must not be empty");
+
+    // Verify contains works for an IP in each block.
+    for i in 0..100u8 {
+        let ip: IpAddr = format!("10.0.{i}.42").parse().unwrap();
+        assert!(
+            set.contains(ip),
+            "IP 10.0.{i}.42 should be in the set (block {i}/100)"
+        );
+    }
+
+    // An IP outside all blocks must not match.
+    assert!(!set.contains("10.1.0.1".parse().unwrap()));
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: CidrSet remove nonexistent returns false
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_set_remove_nonexistent_returns_false() {
+    let mut set = CidrSet::new();
+    let block = CidrBlock::new("192.168.1.0".parse().unwrap(), 24).unwrap();
+
+    // Removing a block that was never inserted should return false.
+    assert!(
+        !set.remove(&block),
+        "removing a nonexistent block from an empty set must return false"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: CidrSet insert duplicate block is idempotent
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_set_insert_duplicate_block() {
+    let mut set = CidrSet::new();
+    let block = CidrBlock::new("10.0.0.0".parse().unwrap(), 24).unwrap();
+
+    set.insert(block);
+    set.insert(block);
+
+    // Duplicate insert should not break contains.
+    assert!(set.contains("10.0.0.1".parse().unwrap()));
+    assert!(set.contains("10.0.0.254".parse().unwrap()));
+    assert!(!set.contains("10.0.1.1".parse().unwrap()));
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: ban duration of exactly one second
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ban_manager_ban_duration_one_second() {
+    let (manager, _dir) = setup_manager();
+    let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+    let before = Utc::now();
+    let entry = manager.ban(ip, 32, "sshd", 1, 1, None).unwrap();
+    let after = Utc::now();
+
+    let expires = entry.expires_at.expect("expires_at must be set for duration=1");
+
+    // expires_at should be approximately before + 1 second, within [before+1s, after+1s].
+    let lower_bound = before + Duration::seconds(1);
+    let upper_bound = after + Duration::seconds(1);
+    assert!(
+        expires >= lower_bound && expires <= upper_bound,
+        "expires_at ({expires}) should be approximately now + 1 second, \
+         expected between {lower_bound} and {upper_bound}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: list_bans after purge_expired
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ban_manager_list_bans_after_purge() {
+    let (manager, _dir) = setup_manager();
+
+    // Ban 3 IPs: two with long duration, one already expired.
+    manager
+        .ban("10.0.0.1".parse().unwrap(), 32, "sshd", 1, 86400, None)
+        .unwrap();
+    manager
+        .ban("10.0.0.2".parse().unwrap(), 32, "sshd", 1, 86400, None)
+        .unwrap();
+
+    // Manually insert an already-expired ban.
+    let past = Utc::now() - Duration::seconds(120);
+    let expired_entry = crate::types::BanEntry {
+        ip: "10.0.0.3".parse().unwrap(),
+        prefix: 32,
+        banned_at: past - Duration::seconds(3600),
+        expires_at: Some(past),
+        jail_name: "sshd".to_string(),
+        fail_count: 1,
+        last_fail_at: past - Duration::seconds(3600),
+        reason: None,
+    };
+    manager.store.add_ban(expired_entry).unwrap();
+
+    // Before purge: 3 bans visible.
+    let all_before = manager.list_bans(None).unwrap();
+    assert_eq!(all_before.len(), 3, "should see all 3 bans before purge");
+
+    // Purge expired.
+    let purged = manager.purge_expired().unwrap();
+    assert_eq!(purged.len(), 1, "only the expired ban should be purged");
+
+    // After purge: only 2 active bans remain.
+    let all_after = manager.list_bans(None).unwrap();
+    assert_eq!(all_after.len(), 2, "2 active bans should remain after purge");
+
+    let remaining_ips: Vec<IpAddr> = all_after.iter().map(|b| b.ip).collect();
+    assert!(remaining_ips.contains(&"10.0.0.1".parse::<IpAddr>().unwrap()));
+    assert!(remaining_ips.contains(&"10.0.0.2".parse::<IpAddr>().unwrap()));
+}
