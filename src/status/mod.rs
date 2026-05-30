@@ -285,4 +285,251 @@ mod tests {
         assert!(p.includes_per_core_cpu());
         assert!(p.includes_processes());
     }
+
+    // ── Integration: Full pipeline ─────────────────────────────────
+
+    #[test]
+    fn integration_full_pipeline_collect_serialize_display() {
+        // Collect a full TorideStatus snapshot.
+        let status = TorideStatus::collect();
+
+        // Verify all subsystems are populated with non-trivial data.
+        assert!(!status.system.hostname.is_empty(), "system hostname must be populated");
+        assert!(status.system.memory.total_bytes > 0, "memory total must be nonzero");
+        assert!(status.system.disk.total_bytes > 0 || !status.system.disk.mount_point.is_empty(),
+            "disk must be populated");
+        assert!(!status.system.os_info.arch.is_empty(), "OS arch must be populated");
+        assert!(status.system.processes.total_count > 0, "process count must be nonzero");
+        // daemon and ssh fields are always set (even if not alive/running).
+        // capabilities always populated via detect().
+        assert!(status.capabilities.system.cpu_usage, "capabilities must report cpu_usage");
+
+        // Serialize to JSON and verify it parses as valid JSON.
+        let json = serde_json::to_string(&status).expect("serialization must succeed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("JSON must be valid and parseable");
+        assert!(parsed.is_object(), "JSON must be an object");
+        assert!(parsed.get("system").is_some(), "JSON must contain 'system' key");
+        assert!(parsed.get("daemon").is_some(), "JSON must contain 'daemon' key");
+        assert!(parsed.get("ssh").is_some(), "JSON must contain 'ssh' key");
+        assert!(parsed.get("capabilities").is_some(), "JSON must contain 'capabilities' key");
+
+        // Display and verify all section headers are present.
+        let display = format!("{status}");
+        assert!(display.contains("=== Toride Status ==="), "display must have top header");
+        assert!(display.contains("System:"), "display must have System section");
+        assert!(display.contains("Daemon:"), "display must have Daemon section");
+        assert!(display.contains("SSH:"), "display must have SSH section");
+        assert!(display.contains("Capabilities"), "display must have Capabilities section");
+    }
+
+    // ── Integration: Collector ─────────────────────────────────────
+
+    #[test]
+    fn integration_collector_two_collects_with_delta() {
+        let mut collector = Collector::default_collector();
+
+        // First collect: status present, delta absent.
+        let (status1, delta1) = collector.collect();
+        assert!(!status1.system.hostname.is_empty(), "first collect must return valid status");
+        assert!(delta1.is_none(), "first collect must have no delta");
+
+        // Sleep briefly so elapsed > 0 for the delta.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // Second collect: delta present with reasonable values.
+        let (status2, delta2) = collector.collect();
+        assert!(!status2.system.hostname.is_empty(), "second collect must return valid status");
+        let d = delta2.expect("second collect must produce a delta");
+
+        // Elapsed must be at least as long as we slept.
+        assert!(d.elapsed >= std::time::Duration::from_millis(80),
+            "delta elapsed ({:?}) must be >= 80ms", d.elapsed);
+
+        // Rates must be non-negative and finite.
+        assert!(d.bytes_received_rate.is_finite(), "RX rate must be finite");
+        assert!(d.bytes_received_rate >= 0.0, "RX rate must be non-negative");
+        assert!(d.bytes_transmitted_rate.is_finite(), "TX rate must be finite");
+        assert!(d.bytes_transmitted_rate >= 0.0, "TX rate must be non-negative");
+
+        // Deltas must be non-negative (saturating_sub).
+        // (They could be 0 if the system had no traffic, which is fine.)
+
+        // CPU delta: if both snapshots had CPU data, the delta should be Some.
+        if status1.system.cpu_usage.is_some() && status2.system.cpu_usage.is_some() {
+            assert!(d.cpu_usage_delta.is_some(), "CPU delta must be Some when both snapshots have CPU data");
+        }
+    }
+
+    // ── Integration: Privacy ───────────────────────────────────────
+
+    #[test]
+    fn integration_privacy_redactor_on_toride_hostname() {
+        let status = TorideStatus::collect();
+        let hostname = &status.system.hostname;
+        assert!(!hostname.is_empty(), "hostname must be non-empty for this test");
+
+        // Safe mode: hostname is fully redacted.
+        let safe = Redactor::new(PrivacyMode::Safe);
+        let redacted = safe.redact_hostname(hostname);
+        assert_eq!(redacted, "[redacted]", "Safe mode must redact hostname");
+        assert_ne!(redacted, *hostname, "redacted value must differ from original");
+
+        // Diagnostics mode: hostname is shown as-is.
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        let shown = diag.redact_hostname(hostname);
+        assert_eq!(shown, *hostname, "Diagnostics mode must preserve hostname");
+
+        // Full mode: hostname is also shown.
+        let full = Redactor::new(PrivacyMode::Full);
+        let full_shown = full.redact_hostname(hostname);
+        assert_eq!(full_shown, *hostname, "Full mode must preserve hostname");
+    }
+
+    // ── Integration: Presets ───────────────────────────────────────
+
+    #[test]
+    fn integration_preset_diagnostics_includes_all_features() {
+        let p = Preset::Diagnostics;
+        assert!(p.includes_per_core_cpu(), "Diagnostics must include per-core CPU");
+        assert!(p.includes_swap(), "Diagnostics must include swap");
+        assert!(p.includes_sensors(), "Diagnostics must include sensors");
+        assert!(p.includes_processes(), "Diagnostics must include processes");
+        assert!(p.includes_network_interfaces(), "Diagnostics must include network interfaces");
+        assert!(p.includes_all_disks(), "Diagnostics must include all disks");
+        assert!(p.includes_os_info(), "Diagnostics must include OS info");
+    }
+
+    #[test]
+    fn integration_preset_minimal_excludes_features() {
+        let p = Preset::Minimal;
+        assert!(!p.includes_per_core_cpu(), "Minimal must exclude per-core CPU");
+        assert!(!p.includes_swap(), "Minimal must exclude swap");
+        assert!(!p.includes_sensors(), "Minimal must exclude sensors");
+        assert!(!p.includes_processes(), "Minimal must exclude processes");
+        assert!(!p.includes_network_interfaces(), "Minimal must exclude network interfaces");
+        assert!(!p.includes_all_disks(), "Minimal must exclude all disks");
+        // Minimal always includes OS info.
+        assert!(p.includes_os_info(), "Minimal must include OS info");
+    }
+
+    // ── Integration: Doctor ────────────────────────────────────────
+
+    #[test]
+    fn integration_doctor_report_has_system_daemon_ssh_checks() {
+        let report = DoctorReport::check();
+        assert!(!report.checks.is_empty(), "doctor report must have checks");
+
+        // Verify checks exist for each subsystem category.
+        let has_system = report.checks.iter().any(|c| c.name.starts_with("system."));
+        let has_daemon = report.checks.iter().any(|c| c.name.starts_with("daemon."));
+        let has_ssh = report.checks.iter().any(|c| c.name.starts_with("ssh."));
+        assert!(has_system, "report must include system checks");
+        assert!(has_daemon, "report must include daemon checks");
+        assert!(has_ssh, "report must include ssh checks");
+
+        // Verify summary counts are consistent.
+        let (pass, warn, fail) = report.summary();
+        assert_eq!(
+            pass + warn + fail,
+            report.checks.len(),
+            "summary counts must equal total check count"
+        );
+    }
+
+    // ── Integration: Error handling ────────────────────────────────
+
+    #[test]
+    fn integration_error_variants_work() {
+        // PermissionDenied
+        let err = StatusError::PermissionDenied("/secret".into());
+        assert!(err.to_string().contains("permission denied"));
+        assert!(err.to_string().contains("/secret"));
+
+        // CommandNotFound
+        let err = StatusError::CommandNotFound("foobar".into());
+        assert!(err.to_string().contains("command not found"));
+        assert!(err.to_string().contains("foobar"));
+
+        // CommandFailed
+        let err = StatusError::CommandFailed {
+            command: "ls".into(),
+            code: 1,
+            stderr: "no such file".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("command failed"), "msg: {msg}");
+        assert!(msg.contains("exited 1"), "msg: {msg}");
+        assert!(msg.contains("no such file"), "msg: {msg}");
+
+        // CommandTimeout
+        let err = StatusError::CommandTimeout("ping".into());
+        assert!(err.to_string().contains("timed out"));
+
+        // ParseError
+        let err = StatusError::ParseError("bad data".into());
+        assert!(err.to_string().contains("parse error"));
+
+        // Io
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let err = StatusError::Io(io_err);
+        assert!(err.to_string().contains("io error"));
+
+        // Unsupported
+        let err = StatusError::Unsupported("plan9".into());
+        assert!(err.to_string().contains("unsupported platform"));
+
+        // DataUnavailable
+        let err = StatusError::DataUnavailable("gpu".into());
+        assert!(err.to_string().contains("data unavailable"));
+    }
+
+    #[test]
+    fn integration_error_clone_works_for_all_variants() {
+        let variants = vec![
+            StatusError::PermissionDenied("path".into()),
+            StatusError::CommandNotFound("cmd".into()),
+            StatusError::CommandFailed {
+                command: "run".into(),
+                code: 42,
+                stderr: "err".into(),
+            },
+            StatusError::CommandTimeout("slow".into()),
+            StatusError::ParseError("bad".into()),
+            StatusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io")),
+            StatusError::Unsupported("os".into()),
+            StatusError::DataUnavailable("info".into()),
+        ];
+
+        for original in &variants {
+            let cloned = original.clone();
+            // Cloned error must have the same Display output.
+            assert_eq!(
+                original.to_string(),
+                cloned.to_string(),
+                "Clone must preserve Display output for variant"
+            );
+        }
+    }
+
+    #[test]
+    fn integration_error_display_produces_nonempty_strings() {
+        let variants = vec![
+            StatusError::PermissionDenied("p".into()),
+            StatusError::CommandNotFound("c".into()),
+            StatusError::CommandFailed { command: "r".into(), code: 1, stderr: "e".into() },
+            StatusError::CommandTimeout("t".into()),
+            StatusError::ParseError("p".into()),
+            StatusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "o")),
+            StatusError::Unsupported("u".into()),
+            StatusError::DataUnavailable("d".into()),
+        ];
+
+        for variant in &variants {
+            let display = variant.to_string();
+            assert!(!display.is_empty(), "Display must produce non-empty string for {variant:?}");
+            // Every Display string must be at least as long as the prefix.
+            assert!(display.len() >= 5, "Display string suspiciously short: {display}");
+        }
+    }
 }

@@ -6,16 +6,48 @@
 //! of identifying information is passed through a [`Redactor`] that strips or
 //! masks values according to the active [`PrivacyMode`].
 //!
-//! # Privacy modes
+//! # Privacy mode comparison
 //!
-//! | Mode            | Hostname | MAC / Serial | Command-line | Username |
-//! |-----------------|----------|--------------|--------------|----------|
-//! | `Safe` (default)| hidden   | hidden       | hidden       | hidden   |
-//! | `Diagnostics`   | shown    | hidden       | name only    | hidden   |
-//! | `Full`          | shown    | shown        | shown        | shown    |
+//! | Mode            | Hostname    | MAC / Serial | Command-line | Username    |
+//! |-----------------|-------------|--------------|--------------|-------------|
+//! | `Safe` (default)| `[redacted]`| `[redacted]` | `[redacted]` | `[redacted]`|
+//! | `Diagnostics`   | shown       | `[redacted]` | name only    | `[redacted]`|
+//! | `Full`          | shown       | shown        | shown        | shown       |
 //!
 //! The default is `Safe`, so callers that forget to configure privacy still
 //! get a safe output.
+//!
+//! # Examples
+//!
+//! Redacting sensitive data for logging:
+//!
+//! ```
+//! use toride::status::privacy::{PrivacyMode, Redactor};
+//!
+//! let redactor = Redactor::new(PrivacyMode::Safe);
+//! assert_eq!(redactor.redact_hostname("my-host.local"), "[redacted]");
+//! assert_eq!(redactor.redact_mac("AA:BB:CC:DD:EE:FF"), "[redacted]");
+//! ```
+//!
+//! Using diagnostics mode for troubleshooting:
+//!
+//! ```
+//! use toride::status::privacy::{PrivacyMode, Redactor};
+//!
+//! let redactor = Redactor::new(PrivacyMode::Diagnostics);
+//! assert_eq!(redactor.redact_hostname("my-host.local"), "my-host.local");
+//! assert_eq!(redactor.redact_command_line("/usr/bin/sshd -D -R -p 22"), "/usr/bin/sshd");
+//! ```
+//!
+//! Full mode for local debugging:
+//!
+//! ```
+//! use toride::status::privacy::{PrivacyMode, Redactor};
+//!
+//! let redactor = Redactor::new(PrivacyMode::Full);
+//! assert_eq!(redactor.redact_serial("C02X12345678"), "C02X12345678");
+//! assert!(redactor.should_show_username());
+//! ```
 
 use serde::Serialize;
 
@@ -45,7 +77,16 @@ pub struct Redactor {
 
 impl Redactor {
     /// Create a new redactor that applies rules for the given `mode`.
-    pub fn new(mode: PrivacyMode) -> Self {
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let redactor = Redactor::new(PrivacyMode::Safe);
+    /// ```
+    #[must_use]
+    pub const fn new(mode: PrivacyMode) -> Self {
         Self { mode }
     }
 
@@ -53,6 +94,18 @@ impl Redactor {
     ///
     /// * `Safe` -- returns `"[redacted]"`.
     /// * `Diagnostics` / `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let safe = Redactor::new(PrivacyMode::Safe);
+    /// assert_eq!(safe.redact_hostname("my-host.local"), "[redacted]");
+    ///
+    /// let diag = Redactor::new(PrivacyMode::Diagnostics);
+    /// assert_eq!(diag.redact_hostname("my-host.local"), "my-host.local");
+    /// ```
     #[must_use]
     pub fn redact_hostname(&self, hostname: &str) -> String {
         match self.mode {
@@ -65,6 +118,18 @@ impl Redactor {
     ///
     /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
     /// * `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let redactor = Redactor::new(PrivacyMode::Diagnostics);
+    /// assert_eq!(redactor.redact_mac("AA:BB:CC:DD:EE:FF"), "[redacted]");
+    ///
+    /// let full = Redactor::new(PrivacyMode::Full);
+    /// assert_eq!(full.redact_mac("AA:BB:CC:DD:EE:FF"), "AA:BB:CC:DD:EE:FF");
+    /// ```
     #[must_use]
     pub fn redact_mac(&self, mac: &str) -> String {
         match self.mode {
@@ -77,6 +142,15 @@ impl Redactor {
     ///
     /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
     /// * `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let redactor = Redactor::new(PrivacyMode::Safe);
+    /// assert_eq!(redactor.redact_serial("C02X12345678"), "[redacted]");
+    /// ```
     #[must_use]
     pub fn redact_serial(&self, serial: &str) -> String {
         match self.mode {
@@ -90,6 +164,18 @@ impl Redactor {
     /// * `Safe` -- returns `"[redacted]"`.
     /// * `Diagnostics` -- returns only the command name (first token).
     /// * `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let safe = Redactor::new(PrivacyMode::Safe);
+    /// assert_eq!(safe.redact_command_line("/usr/bin/sshd -D -R -p 22"), "[redacted]");
+    ///
+    /// let diag = Redactor::new(PrivacyMode::Diagnostics);
+    /// assert_eq!(diag.redact_command_line("/usr/bin/sshd -D -R -p 22"), "/usr/bin/sshd");
+    /// ```
     #[must_use]
     pub fn redact_command_line(&self, cmd: &str) -> String {
         match self.mode {
@@ -106,6 +192,20 @@ impl Redactor {
     }
 
     /// Returns `true` when the current mode permits showing usernames.
+    ///
+    /// Only returns `true` in [`PrivacyMode::Full`] mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let safe = Redactor::new(PrivacyMode::Safe);
+    /// assert!(!safe.should_show_username());
+    ///
+    /// let full = Redactor::new(PrivacyMode::Full);
+    /// assert!(full.should_show_username());
+    /// ```
     #[must_use]
     pub fn should_show_username(&self) -> bool {
         self.mode == PrivacyMode::Full
@@ -206,8 +306,207 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Hostname edge cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn redact_hostname_empty_string() {
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_hostname(""), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_hostname(""), "");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_hostname(""), "");
+    }
+
+    #[test]
+    fn redact_hostname_very_long() {
+        let long_hostname = "a".repeat(256);
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_hostname(&long_hostname), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_hostname(&long_hostname), long_hostname);
+    }
+
+    #[test]
+    fn redact_hostname_unicode() {
+        let hostname = "host-\u{00e9}\u{00e8}\u{00ea}-\u{4e16}\u{754c}";
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_hostname(hostname), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_hostname(hostname), hostname);
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_hostname(hostname), hostname);
+    }
+
+    // ------------------------------------------------------------------
+    // MAC address edge cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn redact_mac_empty_string() {
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_mac(""), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_mac(""), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_mac(""), "");
+    }
+
+    #[test]
+    fn redact_mac_invalid_format() {
+        let invalid = "not-a-mac";
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_mac(invalid), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_mac(invalid), invalid);
+    }
+
+    #[test]
+    fn redact_mac_lowercase() {
+        let mac = "aa:bb:cc:dd:ee:ff";
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_mac(mac), mac);
+    }
+
+    // ------------------------------------------------------------------
+    // Serial number edge cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn redact_serial_empty_string() {
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_serial(""), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_serial(""), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_serial(""), "");
+    }
+
+    #[test]
+    fn redact_serial_very_long() {
+        let long_serial = "X".repeat(256);
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_serial(&long_serial), long_serial);
+
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_serial(&long_serial), "[redacted]");
+    }
+
+    #[test]
+    fn redact_serial_special_characters() {
+        let serial = "SN-123/456@#$%";
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_serial(serial), serial);
+
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_serial(serial), "[redacted]");
+    }
+
+    // ------------------------------------------------------------------
+    // Command line edge cases
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn redact_command_line_empty_string() {
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_command_line(""), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line(""), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line(""), "");
+    }
+
+    #[test]
+    fn redact_command_line_only_spaces() {
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_command_line("   "), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line("   "), "[redacted]");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line("   "), "   ");
+    }
+
+    #[test]
+    fn redact_command_line_single_word() {
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line("python"), "python");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line("python"), "python");
+    }
+
+    #[test]
+    fn redact_command_line_path_with_spaces() {
+        let cmd = "/Program Files/app --flag";
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line(cmd), "/Program");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line(cmd), cmd);
+    }
+
+    #[test]
+    fn redact_command_line_very_long() {
+        let long_cmd = format!("binary {}", "arg ".repeat(500));
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_command_line(&long_cmd), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line(&long_cmd), "binary");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line(&long_cmd), long_cmd);
+    }
+
+    #[test]
+    fn redact_command_line_special_characters() {
+        let cmd = "cmd --opt='hello world' --flag;rm -rf /";
+        let safe = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(safe.redact_command_line(cmd), "[redacted]");
+
+        let diag = Redactor::new(PrivacyMode::Diagnostics);
+        assert_eq!(diag.redact_command_line(cmd), "cmd");
+
+        let full = Redactor::new(PrivacyMode::Full);
+        assert_eq!(full.redact_command_line(cmd), cmd);
+    }
+
+    // ------------------------------------------------------------------
     // Default / serialization
     // ------------------------------------------------------------------
+
+    #[test]
+    fn should_show_username_safe() {
+        let r = Redactor::new(PrivacyMode::Safe);
+        assert!(!r.should_show_username());
+    }
+
+    #[test]
+    fn should_show_username_diagnostics() {
+        let r = Redactor::new(PrivacyMode::Diagnostics);
+        assert!(!r.should_show_username());
+    }
+
+    #[test]
+    fn should_show_username_full() {
+        let r = Redactor::new(PrivacyMode::Full);
+        assert!(r.should_show_username());
+    }
 
     #[test]
     fn default_is_safe() {

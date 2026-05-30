@@ -4,17 +4,57 @@
 //! returns `None` when the underlying data cannot be read (e.g. permission
 //! denied on certain Linux containers).
 //!
-//! # Platform notes
+//! # Platform support
 //!
 //! | Metric        | Linux | macOS | Windows |
 //! |---------------|:-----:|:-----:|:-------:|
-//! | CPU usage     | ✓     | ✓     | ✓       |
-//! | Memory        | ✓     | ✓     | ✓       |
-//! | Disk usage    | ✓     | ✓     | ✓       |
-//! | Network I/O   | ✓     | ✓     | ✓       |
-//! | Load average  | ✓     | ✓     | ✗       |
-//! | Uptime        | ✓     | ✓     | ✓       |
-//! | Hostname      | ✓     | ✓     | ✓       |
+//! | CPU usage     | Yes   | Yes   | Yes     |
+//! | Per-core CPU  | Yes   | Yes   | Yes     |
+//! | Memory        | Yes   | Yes   | Yes     |
+//! | Swap          | Yes   | Yes   | Yes     |
+//! | Disk usage    | Yes   | Yes   | Yes     |
+//! | Network I/O   | Yes   | Yes   | Yes     |
+//! | Load average  | Yes   | Yes   | No      |
+//! | Uptime        | Yes   | Yes   | Yes     |
+//! | Hostname      | Yes   | Yes   | Yes     |
+//! | OS info       | Yes   | Yes   | Yes     |
+//! | Sensors       | Yes   | Yes   | Yes     |
+//! | Processes     | Yes   | Yes   | Yes     |
+//! | GPU           | Yes   | Yes   | No      |
+//! | Battery       | Yes   | Yes   | No      |
+//!
+//! # Examples
+//!
+//! Collect a full system snapshot:
+//!
+//! ```no_run
+//! use toride::status::system::SystemStatus;
+//!
+//! let status = SystemStatus::collect();
+//! println!("CPU: {:.1}%", status.cpu_usage.unwrap_or(0.0));
+//! println!("Memory: {} / {} bytes", status.memory.used_bytes, status.memory.total_bytes);
+//! println!("Hostname: {}", status.hostname);
+//! ```
+//!
+//! Get top CPU-consuming processes:
+//!
+//! ```no_run
+//! use toride::status::system::SystemStatus;
+//!
+//! let status = SystemStatus::collect();
+//! for proc in status.processes.top_by_cpu(5) {
+//!     println!("{}: {:.1}% CPU", proc.name, proc.cpu_usage);
+//! }
+//! ```
+//!
+//! Display formatted output:
+//!
+//! ```no_run
+//! use toride::status::system::SystemStatus;
+//!
+//! let status = SystemStatus::collect();
+//! println!("{status}");
+//! ```
 
 use std::fmt;
 
@@ -236,7 +276,27 @@ pub struct ProcessSnapshot {
 }
 
 impl ProcessSnapshot {
-    /// Get top N processes by CPU usage.
+    /// Get the top `n` processes sorted by CPU usage (highest first).
+    ///
+    /// Returns at most `n` references to [`ProcessStatus`], ordered by
+    /// descending CPU usage. Ties are not guaranteed to be in any
+    /// particular order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::system::{ProcessSnapshot, ProcessStatus};
+    ///
+    /// let snapshot = ProcessSnapshot {
+    ///     processes: vec![
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "idle".into(), cpu_usage: 0.1, memory_bytes: 100, status: "Sleeping".into(), start_time: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "busy".into(), cpu_usage: 95.0, memory_bytes: 200, status: "Running".into(), start_time: None },
+    ///     ],
+    ///     total_count: 2,
+    /// };
+    /// let top = snapshot.top_by_cpu(1);
+    /// assert_eq!(top[0].name, "busy");
+    /// ```
     #[must_use]
     pub fn top_by_cpu(&self, n: usize) -> Vec<&ProcessStatus> {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
@@ -248,7 +308,26 @@ impl ProcessSnapshot {
         sorted.into_iter().take(n).collect()
     }
 
-    /// Get top N processes by memory usage.
+    /// Get the top `n` processes sorted by memory usage (highest first).
+    ///
+    /// Returns at most `n` references to [`ProcessStatus`], ordered by
+    /// descending memory usage (RSS bytes).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::system::{ProcessSnapshot, ProcessStatus};
+    ///
+    /// let snapshot = ProcessSnapshot {
+    ///     processes: vec![
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "small".into(), cpu_usage: 1.0, memory_bytes: 1024, status: "Sleeping".into(), start_time: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "large".into(), cpu_usage: 1.0, memory_bytes: 1024 * 1024 * 100, status: "Running".into(), start_time: None },
+    ///     ],
+    ///     total_count: 2,
+    /// };
+    /// let top = snapshot.top_by_memory(1);
+    /// assert_eq!(top[0].name, "large");
+    /// ```
     #[must_use]
     pub fn top_by_memory(&self, n: usize) -> Vec<&ProcessStatus> {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
@@ -331,6 +410,7 @@ impl SystemStatus {
         }
     }
 
+    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
     fn read_cpu(sys: &System) -> Option<f64> {
         let cpus = sys.cpus();
         if cpus.is_empty() {
@@ -362,7 +442,7 @@ impl SystemStatus {
             .iter()
             .find(|d| std::path::Path::new(&d.mount_point) == root)
             .cloned()
-            .unwrap_or(DiskStatus {
+            .unwrap_or_else(|| DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
                 filesystem: String::new(),
@@ -526,16 +606,23 @@ impl SystemStatus {
     }
 
     /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
-    #[allow(clippy::cast_precision_loss)] // f64->u64 for VRAM display; values fit in f64 mantissa
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::option_if_let_else
+    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
     fn parse_vram_to_bytes(v: &str) -> Option<u64> {
         let v = v.trim();
         if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
             gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
         } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
             mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
+        } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
+            tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
         } else {
             // Bare number, assume MB
-            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb * 1024 * 1024)
+            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
         }
     }
 
@@ -619,10 +706,10 @@ impl SystemStatus {
                 .split_whitespace()
                 .find(|w| w.ends_with('%'))?;
             let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
-            let state = if text.contains("charging") || text.contains("AC attached") {
-                "Charging"
-            } else if text.contains("discharging") {
+            let state = if text.contains("discharging") {
                 "Discharging"
+            } else if text.contains("charging") || text.contains("AC attached") {
+                "Charging"
             } else {
                 "Unknown"
             };
@@ -676,6 +763,7 @@ impl SystemStatus {
     }
 }
 
+#[allow(clippy::too_many_lines)] // Display impl must render all fields; splitting reduces readability
 impl fmt::Display for SystemStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "System:")?;
@@ -845,6 +933,7 @@ fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
 /// Intermediate zero-valued units (hours, minutes) are included when a
 /// higher unit is non-zero. For example, 3600 seconds renders as
 /// `1h 0m 0s` rather than `1h 0s`.
+#[allow(clippy::useless_let_if_seq)] // sequential if-blocks with mutable flag are clearer than chained if-expressions
 fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
@@ -1443,5 +1532,604 @@ mod tests {
         let status = SystemStatus::collect();
         // Battery may or may not be present on this machine; verify the field is accessible.
         let _ = &status.battery;
+    }
+
+    // ── parse_vram_to_bytes edge cases ─────────────────────────────────────
+
+    #[test]
+    fn parse_vram_to_bytes_gb() {
+        assert_eq!(SystemStatus::parse_vram_to_bytes("8 GB"), Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(SystemStatus::parse_vram_to_bytes("8GB"), Some(8 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_vram_to_bytes_mb() {
+        assert_eq!(SystemStatus::parse_vram_to_bytes("8192 MB"), Some(8192 * 1024 * 1024));
+        assert_eq!(SystemStatus::parse_vram_to_bytes("8192MB"), Some(8192 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_vram_to_bytes_bare_number() {
+        assert_eq!(SystemStatus::parse_vram_to_bytes("8192"), Some(8192 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_vram_tb_suffix() {
+        let result = SystemStatus::parse_vram_to_bytes("2TB");
+        assert_eq!(result, Some(2 * 1024 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_vram_tb_with_space() {
+        let result = SystemStatus::parse_vram_to_bytes("2 TB");
+        assert_eq!(result, Some(2 * 1024 * 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_vram_tb_fractional() {
+        let result = SystemStatus::parse_vram_to_bytes("1.5 TB");
+        assert_eq!(result, Some((1.5 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64));
+    }
+
+    #[test]
+    fn parse_vram_bare_number_saturates() {
+        // u64::MAX cannot overflow with saturating_mul; it clamps to u64::MAX.
+        let result = SystemStatus::parse_vram_to_bytes(&u64::MAX.to_string());
+        assert_eq!(result, Some(u64::MAX));
+    }
+
+    // ── format_bytes edge cases ──────────────────────────────────────────
+
+    #[test]
+    fn format_bytes_pib_boundary() {
+        assert_eq!(format_bytes(PB), "1.0 PiB");
+    }
+
+    #[test]
+    fn format_bytes_just_below_pib() {
+        // PB - 1 is so close to 1024.0 TiB that f64 rounds up to "1024.0 TiB".
+        let result = format_bytes(PB - 1);
+        assert!(
+            result.ends_with("TiB"),
+            "should format as TiB just below PiB boundary, got: {result}"
+        );
+    }
+
+    #[test]
+    fn format_bytes_exact_kib() {
+        assert_eq!(format_bytes(KB), "1.0 KiB");
+    }
+
+    #[test]
+    fn format_bytes_exact_mib() {
+        assert_eq!(format_bytes(MB), "1.0 MiB");
+    }
+
+    #[test]
+    fn format_bytes_exact_gib() {
+        assert_eq!(format_bytes(GB), "1.0 GiB");
+    }
+
+    #[test]
+    fn format_bytes_exact_tib() {
+        assert_eq!(format_bytes(TB), "1.0 TiB");
+    }
+
+    #[test]
+    fn format_bytes_exact_pib() {
+        assert_eq!(format_bytes(PB), "1.0 PiB");
+    }
+
+    #[test]
+    fn format_bytes_exact_eib() {
+        assert_eq!(format_bytes(EB), "1.0 EiB");
+    }
+
+    // ── format_duration edge cases ───────────────────────────────────────
+
+    #[test]
+    fn format_duration_max_value() {
+        // u64::MAX should not panic
+        let result = format_duration(u64::MAX);
+        assert!(!result.is_empty(), "format_duration(u64::MAX) should not be empty");
+        assert!(result.ends_with('s'), "should end with seconds: {result}");
+    }
+
+    #[test]
+    fn format_duration_very_large_value() {
+        // 1000 days in seconds
+        let secs = 1000 * 86400;
+        let result = format_duration(secs);
+        assert_eq!(result, "1000d 0h 0m 0s");
+    }
+
+    // ── Memory percentage edge cases ─────────────────────────────────────
+
+    /// Helper to construct a minimal SystemStatus for unit testing.
+    fn make_status(memory: MemoryStatus, disk: DiskStatus) -> SystemStatus {
+        SystemStatus {
+            cpu_usage: None,
+            memory,
+            disk,
+            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            load_average: None,
+            uptime_secs: None,
+            hostname: String::new(),
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: Vec::new(),
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![],
+            battery: None,
+        }
+    }
+
+    fn empty_disk() -> DiskStatus {
+        DiskStatus {
+            name: String::new(),
+            mount_point: "/".to_string(),
+            filesystem: String::new(),
+            used_bytes: 0,
+            total_bytes: 0,
+            percentage: 0.0,
+            is_removable: false,
+        }
+    }
+
+    #[test]
+    fn memory_percentage_zero_total() {
+        // Division by zero protection: total_bytes = 0 should yield 0%.
+        let status = make_status(
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            empty_disk(),
+        );
+        assert_eq!(status.memory.percentage, 0.0);
+    }
+
+    #[test]
+    fn memory_percentage_capped_at_100() {
+        // When used > total (e.g. reclaimed/buffer memory), percentage should be capped at 100%.
+        let status = make_status(
+            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0 },
+            empty_disk(),
+        );
+        assert!(
+            status.memory.percentage <= 100.0,
+            "memory percentage should be <= 100, got {}",
+            status.memory.percentage
+        );
+    }
+
+    // ── Disk percentage edge cases ───────────────────────────────────────
+
+    #[test]
+    fn disk_percentage_zero_total() {
+        // Division by zero protection: total_bytes = 0 should yield 0%.
+        let status = make_status(
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                is_removable: false,
+            },
+        );
+        assert_eq!(status.disk.percentage, 0.0);
+    }
+
+    #[test]
+    fn disk_percentage_capped_at_100() {
+        // When used > total (e.g. filesystem overhead), percentage should be capped at 100%.
+        let status = make_status(
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
+                used_bytes: 600 * GB,
+                total_bytes: 500 * GB,
+                percentage: 100.0,
+                is_removable: false,
+            },
+        );
+        assert!(
+            status.disk.percentage <= 100.0,
+            "disk percentage should be <= 100, got {}",
+            status.disk.percentage
+        );
+    }
+
+    // ── ProcessSnapshot edge cases ───────────────────────────────────────
+
+    fn make_process(pid: u32, cpu: f32, mem: u64) -> ProcessStatus {
+        ProcessStatus {
+            pid,
+            parent_pid: None,
+            name: format!("proc-{pid}"),
+            cpu_usage: cpu,
+            memory_bytes: mem,
+            status: "Running".to_string(),
+            start_time: Some(1000),
+        }
+    }
+
+    #[test]
+    fn top_by_cpu_n_exceeds_len() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, 10.0, 100),
+                make_process(2, 50.0, 200),
+            ],
+            total_count: 2,
+        };
+        let top = snapshot.top_by_cpu(10);
+        assert_eq!(top.len(), 2, "should return all processes when n > len");
+        assert_eq!(top[0].pid, 2);
+        assert_eq!(top[1].pid, 1);
+    }
+
+    #[test]
+    fn top_by_cpu_n_zero() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, 10.0, 100),
+                make_process(2, 50.0, 200),
+            ],
+            total_count: 2,
+        };
+        let top = snapshot.top_by_cpu(0);
+        assert!(top.is_empty(), "n=0 should return empty vec");
+    }
+
+    #[test]
+    fn top_by_cpu_empty_processes() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![],
+            total_count: 0,
+        };
+        let top = snapshot.top_by_cpu(5);
+        assert!(top.is_empty(), "empty processes should return empty vec");
+    }
+
+    #[test]
+    fn top_by_memory_n_exceeds_len() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, 5.0, 1024),
+                make_process(2, 5.0, 4096),
+            ],
+            total_count: 2,
+        };
+        let top = snapshot.top_by_memory(10);
+        assert_eq!(top.len(), 2, "should return all processes when n > len");
+        assert_eq!(top[0].pid, 2);
+        assert_eq!(top[1].pid, 1);
+    }
+
+    #[test]
+    fn top_by_memory_n_zero() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, 5.0, 1024),
+                make_process(2, 5.0, 4096),
+            ],
+            total_count: 2,
+        };
+        let top = snapshot.top_by_memory(0);
+        assert!(top.is_empty(), "n=0 should return empty vec");
+    }
+
+    #[test]
+    fn top_by_memory_empty_processes() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![],
+            total_count: 0,
+        };
+        let top = snapshot.top_by_memory(5);
+        assert!(top.is_empty(), "empty processes should return empty vec");
+    }
+
+    #[test]
+    fn top_by_cpu_with_nan_values() {
+        // NaN cpu_usage should not panic and should sort safely.
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, f32::NAN, 100),
+                make_process(2, 50.0, 200),
+                make_process(3, f32::NAN, 150),
+            ],
+            total_count: 3,
+        };
+        let top = snapshot.top_by_cpu(3);
+        assert_eq!(top.len(), 3, "all processes should be returned even with NaN");
+        // Verify the non-NaN process is included.
+        let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
+        assert!(pids.contains(&2), "non-NaN process should be present");
+    }
+
+    #[test]
+    fn top_by_cpu_stable_sort() {
+        // When cpu_usage values are equal, the original insertion order should be preserved
+        // (sort_by is stable in Rust's standard library).
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                make_process(1, 50.0, 100),
+                make_process(2, 50.0, 200),
+                make_process(3, 50.0, 150),
+            ],
+            total_count: 3,
+        };
+        let top = snapshot.top_by_cpu(3);
+        assert_eq!(top.len(), 3);
+        assert_eq!(top[0].pid, 1, "stable sort: first inserted should remain first");
+        assert_eq!(top[1].pid, 2, "stable sort: second inserted should remain second");
+        assert_eq!(top[2].pid, 3, "stable sort: third inserted should remain third");
+    }
+
+    // ── Display edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn display_with_all_none_fields() {
+        let status = SystemStatus {
+            cpu_usage: None,
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+            },
+            disk: DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                is_removable: false,
+            },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "empty-host".to_string(),
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: "unknown".to_string(),
+            },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: Vec::new(),
+            boot_time: None,
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
+        };
+        let output = format!("{status}");
+        assert!(output.contains("System:"), "should contain 'System:' header");
+        assert!(output.contains("CPU: N/A"), "should show 'CPU: N/A'");
+        assert!(output.contains("Memory:"), "should contain 'Memory:'");
+        assert!(output.contains("0 B / 0 B"), "should show 0 B / 0 B");
+        assert!(output.contains("0.0%)"), "should show 0.0%");
+        assert!(!output.contains("GPU"), "no GPU section when gpu is empty");
+        assert!(!output.contains("Battery"), "no Battery section when battery is None");
+        assert!(!output.contains("Uptime"), "no Uptime section when uptime is None");
+        assert!(!output.contains("Load:"), "no Load section when load_average is None");
+    }
+
+    #[test]
+    fn display_with_gpu_data() {
+        let status = SystemStatus {
+            cpu_usage: Some(50.0),
+            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0 },
+            disk: empty_disk(),
+            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "gpu-host".to_string(),
+            os_info: OsInfo { name: Some("Linux".to_string()), version: None, kernel_version: None, arch: "x86_64".to_string() },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: Vec::new(),
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![GpuInfo {
+                name: "NVIDIA RTX 4090".to_string(),
+                vendor: "NVIDIA".to_string(),
+                vram_bytes: Some(24 * GB as u64),
+                driver_version: Some("535.129.03".to_string()),
+            }],
+            battery: None,
+        };
+        let output = format!("{status}");
+        assert!(output.contains("GPU 0:"), "should contain GPU section");
+        assert!(output.contains("NVIDIA RTX 4090"), "should contain GPU name");
+        assert!(output.contains("NVIDIA"), "should contain GPU vendor");
+        assert!(output.contains("24.0 GiB"), "should contain VRAM");
+    }
+
+    #[test]
+    fn display_with_battery_data() {
+        let status = SystemStatus {
+            cpu_usage: None,
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            disk: empty_disk(),
+            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "laptop".to_string(),
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "aarch64".to_string() },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: Vec::new(),
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![],
+            battery: Some(BatteryInfo {
+                charge_percent: 85.0,
+                state: "Charging".to_string(),
+                time_to_full_secs: Some(1800),
+                time_to_empty_secs: None,
+            }),
+        };
+        let output = format!("{status}");
+        assert!(output.contains("Battery:"), "should contain Battery section");
+        assert!(output.contains("85%"), "should contain charge percentage");
+        assert!(output.contains("Charging"), "should contain battery state");
+    }
+
+    #[test]
+    fn display_sensors_none_temperature() {
+        let status = SystemStatus {
+            cpu_usage: None,
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            disk: empty_disk(),
+            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "sensor-host".to_string(),
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "x86_64".to_string() },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: vec![
+                SensorStatus {
+                    label: "CPU".to_string(),
+                    temperature: Some(65.0),
+                },
+                SensorStatus {
+                    label: "Unknown".to_string(),
+                    temperature: None,
+                },
+            ],
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![],
+            battery: None,
+        };
+        let output = format!("{status}");
+        assert!(output.contains("Sensors:"), "should contain Sensors section");
+        assert!(output.contains("CPU: 65.0"), "should show temperature for CPU sensor");
+        assert!(output.contains("Unknown: N/A"), "should show N/A for sensor with None temperature");
+    }
+
+    // ── Critical edge case tests ───────────────────────────────────────
+
+    #[test]
+    fn memory_percentage_zero_total_does_not_panic() {
+        // Display should not panic when all memory/disk values are zero.
+        let status = SystemStatus {
+            cpu_usage: None,
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            disk: DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                is_removable: false,
+            },
+            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            load_average: None,
+            uptime_secs: None,
+            hostname: "test".to_string(),
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: "x86_64".to_string(),
+            },
+            cpu_cores: vec![],
+            physical_cores: None,
+            swap: None,
+            disks: vec![],
+            network_interfaces: vec![],
+            sensors: vec![],
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![],
+            battery: None,
+        };
+        // Should not panic when displaying
+        let _ = format!("{}", status);
+    }
+
+    #[test]
+    fn display_with_gpu_and_battery() {
+        let status = SystemStatus {
+            cpu_usage: Some(50.0),
+            memory: MemoryStatus {
+                used_bytes: 8 * 1024 * 1024 * 1024,
+                total_bytes: 16 * 1024 * 1024 * 1024,
+                percentage: 50.0,
+            },
+            disk: DiskStatus {
+                name: "disk".to_string(),
+                mount_point: "/".to_string(),
+                filesystem: "apfs".to_string(),
+                used_bytes: 100,
+                total_bytes: 200,
+                percentage: 50.0,
+                is_removable: false,
+            },
+            network: NetworkStatus { bytes_received: 100, bytes_transmitted: 50 },
+            load_average: None,
+            uptime_secs: Some(3600),
+            hostname: "test".to_string(),
+            os_info: OsInfo {
+                name: Some("macOS".to_string()),
+                version: Some("14.0".to_string()),
+                kernel_version: Some("23.0".to_string()),
+                arch: "aarch64".to_string(),
+            },
+            cpu_cores: vec![],
+            physical_cores: Some(8),
+            swap: None,
+            disks: vec![],
+            network_interfaces: vec![],
+            sensors: vec![],
+            boot_time: None,
+            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            gpu: vec![GpuInfo {
+                name: "Apple M1".to_string(),
+                vendor: "Apple".to_string(),
+                vram_bytes: Some(8 * 1024 * 1024 * 1024),
+                driver_version: None,
+            }],
+            battery: Some(BatteryInfo {
+                charge_percent: 85.0,
+                state: "Charging".to_string(),
+                time_to_empty_secs: None,
+                time_to_full_secs: Some(3600),
+            }),
+        };
+        let output = format!("{}", status);
+        assert!(output.contains("GPU 0: Apple M1 (Apple)"));
+        assert!(output.contains("Battery: 85% (Charging)"));
     }
 }

@@ -4,6 +4,39 @@
 //! `fs::symlink_metadata`, and shells out to `ssh -G` for config
 //! parsing. Key counting uses `ssh-add -l`.
 //!
+//! # SSH configuration requirements
+//!
+//! For full functionality, the following should be configured:
+//!
+//! ## Required binaries
+//!
+//! - `ssh` - Must be on `PATH` for mux master and config checks.
+//! - `ssh-add` - Must be on `PATH` for agent and key counting.
+//!
+//! ## Control path setup
+//!
+//! Configure SSH multiplexing in `~/.ssh/config`:
+//!
+//! ```text
+//! Host *
+//!   ControlMaster auto
+//!   ControlPath ~/.ssh/controlmasters/%r@%h-%p
+//!   ControlPersist 10m
+//! ```
+//!
+//! The control path directory (`~/.ssh/controlmasters/`) must exist.
+//!
+//! ## SSH agent
+//!
+//! The agent is detected via the `SSH_AUTH_SOCK` environment variable.
+//! On macOS, the agent is typically started automatically. On Linux,
+//! you may need to start it manually:
+//!
+//! ```sh
+//! eval "$(ssh-agent -s)"
+//! ssh-add
+//! ```
+//!
 //! # Control path validation
 //!
 //! The control path must satisfy **all** of:
@@ -11,7 +44,35 @@
 //! 1. Exist and be a Unix socket (or named pipe on Windows).
 //! 2. Have permissions `0600` (owner read/write only).
 //! 3. Be connectable (non-blocking `UnixStream::connect`).
-//! 4. Have a valid, non-expired `CtlTimeMs` (if the mux supports it).
+//!
+//! # Platform behavior
+//!
+//! | Feature           | Linux  | macOS  | Windows      |
+//! |-------------------|:------:|:------:|:------------:|
+//! | Mux master check  | Yes    | Yes    | Yes (if ssh) |
+//! | Control path      | Yes    | Yes    | Exists only  |
+//! | Config validation | Yes    | Yes    | Yes (if ssh) |
+//! | Agent check       | Yes    | Yes    | Env var only |
+//! | Key counting      | Yes    | Yes    | Yes (if ssh) |
+//!
+//! # Timeouts
+//!
+//! All SSH subprocess calls use a 5-second timeout. If a command does
+//! not complete within this window, it is killed and the check returns
+//! `false` (or `0` for key counting).
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use toride::status::ssh::SshStatus;
+//!
+//! let status = SshStatus::collect();
+//! println!("Mux master: {}", if status.mux_master_alive { "alive" } else { "dead" });
+//! println!("Control path: {}", if status.control_path_valid { "valid" } else { "invalid" });
+//! println!("Config: {}", if status.config_valid { "ok" } else { "error" });
+//! println!("Agent: {}", if status.agent_running { "running" } else { "stopped" });
+//! println!("Keys loaded: {}", status.key_count);
+//! ```
 
 use std::fmt;
 use std::fs;
@@ -47,6 +108,7 @@ fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process
 
 /// SSH subsystem status snapshot.
 #[derive(Debug, Clone, Copy, Serialize)]
+#[allow(clippy::struct_excessive_bools)] // SSH status flags are inherently boolean
 pub struct SshStatus {
     /// Whether the SSH mux master is alive.
     pub mux_master_alive: bool,
@@ -86,7 +148,27 @@ impl SshStatus {
     /// Collect SSH subsystem status with explicit paths.
     ///
     /// This is the testable entry point — all subprocess and filesystem
-    /// interaction is confined to the paths passed here.
+    /// interaction is confined to the paths passed here. Use this method
+    /// when you need to check SSH status with custom control path or
+    /// config paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `control_path` - Path to the SSH control master socket (may contain
+    ///   `%r@%h-%p` tokens if using SSH multiplexing).
+    /// * `config_path` - Path to the SSH config file to validate.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    /// use toride::status::ssh::SshStatus;
+    ///
+    /// let status = SshStatus::collect_with_paths(
+    ///     Path::new("~/.ssh/controlmasters/%r@%h-%p"),
+    ///     Path::new("~/.ssh/config"),
+    /// );
+    /// ```
     #[must_use]
     pub fn collect_with_paths(control_path: &Path, config_path: &Path) -> Self {
         let control_path_valid = validate_control_path(control_path);
@@ -180,8 +262,7 @@ fn check_mux_master(control_path: &Path) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     run_with_timeout(&mut cmd, SSH_TIMEOUT)
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_some_and(|s| s.success())
 }
 
 /// Check if the SSH config parses without errors.
@@ -198,8 +279,7 @@ fn check_config(config_path: &Path) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     run_with_timeout(&mut cmd, SSH_TIMEOUT)
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_some_and(|s| s.success())
 }
 
 /// Check if the SSH agent is running by verifying `SSH_AUTH_SOCK` exists and

@@ -6,6 +6,70 @@
 //!
 //! The companion type alias [`StatusResult<T>`] is provided for convenience
 //! throughout the status subsystem.
+//!
+//! # Error handling examples
+//!
+//! Using the `?` operator with I/O errors:
+//!
+//! ```
+//! use toride::status::error::{StatusError, StatusResult};
+//!
+//! fn read_pid_file(path: &str) -> StatusResult<u32> {
+//!     let content = std::fs::read_to_string(path)?;
+//!     content.trim().parse::<u32>().map_err(|e| {
+//!         StatusError::ParseError(format!("invalid PID: {e}"))
+//!     })
+//! }
+//! ```
+//!
+//! Matching on specific error variants:
+//!
+//! ```
+//! use toride::status::error::StatusError;
+//!
+//! fn handle_error(err: StatusError) {
+//!     match err {
+//!         StatusError::PermissionDenied(path) => {
+//!             eprintln!("Cannot access {path}: permission denied");
+//!         }
+//!         StatusError::CommandNotFound(cmd) => {
+//!             eprintln!("Install {cmd} or add it to PATH");
+//!         }
+//!         StatusError::CommandFailed { command, code, stderr } => {
+//!             eprintln!("{command} exited {code}: {stderr}");
+//!         }
+//!         StatusError::CommandTimeout(cmd) => {
+//!             eprintln!("{cmd} timed out");
+//!         }
+//!         StatusError::ParseError(msg) => {
+//!             eprintln!("Parse error: {msg}");
+//!         }
+//!         StatusError::Io(e) => {
+//!             eprintln!("I/O error: {e}");
+//!         }
+//!         StatusError::Unsupported(platform) => {
+//!             eprintln!("Not supported on {platform}");
+//!         }
+//!         StatusError::DataUnavailable(msg) => {
+//!             eprintln!("Data unavailable: {msg}");
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! Collecting results into a vector:
+//!
+//! ```
+//! use toride::status::error::{StatusError, StatusResult};
+//!
+//! fn collect_metrics() -> Vec<StatusResult<String>> {
+//!     vec![
+//!         Ok("cpu: 45%".into()),
+//!         Err(StatusError::DataUnavailable("swap not configured".into())),
+//!         Ok("memory: 8GB".into()),
+//!     ]
+//! }
+//! ```
 
 /// Unified error type for status-collection operations.
 ///
@@ -149,6 +213,12 @@ mod tests {
     fn parse_error_display() {
         let err = StatusError::ParseError("unexpected cpu line".into());
         assert_eq!(err.to_string(), "parse error: unexpected cpu line");
+    }
+
+    #[test]
+    fn data_unavailable_display() {
+        let err = StatusError::DataUnavailable("hostname".into());
+        assert_eq!(err.to_string(), "data unavailable: hostname");
     }
 
     #[test]

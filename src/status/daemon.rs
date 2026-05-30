@@ -3,11 +3,49 @@
 //! Reads PID files, checks `/proc` (Linux) or `kill -0` (macOS/Windows),
 //! parses restart-count files, and detects stale Unix sockets.
 //!
+//! # PID file format
+//!
+//! The PID file must contain **only** an ASCII decimal integer, optionally
+//! followed by a newline. Leading/trailing whitespace is trimmed. The
+//! following are rejected:
+//! - Empty files or whitespace-only content
+//! - Non-numeric content (e.g., `"not-a-number"`)
+//! - Mixed content (e.g., `"123abc"`)
+//! - PID 0 (would target the process group via `kill(0, 0)`)
+//! - PIDs greater than `i32::MAX` (would wrap to negative when cast,
+//!   causing `kill(-1, 0)` which signals all processes)
+//!
+//! # Platform behavior
+//!
+//! | Feature              | Linux         | macOS         | Windows       |
+//! |----------------------|:-------------:|:-------------:|:-------------:|
+//! | PID check            | `/proc`       | `kill -0`     | `OpenProcess` |
+//! | Process uptime       | `/proc/stat`  | `ps -o etime` | Not supported |
+//! | Stale socket detect  | `connect()`   | `connect()`   | File exists   |
+//! | Restart count        | File-based    | File-based    | File-based    |
+//!
 //! # Stale socket detection
 //!
 //! On Unix platforms, [`DaemonStatus::collect`] attempts to connect to the
 //! daemon's Unix socket. If the connection is refused or times out, the
 //! socket is flagged as stale so the caller can clean it up.
+//!
+//! # Examples
+//!
+//! ```no_run
+//! use toride::status::daemon::DaemonStatus;
+//!
+//! let status = DaemonStatus::collect();
+//! if status.alive {
+//!     println!("Daemon is alive (PID {:?})", status.pid);
+//!     println!("Uptime: {:?} seconds", status.uptime_secs);
+//! } else {
+//!     println!("Daemon is not running");
+//!     if status.stale_socket {
+//!         println!("Stale socket detected - cleanup recommended");
+//!     }
+//! }
+//! ```
 
 use std::fmt;
 use std::fs;
@@ -59,7 +97,28 @@ impl DaemonStatus {
     /// Collect daemon status with explicit paths.
     ///
     /// This is the testable entry point — all filesystem interaction is
-    /// confined to the paths passed here.
+    /// confined to the paths passed here. Use this method when you need
+    /// to check daemon status with custom PID file, socket, or restart
+    /// count paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `pid_path` - Path to the PID file containing the daemon's process ID.
+    /// * `socket_path` - Path to the Unix socket for connectivity testing.
+    /// * `restart_count_path` - Path to the restart count file.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use toride::status::daemon::DaemonStatus;
+    ///
+    /// let status = DaemonStatus::collect_with_paths(
+    ///     Path::new("/var/run/myapp.pid"),
+    ///     Path::new("/tmp/myapp.sock"),
+    ///     Path::new("/tmp/restart_count"),
+    /// );
+    /// ```
     pub fn collect_with_paths(
         pid_path: &Path,
         socket_path: &Path,
@@ -600,5 +659,180 @@ mod tests {
                 "dropped listener socket should be stale"
             );
         }
+    }
+
+    // ============================================================
+    // read_pid_file edge cases
+    // ============================================================
+
+    #[test]
+    fn read_pid_file_rejects_only_tabs_and_newlines() {
+        let dir = setup_test_dir(Some("\t\n\t\n  \t\n"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
+    }
+
+    #[test]
+    fn read_pid_file_parses_leading_zeros() {
+        // "007" should parse as 7 — leading zeros are valid decimal.
+        let dir = setup_test_dir(Some("007"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(7));
+    }
+
+    #[test]
+    fn read_pid_file_rejects_u32_max_value() {
+        // u32::MAX (4294967295) is above i32::MAX and must be rejected.
+        let dir = setup_test_dir(Some("4294967295"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
+    }
+
+    #[test]
+    fn read_pid_file_rejects_unicode_content() {
+        let dir = setup_test_dir(Some("PID: \u{03c0}"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
+    }
+
+    #[test]
+    fn read_pid_file_rejects_null_bytes() {
+        let dir = setup_test_dir(Some("123\0"), None);
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
+    }
+
+    // ============================================================
+    // read_restart_count edge cases
+    // ============================================================
+
+    #[test]
+    fn read_restart_count_parses_zero() {
+        let dir = setup_test_dir(None, Some("0"));
+        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 0);
+    }
+
+    #[test]
+    fn read_restart_count_returns_zero_for_negative_number() {
+        // "-1" fails u64 parsing, so we get the default 0.
+        let dir = setup_test_dir(None, Some("-1"));
+        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 0);
+    }
+
+    #[test]
+    fn read_restart_count_returns_zero_for_floating_point() {
+        // "3.14" fails u64 parsing, so we get the default 0.
+        let dir = setup_test_dir(None, Some("3.14"));
+        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 0);
+    }
+
+    #[test]
+    fn read_restart_count_clamps_very_large_u64_value() {
+        // A value much larger than u32::MAX should clamp to u32::MAX.
+        let dir = setup_test_dir(None, Some("18446744073709551615"));
+        assert_eq!(
+            read_restart_count(&dir.path().join("restart_count")),
+            u32::MAX
+        );
+    }
+
+    // ============================================================
+    // parse_elapsed_time edge cases
+    // ============================================================
+
+    #[test]
+    fn parse_elapsed_time_rejects_single_digit_seconds() {
+        // "5" has no colon separator, so it must be rejected.
+        assert_eq!(parse_elapsed_time("5"), None);
+    }
+
+    #[test]
+    fn parse_elapsed_time_rejects_multiple_dashes() {
+        // "1-2-03:04:05" — split_once('-') yields day="1", rest="2-03:04:05"
+        // which then fails to parse as HH:MM:SS.
+        assert_eq!(parse_elapsed_time("1-2-03:04:05"), None);
+    }
+
+    #[test]
+    fn parse_elapsed_time_handles_large_day_count() {
+        // 365 days = 31536000 seconds, well within u64 range.
+        assert_eq!(parse_elapsed_time("365-00:00:00"), Some(31_536_000));
+    }
+
+    #[test]
+    fn parse_elapsed_time_rejects_empty_parts_double_colon() {
+        // "::" produces empty strings that fail u64 parsing.
+        assert_eq!(parse_elapsed_time("::"), None);
+    }
+
+    #[test]
+    fn parse_elapsed_time_parses_leading_zeros() {
+        // "01:02:03" = 1h 2m 3s = 3723 seconds.
+        assert_eq!(parse_elapsed_time("01:02:03"), Some(3723));
+    }
+
+    // ============================================================
+    // Display edge cases
+    // ============================================================
+
+    #[test]
+    fn display_with_all_fields_at_zero_or_none() {
+        let status = DaemonStatus {
+            alive: false,
+            pid: None,
+            uptime_secs: None,
+            restart_count: 0,
+            stale_socket: false,
+        };
+        let output = format!("{status}");
+        assert!(output.contains("Alive: no"));
+        assert!(output.contains("Restarts: 0"));
+        assert!(output.contains("Socket: ok"));
+        // PID and Uptime lines should be absent when None.
+        assert!(!output.contains("PID:"));
+        assert!(!output.contains("Uptime:"));
+    }
+
+    #[test]
+    fn display_with_very_large_uptime() {
+        let status = DaemonStatus {
+            alive: true,
+            pid: Some(1),
+            uptime_secs: Some(u64::MAX),
+            restart_count: 0,
+            stale_socket: false,
+        };
+        let output = format!("{status}");
+        assert!(output.contains(&format!("Uptime: {}s", u64::MAX)));
+    }
+
+    // ============================================================
+    // collect_with_paths edge cases
+    // ============================================================
+
+    #[test]
+    fn collect_with_paths_in_nonexistent_directories() {
+        // All paths point into directories that don't exist.
+        let status = DaemonStatus::collect_with_paths(
+            Path::new("/nonexistent/dir/toride.pid"),
+            Path::new("/nonexistent/dir/toride.sock"),
+            Path::new("/nonexistent/dir/restart_count"),
+        );
+        assert!(!status.alive);
+        assert!(status.pid.is_none());
+        assert!(status.uptime_secs.is_none());
+        assert_eq!(status.restart_count, 0);
+        assert!(!status.stale_socket);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_with_paths_with_special_characters() {
+        let dir = TempDir::new().unwrap();
+        // Create paths with spaces and special chars in the filename.
+        let pid_path = dir.path().join("my daemon [v2].pid");
+        let sock_path = dir.path().join("my daemon [v2].sock");
+        let restart_path = dir.path().join("restart #count");
+        fs::write(&pid_path, "12345").unwrap();
+        fs::write(&restart_path, "3").unwrap();
+
+        let status = DaemonStatus::collect_with_paths(&pid_path, &sock_path, &restart_path);
+        assert_eq!(status.pid, Some(12345));
+        assert_eq!(status.restart_count, 3);
     }
 }
