@@ -11,6 +11,8 @@
 //! ```
 
 pub mod daemon;
+pub mod doctor;
+pub mod error;
 pub mod ssh;
 pub mod system;
 
@@ -19,6 +21,8 @@ use std::fmt;
 use serde::Serialize;
 
 pub use daemon::DaemonStatus;
+pub use doctor::{CheckStatus, DoctorCheck, DoctorReport};
+pub use error::{StatusError, StatusResult};
 pub use ssh::SshStatus;
 pub use system::SystemStatus;
 
@@ -44,6 +48,9 @@ pub struct TorideStatus {
     pub daemon: DaemonStatus,
     /// SSH subsystem health (mux master, control path, agent, keys).
     pub ssh: SshStatus,
+    /// Non-fatal warnings collected during status gathering.
+    #[serde(skip)]
+    pub warnings: Vec<StatusError>,
 }
 
 impl TorideStatus {
@@ -61,11 +68,17 @@ impl TorideStatus {
     /// println!("{}", status.system.hostname);
     /// ```
     pub fn collect() -> Self {
-        Self {
-            system: SystemStatus::collect(),
-            daemon: DaemonStatus::collect(),
-            ssh: SshStatus::collect(),
+        let system = SystemStatus::collect();
+        let daemon = DaemonStatus::collect();
+        let ssh = SshStatus::collect();
+        let mut warnings = Vec::new();
+        if system.hostname.is_empty() {
+            warnings.push(StatusError::Unsupported("hostname unavailable".to_string()));
         }
+        if system.memory.total_bytes == 0 {
+            warnings.push(StatusError::Unsupported("memory info unavailable".to_string()));
+        }
+        Self { system, daemon, ssh, warnings }
     }
 }
 
@@ -75,6 +88,12 @@ impl fmt::Display for TorideStatus {
         write!(f, "{}", self.system)?;
         write!(f, "{}", self.daemon)?;
         write!(f, "{}", self.ssh)?;
+        if !self.warnings.is_empty() {
+            writeln!(f, "Warnings:")?;
+            for w in &self.warnings {
+                writeln!(f, "  \u{26a0} {}", w)?;
+            }
+        }
         Ok(())
     }
 }
@@ -101,6 +120,9 @@ mod tests {
         assert!(output.contains("System:"));
         assert!(output.contains("Daemon:"));
         assert!(output.contains("SSH:"));
+        if !status.warnings.is_empty() {
+            assert!(output.contains("Warnings:"));
+        }
     }
 
     #[test]
@@ -108,5 +130,102 @@ mod tests {
         let status = TorideStatus::collect();
         let json = serde_json::to_string(&status);
         assert!(json.is_ok(), "serialization should succeed: {:?}", json.err());
+    }
+
+    #[test]
+    fn snapshot_toride_status_display() {
+        use crate::status::system::{
+            CpuCore, DiskStatus, LoadAverage, MemoryStatus, NetworkInterface, NetworkStatus,
+            OsInfo, SensorStatus, SwapStatus,
+        };
+        let status = TorideStatus {
+            system: SystemStatus {
+                cpu_usage: Some(42.5),
+                memory: MemoryStatus {
+                    used_bytes: 8 * 1024 * 1024 * 1024,
+                    total_bytes: 16 * 1024 * 1024 * 1024,
+                    percentage: 50.0,
+                },
+                disk: DiskStatus {
+                    name: "Macintosh HD".to_string(),
+                    mount_point: "/".to_string(),
+                    filesystem: "apfs".to_string(),
+                    used_bytes: 500 * 1024 * 1024 * 1024,
+                    total_bytes: 1024 * 1024 * 1024 * 1024,
+                    percentage: 50.0,
+                    is_removable: false,
+                },
+                network: NetworkStatus {
+                    bytes_received: 100 * 1024 * 1024 * 1024,
+                    bytes_transmitted: 50 * 1024 * 1024 * 1024,
+                },
+                load_average: Some(LoadAverage {
+                    one: 2.50,
+                    five: 3.00,
+                    fifteen: 3.50,
+                }),
+                uptime_secs: Some(90061),
+                hostname: "test-host".to_string(),
+                os_info: OsInfo {
+                    name: Some("macOS".to_string()),
+                    version: Some("15.0".to_string()),
+                    kernel_version: Some("24.0.0".to_string()),
+                    arch: "aarch64".to_string(),
+                },
+                cpu_cores: vec![
+                    CpuCore {
+                        name: "cpu0".to_string(),
+                        usage: 45.0,
+                        frequency: 3200,
+                    },
+                    CpuCore {
+                        name: "cpu1".to_string(),
+                        usage: 40.0,
+                        frequency: 3200,
+                    },
+                ],
+                physical_cores: Some(8),
+                swap: Some(SwapStatus {
+                    used_bytes: 512 * 1024 * 1024,
+                    total_bytes: 2 * 1024 * 1024 * 1024,
+                    percentage: 25.0,
+                }),
+                disks: vec![],
+                network_interfaces: vec![
+                    NetworkInterface {
+                        name: "en0".to_string(),
+                        bytes_received: 60 * 1024 * 1024 * 1024,
+                        bytes_transmitted: 30 * 1024 * 1024 * 1024,
+                        packets_received: 1000000,
+                        packets_transmitted: 500000,
+                        errors_received: 0,
+                        errors_transmitted: 0,
+                    },
+                ],
+                sensors: vec![
+                    SensorStatus {
+                        label: "CPU".to_string(),
+                        temperature: Some(55.5),
+                    },
+                ],
+                boot_time: Some(1700000000),
+            },
+            daemon: DaemonStatus {
+                alive: true,
+                pid: Some(54321),
+                uptime_secs: Some(86400),
+                restart_count: 2,
+                stale_socket: false,
+            },
+            ssh: SshStatus {
+                mux_master_alive: true,
+                control_path_valid: true,
+                config_valid: true,
+                agent_running: true,
+                key_count: 3,
+            },
+            warnings: vec![],
+        };
+        insta::assert_snapshot!("toride_status_display", format!("{}", status));
     }
 }

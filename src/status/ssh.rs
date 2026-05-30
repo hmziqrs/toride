@@ -17,8 +17,33 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde::Serialize;
+
+/// Default timeout for SSH subprocess calls.
+const SSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Run a command with a timeout. Returns the exit status, or None if timed out.
+fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::ExitStatus> {
+    let mut child = cmd.spawn().ok()?;
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    child.kill().ok();
+                    // Reap the zombie
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
 
 /// SSH subsystem status snapshot.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -144,15 +169,15 @@ fn check_socket_connectable(path: &Path) -> bool {
 ///
 /// Returns `true` if the command exits with status 0.
 fn check_mux_master(control_path: &Path) -> bool {
-    Command::new("ssh")
-        .arg("-O")
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-O")
         .arg("check")
         .arg("-S")
         .arg(control_path)
         .arg("dummy")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::null());
+    run_with_timeout(&mut cmd, SSH_TIMEOUT)
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -162,14 +187,14 @@ fn check_mux_master(control_path: &Path) -> bool {
 /// Runs `ssh -G -F <config> localhost` and checks the exit status.
 /// A hostname argument is required by `ssh -G`; without it, ssh exits 255.
 fn check_config(config_path: &Path) -> bool {
-    Command::new("ssh")
-        .arg("-G")
+    let mut cmd = Command::new("ssh");
+    cmd.arg("-G")
         .arg("-F")
         .arg(config_path)
         .arg("localhost")
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
+        .stderr(std::process::Stdio::null());
+    run_with_timeout(&mut cmd, SSH_TIMEOUT)
         .map(|s| s.success())
         .unwrap_or(false)
 }
@@ -201,19 +226,36 @@ fn check_agent() -> bool {
 /// Runs `ssh-add -l` and counts the number of lines in the output.
 /// Returns 0 if the agent is not running or has no keys.
 fn count_keys() -> u32 {
-    let output = Command::new("ssh-add")
-        .arg("-l")
+    let mut cmd = Command::new("ssh-add");
+    cmd.arg("-l")
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .output();
-
-    match output {
-        Ok(o) if o.status.success() => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Each key is one line. Count non-empty lines.
-            stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32
+        .stderr(std::process::Stdio::null());
+    let Ok(mut child) = cmd.spawn() else {
+        return 0;
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return 0;
+                }
+                let Ok(output) = child.wait_with_output() else {
+                    return 0;
+                };
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                return stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32;
+            }
+            Ok(None) => {
+                if start.elapsed() > SSH_TIMEOUT {
+                    child.kill().ok();
+                    let _ = child.wait();
+                    return 0;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(_) => return 0,
         }
-        _ => 0,
     }
 }
 
@@ -429,5 +471,17 @@ mod tests {
         // 0o640 != 0o600, so permission check should reject it.
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
         assert!(!validate_control_path(&path));
+    }
+
+    #[test]
+    fn snapshot_ssh_status_display() {
+        let status = SshStatus {
+            mux_master_alive: true,
+            control_path_valid: true,
+            config_valid: true,
+            agent_running: true,
+            key_count: 3,
+        };
+        insta::assert_snapshot!("ssh_status_display", format!("{}", status));
     }
 }

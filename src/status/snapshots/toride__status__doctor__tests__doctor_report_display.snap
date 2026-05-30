@@ -1,0 +1,17 @@
+---
+source: src/status/doctor.rs
+expression: "format!(\"{}\", report)"
+---
+=== Doctor Report ===
+  ✓ system.hostname: hostname: test-host
+  ✓ system.cpu: CPU usage: 42.5%
+  ✓ system.memory: memory: 8000000000 used / 16000000000 total
+  ⚠ system.disks: 0 disk(s) found
+  ✓ system.os_info: OS: macOS 15.0
+  ✓ daemon.alive: daemon alive (PID Some(54321))
+  ✓ daemon.socket: socket ok
+  ✓ ssh.binary: ssh found
+  ✓ ssh.agent_binary: ssh-add found
+  ✓ ssh.config: config valid
+  ✓ ssh.agent: agent running (3 key(s))
+--- 10 passed, 1 warnings, 0 failures

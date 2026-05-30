@@ -19,7 +19,7 @@
 use std::fmt;
 
 use serde::Serialize;
-use sysinfo::{CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
+use sysinfo::{Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
 
 /// OS-level system metrics snapshot.
 ///
@@ -41,6 +41,22 @@ pub struct SystemStatus {
     pub uptime_secs: Option<u64>,
     /// System hostname.
     pub hostname: String,
+    /// Operating system information.
+    pub os_info: OsInfo,
+    /// Per-core CPU information.
+    pub cpu_cores: Vec<CpuCore>,
+    /// Number of physical CPU cores.
+    pub physical_cores: Option<usize>,
+    /// Swap usage.
+    pub swap: Option<SwapStatus>,
+    /// All disk partitions.
+    pub disks: Vec<DiskStatus>,
+    /// Per-interface network counters.
+    pub network_interfaces: Vec<NetworkInterface>,
+    /// Temperature sensor readings.
+    pub sensors: Vec<SensorStatus>,
+    /// System boot time (seconds since Unix epoch).
+    pub boot_time: Option<u64>,
 }
 
 /// Memory usage snapshot.
@@ -54,15 +70,23 @@ pub struct MemoryStatus {
     pub percentage: f64,
 }
 
-/// Disk usage snapshot (root filesystem).
-#[derive(Debug, Clone, Copy, Serialize)]
+/// Disk usage snapshot.
+#[derive(Debug, Clone, Serialize)]
 pub struct DiskStatus {
+    /// Disk name.
+    pub name: String,
+    /// Mount point path.
+    pub mount_point: String,
+    /// Filesystem type (e.g., "ext4", "apfs").
+    pub filesystem: String,
     /// Used disk space in bytes.
     pub used_bytes: u64,
     /// Total disk space in bytes.
     pub total_bytes: u64,
     /// Usage percentage (0.0–100.0).
     pub percentage: f64,
+    /// Whether the disk is removable.
+    pub is_removable: bool,
 }
 
 /// Network I/O counters.
@@ -85,6 +109,69 @@ pub struct LoadAverage {
     pub fifteen: f64,
 }
 
+/// Operating system information.
+#[derive(Debug, Clone, Serialize)]
+pub struct OsInfo {
+    /// OS name (e.g., "macOS", "Linux", "Windows").
+    pub name: Option<String>,
+    /// OS version (e.g., "14.5").
+    pub version: Option<String>,
+    /// Kernel version string.
+    pub kernel_version: Option<String>,
+    /// CPU architecture (e.g., "x86_64", "aarch64").
+    pub arch: String,
+}
+
+/// Per-core CPU information.
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuCore {
+    /// Core identifier (e.g., "cpu0").
+    pub name: String,
+    /// Core usage percentage (0.0–100.0).
+    pub usage: f64,
+    /// Core frequency in MHz.
+    pub frequency: u64,
+}
+
+/// Swap usage snapshot.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct SwapStatus {
+    /// Used swap in bytes.
+    pub used_bytes: u64,
+    /// Total swap in bytes.
+    pub total_bytes: u64,
+    /// Usage percentage (0.0–100.0).
+    pub percentage: f64,
+}
+
+/// Per-interface network counters.
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkInterface {
+    /// Interface name (e.g., "en0", "eth0").
+    pub name: String,
+    /// Total bytes received.
+    pub bytes_received: u64,
+    /// Total bytes transmitted.
+    pub bytes_transmitted: u64,
+    /// Total packets received.
+    pub packets_received: u64,
+    /// Total packets transmitted.
+    pub packets_transmitted: u64,
+    /// Receive errors.
+    pub errors_received: u64,
+    /// Transmit errors.
+    pub errors_transmitted: u64,
+}
+
+/// Temperature sensor reading.
+#[derive(Debug, Clone, Serialize)]
+pub struct SensorStatus {
+    /// Sensor label (e.g., "CPU", "GPU").
+    pub label: String,
+    /// Temperature in Celsius, if available.
+    pub temperature: Option<f32>,
+}
+
 impl SystemStatus {
     /// Collect a point-in-time snapshot of OS metrics.
     ///
@@ -105,7 +192,7 @@ impl SystemStatus {
         let mut sys = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-                .with_memory(MemoryRefreshKind::nothing().with_ram()),
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
         );
         // sysinfo requires a brief sleep to measure CPU usage accurately.
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
@@ -113,11 +200,22 @@ impl SystemStatus {
 
         let cpu_usage = Self::read_cpu(&sys);
         let memory = Self::read_memory(&sys);
-        let disk = Self::read_disk();
+        let disks = Self::read_disks();
+        let disk = Self::find_root_disk(&disks);
         let network = Self::read_network();
         let load_average = Self::read_load_average();
         let uptime_secs = Self::read_uptime();
         let hostname = Self::read_hostname();
+        let os_info = Self::read_os_info();
+        let cpu_cores = Self::read_cpu_cores(&sys);
+        let physical_cores = System::physical_core_count();
+        let swap = Self::read_swap(&sys);
+        let network_interfaces = Self::read_network_interfaces();
+        let sensors = Self::read_sensors();
+        let boot_time = {
+            let bt = System::boot_time();
+            if bt > 0 { Some(bt) } else { None }
+        };
 
         Self {
             cpu_usage,
@@ -127,6 +225,14 @@ impl SystemStatus {
             load_average,
             uptime_secs,
             hostname,
+            os_info,
+            cpu_cores,
+            physical_cores,
+            swap,
+            disks,
+            network_interfaces,
+            sensors,
+            boot_time,
         }
     }
 
@@ -154,33 +260,21 @@ impl SystemStatus {
         }
     }
 
-    fn read_disk() -> DiskStatus {
-        let disks = Disks::new_with_refreshed_list();
-        // Use the root filesystem (first disk on macOS, "/" mount on Linux).
+    fn find_root_disk(disks: &[DiskStatus]) -> DiskStatus {
         let root = std::path::Path::new("/");
-        let disk = disks.iter().find(|d| d.mount_point() == root);
-        match disk {
-            Some(d) => {
-                let total = d.total_space();
-                let available = d.available_space();
-                let used = total.saturating_sub(available);
-                let percentage = if total > 0 {
-                    (used as f64 / total as f64) * 100.0
-                } else {
-                    0.0
-                };
-                DiskStatus {
-                    used_bytes: used,
-                    total_bytes: total,
-                    percentage,
-                }
-            }
-            None => DiskStatus {
+        disks
+            .iter()
+            .find(|d| std::path::Path::new(&d.mount_point) == root)
+            .cloned()
+            .unwrap_or(DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
                 used_bytes: 0,
                 total_bytes: 0,
                 percentage: 0.0,
-            },
-        }
+                is_removable: false,
+            })
     }
 
     fn read_network() -> NetworkStatus {
@@ -223,6 +317,96 @@ impl SystemStatus {
     fn read_hostname() -> String {
         System::host_name().unwrap_or_default()
     }
+
+    fn read_os_info() -> OsInfo {
+        OsInfo {
+            name: System::name(),
+            version: System::os_version(),
+            kernel_version: System::kernel_version(),
+            arch: std::env::consts::ARCH.to_string(),
+        }
+    }
+
+    fn read_cpu_cores(sys: &System) -> Vec<CpuCore> {
+        sys.cpus()
+            .iter()
+            .map(|c| CpuCore {
+                name: c.name().to_string(),
+                usage: c.cpu_usage() as f64,
+                frequency: c.frequency(),
+            })
+            .collect()
+    }
+
+    fn read_swap(sys: &System) -> Option<SwapStatus> {
+        let total = sys.total_swap();
+        if total == 0 {
+            return None;
+        }
+        let used = sys.used_swap();
+        let percentage = (used as f64 / total as f64) * 100.0;
+        Some(SwapStatus {
+            used_bytes: used,
+            total_bytes: total,
+            percentage,
+        })
+    }
+
+    fn read_disks() -> Vec<DiskStatus> {
+        let disks = Disks::new_with_refreshed_list();
+        disks
+            .iter()
+            .map(|d| {
+                let total = d.total_space();
+                let available = d.available_space();
+                let used = total.saturating_sub(available);
+                let percentage = if total > 0 {
+                    (used as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                DiskStatus {
+                    name: d.name().to_string_lossy().to_string(),
+                    mount_point: d.mount_point().to_string_lossy().to_string(),
+                    filesystem: d.file_system().to_string_lossy().to_string(),
+                    used_bytes: used,
+                    total_bytes: total,
+                    percentage,
+                    is_removable: d.is_removable(),
+                }
+            })
+            .collect()
+    }
+
+    fn read_network_interfaces() -> Vec<NetworkInterface> {
+        let networks = Networks::new_with_refreshed_list();
+        networks
+            .iter()
+            .map(|(name, data)| NetworkInterface {
+                name: name.clone(),
+                bytes_received: data.total_received(),
+                bytes_transmitted: data.total_transmitted(),
+                packets_received: data.total_packets_received(),
+                packets_transmitted: data.total_packets_transmitted(),
+                errors_received: data.errors_on_received(),
+                errors_transmitted: data.errors_on_transmitted(),
+            })
+            .collect()
+    }
+
+    fn read_sensors() -> Vec<SensorStatus> {
+        let components = Components::new_with_refreshed_list();
+        components
+            .iter()
+            .map(|c| SensorStatus {
+                label: c.label().to_string(),
+                temperature: {
+                    let t = c.temperature();
+                    if t.is_some() && !t.unwrap().is_nan() { t } else { None }
+                },
+            })
+            .collect()
+    }
 }
 
 impl fmt::Display for SystemStatus {
@@ -230,10 +414,34 @@ impl fmt::Display for SystemStatus {
         writeln!(f, "System:")?;
         writeln!(f, "  Hostname: {}", self.hostname)?;
 
+        // OS info
+        {
+            let name = self.os_info.name.as_deref().unwrap_or("Unknown");
+            let version = self.os_info.version.as_deref().unwrap_or("unknown");
+            let kernel = self.os_info.kernel_version.as_deref().unwrap_or("unknown");
+            writeln!(
+                f,
+                "  OS: {name} {version} (kernel {kernel}) {}",
+                self.os_info.arch
+            )?;
+        }
+
         if let Some(cpu) = self.cpu_usage {
             writeln!(f, "  CPU: {cpu:.1}%")?;
         } else {
             writeln!(f, "  CPU: N/A")?;
+        }
+
+        if let Some(cores) = self.physical_cores {
+            writeln!(f, "  Physical cores: {cores}")?;
+        }
+
+        // Per-core CPU
+        if !self.cpu_cores.is_empty() {
+            writeln!(f, "  CPU cores:")?;
+            for core in &self.cpu_cores {
+                writeln!(f, "    {}: {:.1}% ({} MHz)", core.name, core.usage, core.frequency)?;
+            }
         }
 
         write!(f, "  Memory: ")?;
@@ -242,17 +450,50 @@ impl fmt::Display for SystemStatus {
         write_bytes(f, self.memory.total_bytes)?;
         writeln!(f, " ({:.1}%)", self.memory.percentage)?;
 
+        // Swap
+        if let Some(swap) = &self.swap {
+            write!(f, "  Swap: ")?;
+            write_bytes(f, swap.used_bytes)?;
+            write!(f, " / ")?;
+            write_bytes(f, swap.total_bytes)?;
+            writeln!(f, " ({:.1}%)", swap.percentage)?;
+        }
+
         write!(f, "  Disk: ")?;
         write_bytes(f, self.disk.used_bytes)?;
         write!(f, " / ")?;
         write_bytes(f, self.disk.total_bytes)?;
         writeln!(f, " ({:.1}%)", self.disk.percentage)?;
 
+        // All disks
+        if self.disks.len() > 1 {
+            writeln!(f, "  Disks:")?;
+            for disk in &self.disks {
+                write!(f, "    {} ({}) [{}]: ", disk.mount_point, disk.name, disk.filesystem)?;
+                write_bytes(f, disk.used_bytes)?;
+                write!(f, " / ")?;
+                write_bytes(f, disk.total_bytes)?;
+                writeln!(f, " ({:.1}%)", disk.percentage)?;
+            }
+        }
+
         write!(f, "  Network: ")?;
         write_bytes(f, self.network.bytes_transmitted)?;
         write!(f, " sent, ")?;
         write_bytes(f, self.network.bytes_received)?;
         writeln!(f, " received")?;
+
+        // Network interfaces
+        if !self.network_interfaces.is_empty() {
+            writeln!(f, "  Network interfaces:")?;
+            for iface in &self.network_interfaces {
+                write!(f, "    {}: ", iface.name)?;
+                write_bytes(f, iface.bytes_transmitted)?;
+                write!(f, " sent, ")?;
+                write_bytes(f, iface.bytes_received)?;
+                writeln!(f, " received")?;
+            }
+        }
 
         if let Some(load) = &self.load_average {
             writeln!(
@@ -262,10 +503,27 @@ impl fmt::Display for SystemStatus {
             )?;
         }
 
+        // Sensors
+        if !self.sensors.is_empty() {
+            writeln!(f, "  Sensors:")?;
+            for sensor in &self.sensors {
+                if let Some(temp) = sensor.temperature {
+                    writeln!(f, "    {}: {:.1}°C", sensor.label, temp)?;
+                } else {
+                    writeln!(f, "    {}: N/A", sensor.label)?;
+                }
+            }
+        }
+
         if let Some(secs) = self.uptime_secs {
             write!(f, "  Uptime: ")?;
             write_duration(f, secs)?;
             writeln!(f)?;
+        }
+
+        // Boot time
+        if let Some(bt) = self.boot_time {
+            writeln!(f, "  Boot time: {bt}")?;
         }
 
         Ok(())
@@ -597,9 +855,13 @@ mod tests {
                 percentage: 0.0,
             },
             disk: DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
                 used_bytes: 0,
                 total_bytes: 0,
                 percentage: 0.0,
+                is_removable: false,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -608,8 +870,179 @@ mod tests {
             load_average: None,
             uptime_secs: None,
             hostname: "test".to_string(),
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: "x86_64".to_string(),
+            },
+            cpu_cores: Vec::new(),
+            physical_cores: None,
+            swap: None,
+            disks: Vec::new(),
+            network_interfaces: Vec::new(),
+            sensors: Vec::new(),
+            boot_time: None,
         };
         let output = format!("{status}");
         assert!(output.contains("CPU: N/A"), "expected 'CPU: N/A' in output:\n{output}");
+    }
+
+    #[test]
+    fn os_info_fields_are_populated() {
+        let status = SystemStatus::collect();
+        assert!(status.os_info.name.is_some(), "os_info.name should be Some");
+        assert!(status.os_info.arch.is_ascii() && !status.os_info.arch.is_empty(), "arch should be non-empty");
+    }
+
+    #[test]
+    fn cpu_cores_is_non_empty() {
+        let status = SystemStatus::collect();
+        assert!(!status.cpu_cores.is_empty(), "cpu_cores should be non-empty");
+        for core in &status.cpu_cores {
+            assert!(!core.name.is_empty(), "core name should not be empty");
+            assert!((0.0..=100.0).contains(&core.usage), "core usage out of range: {}", core.usage);
+        }
+    }
+
+    #[test]
+    fn disks_is_non_empty() {
+        let status = SystemStatus::collect();
+        assert!(!status.disks.is_empty(), "disks should be non-empty");
+        for disk in &status.disks {
+            assert!(disk.used_bytes <= disk.total_bytes, "disk used > total");
+        }
+    }
+
+    #[test]
+    fn network_interfaces_is_non_empty() {
+        let status = SystemStatus::collect();
+        assert!(!status.network_interfaces.is_empty(), "network_interfaces should be non-empty");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn swap_is_some_when_available() {
+        let status = SystemStatus::collect();
+        // On most Unix systems swap is configured, but we only assert structure if present.
+        if let Some(swap) = &status.swap {
+            assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
+            assert!((0.0..=100.0).contains(&swap.percentage), "swap percentage out of range");
+        }
+    }
+
+    #[test]
+    fn physical_cores_is_some() {
+        let status = SystemStatus::collect();
+        assert!(status.physical_cores.is_some(), "physical_cores should be Some on real hardware");
+        assert!(status.physical_cores.unwrap() > 0, "physical_cores should be > 0");
+    }
+
+    #[test]
+    fn snapshot_system_status_display() {
+        let status = SystemStatus {
+            cpu_usage: Some(42.5),
+            memory: MemoryStatus {
+                used_bytes: 8 * GB,
+                total_bytes: 16 * GB,
+                percentage: 50.0,
+            },
+            disk: DiskStatus {
+                name: "Macintosh HD".to_string(),
+                mount_point: "/".to_string(),
+                filesystem: "apfs".to_string(),
+                used_bytes: 500 * GB,
+                total_bytes: TB,
+                percentage: 50.0,
+                is_removable: false,
+            },
+            network: NetworkStatus {
+                bytes_received: 100 * GB,
+                bytes_transmitted: 50 * GB,
+            },
+            load_average: Some(LoadAverage {
+                one: 2.50,
+                five: 3.00,
+                fifteen: 3.50,
+            }),
+            uptime_secs: Some(90061),
+            hostname: "test-host".to_string(),
+            os_info: OsInfo {
+                name: Some("macOS".to_string()),
+                version: Some("15.0".to_string()),
+                kernel_version: Some("24.0.0".to_string()),
+                arch: "aarch64".to_string(),
+            },
+            cpu_cores: vec![
+                CpuCore {
+                    name: "cpu0".to_string(),
+                    usage: 45.0,
+                    frequency: 3200,
+                },
+                CpuCore {
+                    name: "cpu1".to_string(),
+                    usage: 40.0,
+                    frequency: 3200,
+                },
+            ],
+            physical_cores: Some(8),
+            swap: Some(SwapStatus {
+                used_bytes: 512 * MB,
+                total_bytes: 2 * GB,
+                percentage: 25.0,
+            }),
+            disks: vec![
+                DiskStatus {
+                    name: "Macintosh HD".to_string(),
+                    mount_point: "/".to_string(),
+                    filesystem: "apfs".to_string(),
+                    used_bytes: 500 * GB,
+                    total_bytes: TB,
+                    percentage: 50.0,
+                    is_removable: false,
+                },
+                DiskStatus {
+                    name: "External".to_string(),
+                    mount_point: "/Volumes/External".to_string(),
+                    filesystem: "exfat".to_string(),
+                    used_bytes: 100 * GB,
+                    total_bytes: 500 * GB,
+                    percentage: 20.0,
+                    is_removable: true,
+                },
+            ],
+            network_interfaces: vec![
+                NetworkInterface {
+                    name: "en0".to_string(),
+                    bytes_received: 60 * GB,
+                    bytes_transmitted: 30 * GB,
+                    packets_received: 1000000,
+                    packets_transmitted: 500000,
+                    errors_received: 0,
+                    errors_transmitted: 0,
+                },
+                NetworkInterface {
+                    name: "lo0".to_string(),
+                    bytes_received: 40 * GB,
+                    bytes_transmitted: 20 * GB,
+                    packets_received: 2000000,
+                    packets_transmitted: 2000000,
+                    errors_received: 0,
+                    errors_transmitted: 0,
+                },
+            ],
+            sensors: vec![
+                SensorStatus {
+                    label: "CPU".to_string(),
+                    temperature: Some(55.5),
+                },
+                SensorStatus {
+                    label: "GPU".to_string(),
+                    temperature: Some(48.0),
+                },
+            ],
+            boot_time: Some(1700000000),
+        };
+        insta::assert_snapshot!("system_status_display", format!("{}", status));
     }
 }

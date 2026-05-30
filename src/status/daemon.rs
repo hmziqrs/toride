@@ -553,6 +553,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn snapshot_daemon_status_display() {
+        let status = DaemonStatus {
+            alive: true,
+            pid: Some(54321),
+            uptime_secs: Some(86400),
+            restart_count: 2,
+            stale_socket: false,
+        };
+        insta::assert_snapshot!("daemon_status_display", format!("{}", status));
+    }
+
     #[cfg(unix)]
     #[test]
     fn check_stale_socket_with_real_stale_socket() {
