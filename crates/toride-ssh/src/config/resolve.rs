@@ -89,7 +89,7 @@ pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<R
         // Expand tokens in the canonicalized result.
         expand_resolved(&mut canon, &canonical_host, ssh_dir);
 
-        canon.alias.clone_from(&host.to_owned());
+        host.clone_into(&mut canon.alias);
         canon.canonicalized = true;
         return Ok(canon);
     }

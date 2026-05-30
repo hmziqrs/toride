@@ -103,6 +103,14 @@ pub async fn add_to_known_hosts(
             .create(true)
             .append(true)
             .open(&path)?;
+        // Set 0644 permissions on newly created files (world-readable).
+        // SSH expects known_hosts to be readable by all users.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o644))
+                .ok(); // Ignore error if file already existed with different perms.
+        }
         file.write_all(buf.as_bytes())?;
         Ok(())
     })

@@ -124,10 +124,10 @@ impl Check for SshDirExists<'_> {
                     hint: Some("Remove the file and run `mkdir -p ~/.ssh`".into()),
                     module: "local",
                 }]),
-                Err(_) => Ok(vec![Diagnostic {
+                Err(e) => Ok(vec![Diagnostic {
                     id: "ssh_dir_exists",
                     severity: Severity::Warning,
-                    message: format!("{} does not exist", ssh_dir.display()),
+                    message: format!("{} does not exist: {e}", ssh_dir.display()),
                     hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),
                     module: "local",
                 }]),
@@ -180,11 +180,11 @@ impl Check for SshDirPermissions<'_> {
                         }])
                     }
                 }
-                Err(_) => Ok(vec![Diagnostic {
+                Err(e) => Ok(vec![Diagnostic {
                     id: "ssh_dir_permissions",
                     severity: Severity::Warning,
                     message: format!(
-                        "Cannot check permissions: {} does not exist",
+                        "Cannot check permissions: {}: {e}",
                         ssh_dir.display()
                     ),
                     hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),
@@ -559,11 +559,11 @@ impl Check for OwnerCheck<'_> {
                         }])
                     }
                 }
-                Err(_) => Ok(vec![Diagnostic {
+                Err(e) => Ok(vec![Diagnostic {
                     id: "owner_check",
                     severity: Severity::Warning,
                     message: format!(
-                        "Cannot check ownership: {} does not exist",
+                        "Cannot check ownership: {}: {e}",
                         ssh_dir.display()
                     ),
                     hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),

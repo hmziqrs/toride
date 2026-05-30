@@ -1,4 +1,4 @@
-use super::krl::parse_serials;
+use super::parse_serials;
 
 // ---------------------------------------------------------------------------
 // Workflow-discovered edge cases: KRL serial range OOM

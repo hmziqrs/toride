@@ -179,6 +179,11 @@ impl<'a> KeyService<'a> {
     /// files (`.pub`, `-cert.pub`). Does NOT update config references — call
     /// `remove_from_config` for the old name and add new `IdentityFile` entries
     /// separately.
+    ///
+    /// If the private key rename succeeds but the public key or certificate
+    /// rename fails, the operation continues with a warning. This may leave
+    /// the key pair in an inconsistent state where the private key has the
+    /// new name but the public key retains the old name.
     pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
         validate_key_name(old_name)?;
         validate_key_name(new_name)?;
@@ -268,6 +273,12 @@ impl<'a> KeyService<'a> {
     ///
     /// If `old_passphrase` is `None`, the key is assumed to be unencrypted.
     /// If `new_passphrase` is `None` or empty, the passphrase is removed.
+    ///
+    /// # Security
+    ///
+    /// Passphrases are passed as command-line arguments to `ssh-keygen`, which
+    /// makes them briefly visible to other processes via `/proc/<pid>/cmdline`
+    /// or `ps`. This is an inherent limitation of the `ssh-keygen` interface.
     pub async fn change_passphrase(
         &self,
         key_path: &std::path::Path,
@@ -432,7 +443,12 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
     let ssh_dir_str = paths
         .ssh_dir()
         .to_str()
-        .unwrap_or("~/.ssh")
+        .ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("SSH directory path is not valid UTF-8: {}", paths.ssh_dir().display()),
+            ))
+        })?
         .to_owned();
 
     tokio::task::spawn_blocking(move || {

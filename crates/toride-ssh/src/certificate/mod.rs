@@ -88,7 +88,7 @@ impl CertificateService {
             args.push("-u");
         }
         args.push("-f");
-        args.push(&krl_str);
+        args.push(krl_str);
         args.push(key);
 
         crate::runner::ssh_keygen(&args).await?;
@@ -107,25 +107,25 @@ mod tests {
         let ts = parse_ssh_datetime("20240101T000000").unwrap();
         assert!(ts > 0);
         // Should be 2024-01-01 00:00:00 UTC
-        assert_eq!(ts, 1704067200);
+        assert_eq!(ts, 1_704_067_200);
     }
 
     #[test]
     fn parse_ssh_datetime_iso() {
         let ts = parse_ssh_datetime("2024-01-01T00:00:00").unwrap();
-        assert_eq!(ts, 1704067200);
+        assert_eq!(ts, 1_704_067_200);
     }
 
     #[test]
     fn parse_ssh_datetime_space_separated() {
         let ts = parse_ssh_datetime("2024-01-01 00:00:00").unwrap();
-        assert_eq!(ts, 1704067200);
+        assert_eq!(ts, 1_704_067_200);
     }
 
     #[test]
     fn parse_ssh_datetime_date_only() {
         let ts = parse_ssh_datetime("2024-01-01").unwrap();
-        assert_eq!(ts, 1704067200);
+        assert_eq!(ts, 1_704_067_200);
     }
 
     #[test]

@@ -97,6 +97,20 @@ impl<'a> KnownHostsService<'a> {
     }
 }
 
+/// Generate a short random hex suffix for unique temp file names.
+///
+/// Uses a simple counter + timestamp mix to avoid importing a full RNG crate.
+/// Good enough for temp file uniqueness within a single process.
+fn rand_suffix() -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    std::time::Instant::now().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Synchronous helper: read the file, filter out matching entries, write back
 /// atomically via a temp file + rename.
 fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
@@ -129,10 +143,17 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         Error::KnownHostsParseFailed("known_hosts path has no parent directory".into())
     })?;
-    let tmp_path = parent.join(format!(".known_hosts.tmp.{}.{}", std::process::id(), std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()));
+    // Use PID + nanosecond timestamp + random suffix to avoid races between
+    // concurrent remove() calls within the same process.
+    let tmp_path = parent.join(format!(
+        ".known_hosts.tmp.{}.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+        rand_suffix()
+    ));
     // Use create_new to prevent symlink attacks on multi-user systems.
     {
         let mut tmp_file = std::fs::OpenOptions::new()
