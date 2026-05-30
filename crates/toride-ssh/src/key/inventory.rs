@@ -1,8 +1,11 @@
 //! SSH key file discovery and parsing.
 
-use std::collections::HashSet;
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+
+use base64::Engine;
 
 use crate::key::get_permissions;
 use crate::paths::SshPaths;
@@ -36,13 +39,13 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let path = path.to_path_buf();
     let filename = path
         .file_name()
-        .unwrap_or(OsStr::new(""))
+        .unwrap_or_else(|| OsStr::new(""))
         .to_string_lossy()
         .into_owned();
 
     let pub_path = path.with_extension("pub");
     let cert_path = {
-        let name = path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
+        let name = path.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
         path.with_file_name(format!("{name}-cert.pub"))
     };
 
@@ -79,7 +82,8 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
             }
             let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
             let fingerprint = Some(Fingerprint {
-                hash: fp.to_string().trim_start_matches("SHA256:").to_owned(),
+                hash: base64::engine::general_purpose::STANDARD_NO_PAD
+                    .encode(fp.as_bytes()),
                 key_type,
             });
             let comment_str = pk.comment().to_string();
@@ -94,7 +98,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 key_type,
                 fingerprint,
                 comment,
-                encrypted: false,
+                encrypted: pk.is_encrypted() || is_encrypted_from_content,
                 source: KeySource::Filesystem,
                 permissions,
                 has_public_pair,
@@ -205,29 +209,31 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let mut identity_paths = Vec::new();
     let mut seen_identity = HashSet::new();
     let mut pkcs11_providers = Vec::new();
-    let mut seen_pkcs11 = HashSet::new();
+    #[allow(clippy::zero_sized_map_values)]
+    let mut seen_pkcs11 = HashMap::new();
 
     for node in &ast.nodes {
-        let nodes = match node {
-            crate::config::ast::ConfigNode::HostBlock { nodes, .. }
-            | crate::config::ast::ConfigNode::MatchBlock { nodes, .. } => nodes.as_slice(),
-            crate::config::ast::ConfigNode::Directive { .. } => std::slice::from_ref(node),
+        let nodes: &[crate::config::ast::ConfigNode] = match node {
+            crate::config::ast::ConfigNode::HostBlock(b) => &b.nodes,
+            crate::config::ast::ConfigNode::MatchBlock(b) => &b.nodes,
+            crate::config::ast::ConfigNode::Directive(_) => std::slice::from_ref(node),
             _ => &[],
         };
 
         for child in nodes {
-            if let crate::config::ast::ConfigNode::Directive { keyword, value, .. } = child {
-                if keyword.eq_ignore_ascii_case("IdentityFile") {
+            if let crate::config::ast::ConfigNode::Directive(d) = child {
+                if d.keyword.eq_ignore_ascii_case("IdentityFile") {
                     // Strip surrounding quotes that the AST preserves verbatim.
-                    let trimmed = value.trim_matches('"').trim_matches('\'');
+                    let trimmed = d.value.trim_matches('"').trim_matches('\'');
                     let expanded = crate::config::expand_identity_path(trimmed, ssh_dir);
                     if seen_identity.insert(expanded.clone()) {
                         identity_paths.push(expanded);
                     }
-                } else if keyword.eq_ignore_ascii_case("PKCS11Provider")
-                    && seen_pkcs11.insert(value.clone())
+                } else if d.keyword.eq_ignore_ascii_case("PKCS11Provider")
+                    && let Entry::Vacant(e) = seen_pkcs11.entry(d.value.clone())
                 {
-                    pkcs11_providers.push(value.clone());
+                    e.insert(());
+                    pkcs11_providers.push(d.value.clone());
                 }
             }
         }
@@ -329,10 +335,8 @@ fn scan_standalone_pub_files(
                         algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
                     let fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
                     let fingerprint = Some(Fingerprint {
-                        hash: fp
-                            .to_string()
-                            .trim_start_matches("SHA256:")
-                            .to_owned(),
+                        hash: base64::engine::general_purpose::STANDARD_NO_PAD
+                            .encode(fp.as_bytes()),
                         key_type: kt,
                     });
                     let comment_str = pk.comment().to_string();
@@ -384,22 +388,27 @@ async fn merge_agent_keys(keys: &mut Vec<SshKey>, runner: &dyn crate::CliRunner)
         }
     };
 
-    // Collect fingerprints of keys already discovered on disk.
-    let fs_fingerprints: HashSet<String> = keys
+    let new_keys = filter_new_agent_keys(keys, agent_keys);
+    keys.extend(new_keys);
+}
+
+/// From a set of agent keys, return only those whose fingerprint does not
+/// appear among the existing (filesystem) keys.
+fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<SshKey> {
+    let fs_fingerprints: HashSet<&str> = existing
         .iter()
-        .filter_map(|k| k.fingerprint.as_ref().map(|f| f.hash.clone()))
+        .filter_map(|k| k.fingerprint.as_ref().map(|f| f.hash.as_str()))
         .collect();
 
-    for agent_key in agent_keys {
-        let is_on_disk = agent_key
-            .fingerprint
-            .as_ref()
-            .is_some_and(|f| fs_fingerprints.contains(&f.hash));
-
-        if !is_on_disk {
-            keys.push(agent_key);
-        }
-    }
+    agent_keys
+        .into_iter()
+        .filter(|agent_key| {
+            !agent_key
+                .fingerprint
+                .as_ref()
+                .is_some_and(|f| fs_fingerprints.contains(f.hash.as_str()))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -796,13 +805,33 @@ Host personal
 
         let found = keys.iter().find(|k| k.path == key_path);
         assert!(found.is_some(), "encrypted key should still be discovered");
-        // Note: ssh_key crate successfully parses encrypted OpenSSH keys
-        // (it returns Ok with is_encrypted=true). The current inspect_private_key
-        // code takes the Ok branch and does not check pk.is_encrypted(),
-        // so encrypted keys from the Ok path are not marked as encrypted.
-        // This is a known limitation. The key IS still discovered and parseable.
         let key = found.unwrap();
+        assert!(key.encrypted, "encrypted key should be marked as encrypted");
         assert!(key.fingerprint.is_some(), "encrypted key should have a fingerprint");
+    }
+
+    #[test]
+    fn inspect_private_key_encrypted_key_returns_encrypted_true() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Generate an Ed25519 key with a passphrase.
+        let key_path = dir.path().join("id_ed25519");
+        let output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t", "ed25519",
+                "-f", key_path.to_str().unwrap(),
+                "-N", "secretpass",
+                "-C", "encrypted-inspect-test",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "ssh-keygen failed: {}", String::from_utf8_lossy(&output.stderr));
+
+        let key = inspect_private_key(&key_path).unwrap();
+
+        assert!(key.encrypted, "inspect_private_key should detect encrypted key (got encrypted=false)");
+        assert!(key.fingerprint.is_some(), "encrypted key should still produce a fingerprint when ssh_key parses it");
+        assert!(matches!(key.key_type, KeyType::Ed25519));
     }
 
     #[tokio::test]
@@ -1010,4 +1039,140 @@ Host hsm2
     // Agent-only keys — tested in agent/client.test.rs
     // (agent::client is a private module, so we test parse_ssh_add_line there)
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // filter_new_agent_keys — agent key deduplication by fingerprint
+    // -----------------------------------------------------------------------
+
+    /// Helper: build an `SshKey` with the given fingerprint hash and source.
+    fn make_key(hash: &str, source: KeySource) -> SshKey {
+        SshKey {
+            path: PathBuf::from(format!("/{hash}")),
+            key_type: KeyType::Ed25519,
+            fingerprint: Some(Fingerprint {
+                hash: hash.to_owned(),
+                key_type: KeyType::Ed25519,
+            }),
+            comment: None,
+            encrypted: false,
+            source,
+            permissions: None,
+            has_public_pair: false,
+            has_certificate: false,
+            last_modified: None,
+            used_by_hosts: Vec::new(),
+        }
+    }
+
+    /// Helper: build an `SshKey` with no fingerprint.
+    fn make_key_no_fp(source: KeySource) -> SshKey {
+        SshKey {
+            path: PathBuf::from("/no-fp"),
+            key_type: KeyType::Ed25519,
+            fingerprint: None,
+            comment: None,
+            encrypted: false,
+            source,
+            permissions: None,
+            has_public_pair: false,
+            has_certificate: false,
+            last_modified: None,
+            used_by_hosts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn filter_agent_keys_matching_fingerprint_is_filtered_out() {
+        let existing = vec![make_key("AAAA", KeySource::Filesystem)];
+        let agent = vec![make_key("AAAA", KeySource::Agent)];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert!(
+            result.is_empty(),
+            "agent key with matching fingerprint should be filtered out"
+        );
+    }
+
+    #[test]
+    fn filter_agent_keys_no_match_is_kept() {
+        let existing = vec![make_key("AAAA", KeySource::Filesystem)];
+        let agent = vec![make_key("BBBB", KeySource::Agent)];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].fingerprint.as_ref().unwrap().hash, "BBBB");
+    }
+
+    #[test]
+    fn filter_agent_keys_partial_match() {
+        let existing = vec![make_key("AAAA", KeySource::Filesystem)];
+        let agent = vec![
+            make_key("AAAA", KeySource::Agent),
+            make_key("BBBB", KeySource::Agent),
+            make_key("CCCC", KeySource::Agent),
+        ];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert_eq!(result.len(), 2, "only non-matching agent keys should be kept");
+        let hashes: Vec<_> = result
+            .iter()
+            .map(|k| k.fingerprint.as_ref().unwrap().hash.as_str())
+            .collect();
+        assert!(hashes.contains(&"BBBB"));
+        assert!(hashes.contains(&"CCCC"));
+    }
+
+    #[test]
+    fn filter_agent_keys_empty_agent_list() {
+        let existing = vec![make_key("AAAA", KeySource::Filesystem)];
+        let agent = vec![];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert!(
+            result.is_empty(),
+            "empty agent list should produce empty result"
+        );
+    }
+
+    #[test]
+    fn filter_agent_keys_empty_existing_list() {
+        let existing: Vec<SshKey> = vec![];
+        let agent = vec![
+            make_key("AAAA", KeySource::Agent),
+            make_key("BBBB", KeySource::Agent),
+        ];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert_eq!(
+            result.len(),
+            2,
+            "all agent keys should be kept when no existing keys"
+        );
+    }
+
+    #[test]
+    fn filter_agent_keys_agent_key_without_fingerprint_is_kept() {
+        let existing = vec![make_key("AAAA", KeySource::Filesystem)];
+        let agent = vec![make_key_no_fp(KeySource::Agent)];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert_eq!(
+            result.len(),
+            1,
+            "agent key without fingerprint cannot match and should be kept"
+        );
+    }
+
+    #[test]
+    fn filter_agent_keys_existing_key_without_fingerprint_does_not_match() {
+        let existing = vec![make_key_no_fp(KeySource::Filesystem)];
+        let agent = vec![make_key("AAAA", KeySource::Agent)];
+
+        let result = filter_new_agent_keys(&existing, agent);
+        assert_eq!(
+            result.len(),
+            1,
+            "existing key without fingerprint cannot match any agent key"
+        );
+    }
 }

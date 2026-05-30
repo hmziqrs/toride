@@ -94,6 +94,11 @@ const TOKEN_EXPANDABLE: &[&str] = &[
 /// `user` is the remote username for `Match user` criteria.  When `None`,
 /// the local username is used (matching OpenSSH behaviour when no `-l`
 /// flag is given).
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigIncludeCycle`] if an `Include` chain contains a
+/// cycle. Returns [`Error::Io`] if the config file cannot be read.
 pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<ResolvedHost> {
     let config_path = ssh_dir.join("config");
 
@@ -112,7 +117,7 @@ pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<R
     if is_canonicalize_enabled(&resolved) {
         let canonical_host = resolved
             .host_name
-            .clone()
+            .take()
             .unwrap_or_else(|| host.to_owned());
 
         let mut canon = resolve_pass(&flat_ast, &canonical_host, host, &local_user, ssh_dir);
@@ -168,10 +173,10 @@ fn resolve_pass(
 
     for node in &flat_ast.nodes {
         match node {
-            ConfigNode::HostBlock { patterns, nodes, .. } => {
-                if host_matches(target_host, patterns) {
+            ConfigNode::HostBlock(b) => {
+                if host_matches(target_host, &b.patterns) {
                     resolve_block(
-                        nodes,
+                        &b.nodes,
                         target_host,
                         ssh_dir,
                         &mut resolved,
@@ -179,16 +184,17 @@ fn resolve_pass(
                     );
                 }
             }
-            ConfigNode::MatchBlock { criteria, nodes, .. } => {
+            ConfigNode::MatchBlock(b) => {
                 // Warn about `exec` criteria — we cannot evaluate them safely.
-                if contains_exec_criteria(criteria) {
+                if contains_exec_criteria(&b.criteria) {
                     tracing::warn!(
-                        "Match block contains 'exec' criteria which are not evaluated: {criteria}"
+                        "Match block contains 'exec' criteria which are not evaluated: {}",
+                        b.criteria,
                     );
                 }
-                if match_criteria_host(criteria, target_host, local_user, original_host) {
+                if match_criteria_host(&b.criteria, target_host, local_user, original_host) {
                     resolve_block(
-                        nodes,
+                        &b.nodes,
                         target_host,
                         ssh_dir,
                         &mut resolved,
@@ -216,9 +222,10 @@ fn load_and_flatten<'a>(
             .canonicalize()
             .unwrap_or_else(|_| path.to_owned());
 
-        if !visited.insert(canonical.clone()) {
+        if visited.contains(&canonical) {
             return Err(crate::Error::ConfigIncludeCycle(canonical.display().to_string()));
         }
+        visited.insert(canonical);
 
         let content = if path.exists() {
             tokio::fs::read_to_string(path).await?
@@ -233,10 +240,10 @@ fn load_and_flatten<'a>(
             .nodes
             .iter()
             .filter_map(|node| {
-                if let ConfigNode::Directive { keyword, value, .. } = node
-                    && keyword.eq_ignore_ascii_case("include")
+                if let ConfigNode::Directive(d) = node
+                    && d.keyword.eq_ignore_ascii_case("include")
                 {
-                    Some(value.clone())
+                    Some(d.value.clone())
                 } else {
                     None
                 }
@@ -250,7 +257,7 @@ fn load_and_flatten<'a>(
             let base_dir = if Path::new(&expanded).is_absolute() {
                 PathBuf::new()
             } else {
-                path.parent().unwrap_or(Path::new(".")).to_owned()
+                path.parent().unwrap_or_else(|| Path::new(".")).to_owned()
             };
 
             let full_pattern = base_dir.join(&expanded);
@@ -267,7 +274,7 @@ fn load_and_flatten<'a>(
 
     // Remove Include directives after processing.
     flat.nodes
-        .retain(|node| !matches!(node, ConfigNode::Directive { keyword, .. } if keyword.eq_ignore_ascii_case("include")));
+        .retain(|node| !matches!(node, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("include")));
 
     Ok(flat)
     })
@@ -277,7 +284,7 @@ fn load_and_flatten<'a>(
 fn insert_included_nodes(flat: &mut ConfigAst, included: &ConfigAst) {
     // Find the first Include directive and replace it with the included nodes.
     let include_idx = flat.nodes.iter().position(|node| {
-        matches!(node, ConfigNode::Directive { keyword, .. } if keyword.eq_ignore_ascii_case("include"))
+        matches!(node, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("include"))
     });
 
     if let Some(idx) = include_idx {
@@ -297,7 +304,8 @@ fn expand_tilde_and_env(path: &str) -> String {
     if (result.starts_with("~/") || result == "~")
         && let Some(home) = dirs::home_dir()
     {
-        result = result.replacen('~', &home.display().to_string(), 1);
+        let home_str = home.display().to_string();
+        result = result.replacen('~', &home_str, 1);
     }
 
     // Expand `${ENV_VAR}` and `$ENV_VAR`.
@@ -412,73 +420,73 @@ fn resolve_block(
     seen: &mut HashSet<String>,
 ) {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node {
-            let key_lower = keyword.to_lowercase();
-
+        if let ConfigNode::Directive(d) = node {
             // Accumulative directives — always collect.
-            if super::directives::is_accumulative(&key_lower) {
-                match key_lower.as_str() {
-                    "identityfile"
-                        if !resolved.identity_files.iter().any(|f| f == value) =>
-                    {
-                        resolved.identity_files.push(value.clone());
-                    }
-                    "certificatefile"
-                        if !resolved.certificate_files.iter().any(|f| f == value) =>
-                    {
-                        resolved.certificate_files.push(value.clone());
-                    }
-                    "localforward"
-                        if !resolved.local_forwards.iter().any(|f| f == value) =>
-                    {
-                        resolved.local_forwards.push(value.clone());
-                    }
-                    "remoteforward"
-                        if !resolved.remote_forwards.iter().any(|f| f == value) =>
-                    {
-                        resolved.remote_forwards.push(value.clone());
-                    }
-                    "dynamicforward"
-                        if !resolved.dynamic_forwards.iter().any(|f| f == value) =>
-                    {
-                        resolved.dynamic_forwards.push(value.clone());
-                    }
-                    _ => {}
+            if super::directives::is_accumulative(&d.keyword) {
+                if d.keyword.eq_ignore_ascii_case("identityfile")
+                    && !resolved.identity_files.iter().any(|f| f == &d.value)
+                {
+                    resolved.identity_files.push(d.value.clone());
+                } else if d.keyword.eq_ignore_ascii_case("certificatefile")
+                    && !resolved.certificate_files.iter().any(|f| f == &d.value)
+                {
+                    resolved.certificate_files.push(d.value.clone());
+                } else if d.keyword.eq_ignore_ascii_case("localforward")
+                    && !resolved.local_forwards.iter().any(|f| f == &d.value)
+                {
+                    resolved.local_forwards.push(d.value.clone());
+                } else if d.keyword.eq_ignore_ascii_case("remoteforward")
+                    && !resolved.remote_forwards.iter().any(|f| f == &d.value)
+                {
+                    resolved.remote_forwards.push(d.value.clone());
+                } else if d.keyword.eq_ignore_ascii_case("dynamicforward")
+                    && !resolved.dynamic_forwards.iter().any(|f| f == &d.value)
+                {
+                    resolved.dynamic_forwards.push(d.value.clone());
                 }
                 resolved
                     .directives
-                    .push((keyword.clone(), value.clone()));
+                    .push((d.keyword.clone(), d.value.clone()));
                 continue;
             }
 
             // Skip if we already have a value (first-match-wins).
-            if seen.contains(&key_lower) {
+            // `insert` returns false if the key was already present.
+            let key_lower = d.keyword.to_ascii_lowercase();
+            if !seen.insert(key_lower) {
                 continue;
             }
 
             // Match first, then move key_lower into the set to avoid cloning.
-            match key_lower.as_str() {
-                "hostname" => resolved.host_name = Some(value.clone()),
-                "user" => resolved.user = Some(value.clone()),
-                "port" => {
-                    resolved.port = value.parse::<u16>().ok();
-                }
-                "proxyjump" => resolved.proxy_jump = Some(value.clone()),
-                "identityagent" => resolved.identity_agent = Some(value.clone()),
-                "forwardagent" => resolved.forward_agent = Some(value.clone()),
-                "addkeystoagent" => resolved.add_keys_to_agent = Some(value.clone()),
-                "usekeychain" => resolved.use_keychain = Some(value.clone()),
-                "controlmaster" => resolved.control_master = Some(value.clone()),
-                "controlpath" => resolved.control_path = Some(value.clone()),
-                "controlpersist" => resolved.control_persist = Some(value.clone()),
-                "userknownhostsfile" => resolved.user_known_hosts_file = Some(value.clone()),
-                _ => {}
+            if d.keyword.eq_ignore_ascii_case("hostname") {
+                resolved.host_name = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("user") {
+                resolved.user = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("port") {
+                resolved.port = d.value.parse::<u16>().ok();
+            } else if d.keyword.eq_ignore_ascii_case("proxyjump") {
+                resolved.proxy_jump = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("identityagent") {
+                resolved.identity_agent = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("forwardagent") {
+                resolved.forward_agent = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("addkeystoagent") {
+                resolved.add_keys_to_agent = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("usekeychain") {
+                resolved.use_keychain = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("controlmaster") {
+                resolved.control_master = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("controlpath") {
+                resolved.control_path = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("controlpersist") {
+                resolved.control_persist = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("userknownhostsfile") {
+                resolved.user_known_hosts_file = Some(d.value.clone());
             }
 
             resolved
                 .directives
-                .push((keyword.clone(), value.clone()));
-            seen.insert(key_lower);
+                .push((d.keyword.clone(), d.value.clone()));
         }
     }
 }
@@ -820,7 +828,7 @@ fn hostname() -> String {
 }
 
 /// Check if a hostname matches SSH config patterns (reuses directive logic).
-fn host_matches(host: &str, patterns: &[String]) -> bool {
+fn host_matches(host: &str, patterns: &[impl AsRef<str>]) -> bool {
     super::directives::host_matches_patterns(host, patterns)
 }
 
@@ -862,8 +870,7 @@ fn match_criteria_host(
         if keyword.eq_ignore_ascii_case("host") {
             if let Some(patterns_str) = tokens.next() {
                 has_host = true;
-                let patterns: Vec<String> =
-                    patterns_str.split(',').map(str::to_owned).collect();
+                let patterns: Vec<&str> = patterns_str.split(',').collect();
                 if host_matches(target_host, &patterns) {
                     host_matched = true;
                 }
@@ -871,8 +878,7 @@ fn match_criteria_host(
         } else if keyword.eq_ignore_ascii_case("originalhost") {
             if let Some(patterns_str) = tokens.next() {
                 has_originalhost = true;
-                let patterns: Vec<String> =
-                    patterns_str.split(',').map(str::to_owned).collect();
+                let patterns: Vec<&str> = patterns_str.split(',').collect();
                 if host_matches(original_host, &patterns) {
                     originalhost_matched = true;
                 }

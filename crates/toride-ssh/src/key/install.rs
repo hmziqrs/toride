@@ -9,7 +9,7 @@ use std::path::Path;
 use crate::{CliRunner, Error, Result};
 
 /// Result of a key installation attempt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallOutcome {
     /// `ssh-copy-id` was available and succeeded.
     SshCopyId,

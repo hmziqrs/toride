@@ -1,3 +1,10 @@
+//! Trait interface for individual SSH diagnostic checks.
+//!
+//! Defines the [`Check`] trait that every diagnostic check must implement,
+//! along with the [`CheckFuture`] type alias for async execution. Checks are
+//! registered in a [`CheckRegistry`](super::registry::CheckRegistry) and
+//! executed by [`DoctorService`](super::DoctorService).
+
 use crate::{Diagnostic, Result};
 
 /// Return type for async check execution.

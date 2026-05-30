@@ -27,6 +27,23 @@ pub trait CliRunner: Send + Sync {
     /// runtime is never blocked.
     async fn run(&self, cmd: &str, args: Vec<String>) -> Result<String>;
 
+    /// Run an external command with additional environment variables and
+    /// return its captured stdout.
+    ///
+    /// Entries in `env` are added to the inherited environment of the
+    /// current process. This is used, for example, to pass `SSH_ASKPASS`
+    /// when loading passphrase-protected keys.
+    ///
+    /// Implementations MUST forward the call through
+    /// `tokio::task::spawn_blocking` (or equivalent) so that the async
+    /// runtime is never blocked.
+    async fn run_with_env(
+        &self,
+        cmd: &str,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<String>;
+
     /// Return `true` when the given tool is available on `PATH`.
     fn tool_exists(&self, name: &str) -> bool;
 }
@@ -46,6 +63,26 @@ impl CliRunner for DefaultCliRunner {
         let cmd = cmd.to_owned();
         tokio::task::spawn_blocking(move || {
             duct::cmd(&*cmd, &args)
+                .read()
+                .map_err(|e| Error::CommandFailed(e.to_string()))
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
+    }
+
+    async fn run_with_env(
+        &self,
+        cmd: &str,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> Result<String> {
+        let cmd = cmd.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let mut expression = duct::cmd(&*cmd, &args);
+            for (key, value) in &env {
+                expression = expression.env(key, value);
+            }
+            expression
                 .read()
                 .map_err(|e| Error::CommandFailed(e.to_string()))
         })
@@ -129,6 +166,24 @@ impl Default for MockCliRunner {
 #[async_trait]
 impl CliRunner for MockCliRunner {
     async fn run(&self, cmd: &str, _args: Vec<String>) -> Result<String> {
+        let mut map = self.run_responses.lock().expect("mock lock poisoned");
+        let queue = map.get_mut(cmd);
+        match queue.and_then(VecDeque::pop_front) {
+            Some(result) => result,
+            None => Err(Error::CommandFailed(format!(
+                "mock: no response registered for `{cmd}`"
+            ))),
+        }
+    }
+
+    async fn run_with_env(
+        &self,
+        cmd: &str,
+        _args: Vec<String>,
+        _env: Vec<(String, String)>,
+    ) -> Result<String> {
+        // Mock ignores env vars — only the command name matters for
+        // dispatching canned responses.
         let mut map = self.run_responses.lock().expect("mock lock poisoned");
         let queue = map.get_mut(cmd);
         match queue.and_then(VecDeque::pop_front) {

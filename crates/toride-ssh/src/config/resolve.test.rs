@@ -1648,6 +1648,61 @@ fn expand_resolved_dynamic_forwards_with_tokens() {
 }
 
 // ---------------------------------------------------------------------------
+// CanonicalizeHostname second-pass when host_name is None (falls back to alias)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_canonicalize_hostname_second_pass_no_hostname() {
+    // When CanonicalizeHostname is enabled but the first pass does not set
+    // HostName, the second pass uses the original alias as the canonical host.
+    // Directives from a Host block matching that canonical name must apply.
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host *
+    CanonicalizeHostname yes
+
+Host myalias
+    User first_user
+    Port 2222
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myalias", None).await.unwrap();
+
+    // The result must be marked as canonicalized.
+    assert!(
+        resolved.canonicalized,
+        "second-pass resolution should set canonicalized = true"
+    );
+
+    // The alias must be preserved (not overwritten by the canonical name).
+    assert_eq!(resolved.alias, "myalias");
+
+    // Since no HostName was set, the second pass re-resolves using "myalias"
+    // and the Host myalias block should match, applying its directives.
+    assert_eq!(
+        resolved.user.as_deref(),
+        Some("first_user"),
+        "second pass should apply User from the matching Host block"
+    );
+    assert_eq!(
+        resolved.port,
+        Some(2222),
+        "second pass should apply Port from the matching Host block"
+    );
+
+    // host_name should still be None (no HostName directive in the block).
+    assert!(
+        resolved.host_name.is_none(),
+        "host_name remains None when no HostName directive is set"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Dedup for accumulative forwarding directives
 // ---------------------------------------------------------------------------
 
@@ -1669,4 +1724,203 @@ Host *
 
     let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
     assert_eq!(resolved.local_forwards.len(), 1, "duplicate forwards should be deduped");
+}
+
+// ---------------------------------------------------------------------------
+// Tests for glob_paths
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glob_paths_simple_star_conf() {
+    // *.conf should match only .conf files.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("alpha.conf"), "").unwrap();
+    std::fs::write(base.join("beta.conf"), "").unwrap();
+    std::fs::write(base.join("gamma.txt"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 2, "*.conf should match exactly two files");
+    assert!(result[0].ends_with("alpha.conf"));
+    assert!(result[1].ends_with("beta.conf"));
+}
+
+#[test]
+fn glob_paths_exact_filename() {
+    // An exact filename (no wildcards) should match only that file.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("specific.conf"), "").unwrap();
+    std::fs::write(base.join("other.conf"), "").unwrap();
+
+    let pattern = format!("{}/specific.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert_eq!(result.len(), 1);
+    assert!(result[0].ends_with("specific.conf"));
+}
+
+#[test]
+fn glob_paths_no_matches_found() {
+    // When no files match the pattern, an empty vec is returned.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("readme.md"), "").unwrap();
+    std::fs::write(base.join("data.json"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert!(result.is_empty(), "*.conf should match nothing in a dir with only .md and .json");
+}
+
+#[test]
+fn glob_paths_nonexistent_directory() {
+    // When the parent directory does not exist, glob_paths returns an empty vec.
+    let result = glob_paths("/nonexistent/path/*.conf");
+    assert!(result.is_empty());
+}
+
+#[test]
+fn glob_paths_nested_directory_pattern() {
+    // A pattern with a subdirectory component should match files in that subdir.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let sub = base.join("configs");
+    std::fs::create_dir(&sub).unwrap();
+
+    std::fs::write(sub.join("web.conf"), "").unwrap();
+    std::fs::write(sub.join("db.conf"), "").unwrap();
+    std::fs::write(sub.join("notes.txt"), "").unwrap();
+
+    // Also create files in the parent to ensure they are NOT matched.
+    std::fs::write(base.join("parent.conf"), "").unwrap();
+
+    let pattern = format!("{}/configs/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 2, "should only match .conf files inside configs/");
+    assert!(result[0].ends_with("db.conf"));
+    assert!(result[1].ends_with("web.conf"));
+}
+
+#[test]
+fn glob_paths_nested_deep_directory_pattern() {
+    // Multiple levels of nesting: a/b/*.conf
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let nested = base.join("a").join("b");
+    std::fs::create_dir_all(&nested).unwrap();
+
+    std::fs::write(nested.join("deep.conf"), "").unwrap();
+    std::fs::write(nested.join("deep.txt"), "").unwrap();
+
+    // Also in a/ to make sure it's not matched.
+    std::fs::write(base.join("a").join("shallow.conf"), "").unwrap();
+
+    let pattern = format!("{}/a/b/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert_eq!(result.len(), 1, "should only match .conf in a/b/");
+    assert!(result[0].ends_with("deep.conf"));
+}
+
+#[test]
+fn glob_paths_question_mark_wildcard() {
+    // ? matches exactly one character.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("a.conf"), "").unwrap();
+    std::fs::write(base.join("ab.conf"), "").unwrap();
+    std::fs::write(base.join("abc.conf"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    // *.conf matches all .conf files regardless of name length.
+    assert_eq!(result.len(), 3);
+}
+
+#[test]
+fn glob_paths_question_mark_single_char() {
+    // ?.conf should match only single-character filenames ending in .conf.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("a.conf"), "").unwrap();
+    std::fs::write(base.join("b.conf"), "").unwrap();
+    std::fs::write(base.join("ab.conf"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    // *.conf matches all .conf files.
+    assert_eq!(result.len(), 3);
+
+    // Now test with a literal ? pattern for single-char matching.
+    let pattern_q = format!("{}/?.conf", base.display());
+    let mut result_q = glob_paths(&pattern_q);
+    result_q.sort();
+
+    assert_eq!(result_q.len(), 2, "?.conf should match only single-char names");
+    assert!(result_q[0].ends_with("a.conf"));
+    assert!(result_q[1].ends_with("b.conf"));
+}
+
+#[test]
+fn glob_paths_empty_directory() {
+    // An empty directory should return no matches for any pattern.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    let pattern = format!("{}/*", base.display());
+    let result = glob_paths(&pattern);
+
+    assert!(result.is_empty());
+}
+
+#[test]
+fn glob_paths_star_matches_all_files() {
+    // * should match every file (and directory) in the parent.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("one.txt"), "").unwrap();
+    std::fs::write(base.join("two.conf"), "").unwrap();
+    std::fs::write(base.join("three.md"), "").unwrap();
+
+    let pattern = format!("{}/*", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 3, "* should match all three files");
+}
+
+#[test]
+fn glob_paths_results_are_sorted() {
+    // Verify that glob_paths returns paths in sorted order.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("zebra.conf"), "").unwrap();
+    std::fs::write(base.join("alpha.conf"), "").unwrap();
+    std::fs::write(base.join("middle.conf"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert_eq!(result.len(), 3);
+    assert!(result[0].ends_with("alpha.conf"));
+    assert!(result[1].ends_with("middle.conf"));
+    assert!(result[2].ends_with("zebra.conf"));
 }

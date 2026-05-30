@@ -1,8 +1,19 @@
 //! SSH key generation via ssh-keygen CLI and ssh-key crate for parsing.
 
+use base64::Engine;
+
 use crate::key::get_permissions;
 use crate::paths::SshPaths;
 use crate::{CliRunner, Error, Fingerprint, KeyCreateParams, KeySource, KeyType, Result, SshKey};
+
+/// Minimum RSA key size accepted by OpenSSH.
+const MIN_RSA_BITS: u32 = 1024;
+
+/// Timeout for `ssh-add` to complete (e.g. waiting for passphrase prompt).
+const SSH_ADD_TIMEOUT_SECS: u64 = 30;
+
+/// Polling interval when waiting for `ssh-add` to finish.
+const SSH_ADD_POLL_INTERVAL_MS: u64 = 100;
 
 /// Convert our [`KeyType`] to the ssh-keygen `-t` argument value.
 fn key_type_to_cli_arg(kt: KeyType) -> &'static str {
@@ -44,10 +55,10 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
     }
 
     // ECDSA curve size (via -b flag)
-    if let KeyType::EcdsaP384 = params.key_type {
+    if params.key_type == KeyType::EcdsaP384 {
         args.extend(["-b".to_owned(), "384".to_owned()]);
     }
-    if let KeyType::EcdsaP521 = params.key_type {
+    if params.key_type == KeyType::EcdsaP521 {
         args.extend(["-b".to_owned(), "521".to_owned()]);
     }
 
@@ -57,6 +68,14 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
 
     if let Some(rounds) = params.kdf_rounds {
         args.extend(["-a".to_owned(), rounds.to_string()]);
+    }
+
+    if params.touch_required {
+        args.extend(["-O".to_owned(), "touch-required".to_owned()]);
+    }
+
+    if params.verify_required {
+        args.extend(["-O".to_owned(), "verify-required".to_owned()]);
     }
 
     args
@@ -82,10 +101,10 @@ pub async fn generate_key(
     // Validate RSA bit size early to give a clear error before calling ssh-keygen.
     if let KeyType::Rsa { bits } = params.key_type
         && bits > 0
-        && bits < 1024
+        && bits < MIN_RSA_BITS
     {
         return Err(Error::KeyGenerationFailed(format!(
-            "RSA bit size {bits} is below minimum 1024"
+            "RSA bit size {bits} is below minimum {MIN_RSA_BITS}"
         )));
     }
 
@@ -154,7 +173,7 @@ pub async fn generate_key(
     let public_key = pk.public_key();
     let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
     let fingerprint = Some(Fingerprint {
-        hash: fp.to_string().trim_start_matches("SHA256:").to_owned(),
+        hash: base64::engine::general_purpose::STANDARD_NO_PAD.encode(fp.as_bytes()),
         key_type: params.key_type,
     });
 
@@ -196,7 +215,7 @@ async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
             .start()
             .map_err(|e| Error::CommandFailed(format!("ssh-add failed to start: {e}")))?;
 
-        let timeout = std::time::Duration::from_secs(30);
+        let timeout = std::time::Duration::from_secs(SSH_ADD_TIMEOUT_SECS);
         let start = std::time::Instant::now();
 
         loop {
@@ -214,10 +233,10 @@ async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
                     if start.elapsed() >= timeout {
                         let _ = child.kill();
                         return Err(Error::CommandFailed(
-                            "ssh-add timed out after 30 seconds".to_owned(),
+                            "ssh-add timed out after {SSH_ADD_TIMEOUT_SECS} seconds".to_owned(),
                         ));
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(SSH_ADD_POLL_INTERVAL_MS));
                 }
                 Err(e) => {
                     let _ = child.kill();
@@ -259,6 +278,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/home/user/.ssh/id_ed25519");
         assert_eq!(args[0..4], ["-t", "ed25519", "-f", "/home/user/.ssh/id_ed25519"]);
@@ -278,6 +299,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-b".to_owned()));
@@ -295,6 +318,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-C".to_owned()));
@@ -312,6 +337,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-N".to_owned()));
@@ -329,6 +356,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-a".to_owned()));
@@ -346,6 +375,8 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-b".to_owned()));
@@ -363,9 +394,89 @@ mod tests {
             add_to_agent: false,
             add_to_config: false,
             config_host: None,
+            touch_required: false,
+            verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
         assert!(args.contains(&"-b".to_owned()));
         assert!(args.contains(&"521".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_touch_required() {
+        let params = KeyCreateParams {
+            name: "id_sk".to_owned(),
+            key_type: KeyType::SkEd25519,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: false,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-O".to_owned()));
+        assert!(args.contains(&"touch-required".to_owned()));
+        assert!(!args.contains(&"verify-required".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_verify_required() {
+        let params = KeyCreateParams {
+            name: "id_sk".to_owned(),
+            key_type: KeyType::SkEd25519,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: true,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-O".to_owned()));
+        assert!(args.contains(&"verify-required".to_owned()));
+        assert!(!args.contains(&"touch-required".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_touch_and_verify_required() {
+        let params = KeyCreateParams {
+            name: "id_sk".to_owned(),
+            key_type: KeyType::SkEcdsaP256,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: true,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"touch-required".to_owned()));
+        assert!(args.contains(&"verify-required".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_no_fido_options_when_false() {
+        let params = KeyCreateParams {
+            name: "id_ed25519".to_owned(),
+            key_type: KeyType::Ed25519,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: false,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(!args.contains(&"touch-required".to_owned()));
+        assert!(!args.contains(&"verify-required".to_owned()));
     }
 }

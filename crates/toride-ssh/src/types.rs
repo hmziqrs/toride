@@ -1,3 +1,10 @@
+//! Core SSH types shared across all service modules.
+//!
+//! Defines enums and structs for key algorithms ([`KeyType`]), key formats,
+//! diagnostic severities, file permissions, and parameter types for key
+//! creation/deletion. These types form the vocabulary used by every other
+//! module in this crate.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -142,6 +149,10 @@ pub struct KeyCreateParams {
     pub add_to_config: bool,
     /// Host alias to use in config when `add_to_config` is true.
     pub config_host: Option<String>,
+    /// Require physical touch on FIDO/security key before signing.
+    pub touch_required: bool,
+    /// Require user verification (biometric/PIN) on FIDO/security key.
+    pub verify_required: bool,
 }
 
 impl std::fmt::Debug for KeyCreateParams {
@@ -155,6 +166,8 @@ impl std::fmt::Debug for KeyCreateParams {
             .field("add_to_agent", &self.add_to_agent)
             .field("add_to_config", &self.add_to_config)
             .field("config_host", &self.config_host)
+            .field("touch_required", &self.touch_required)
+            .field("verify_required", &self.verify_required)
             .finish()
     }
 }

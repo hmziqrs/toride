@@ -1,3 +1,10 @@
+//! Port forwarding management via SSH ControlMaster sessions.
+//!
+//! Provides [`ForwardService`] for listing and closing active port forwards
+//! across ControlMaster sockets. The `control` sub-module handles the
+//! low-level parsing of `ssh -O forward` / `ssh -O cancel` output and the
+//! [`ControlSession`], [`PortForward`], and [`ForwardType`] types.
+
 pub mod control;
 
 use std::collections::HashMap;
@@ -148,37 +155,65 @@ impl<'a> ForwardService<'a> {
         Ok(port_owners)
     }
 
-    /// Test connectivity to a locally forwarded port.
+    /// Default timeout for [`test_connectivity`](Self::test_connectivity).
+    const TEST_CONNECTIVITY_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(2);
+
+    /// Test whether the local port is reachable by attempting a TCP connection.
     ///
-    /// Attempts a TCP connection to `127.0.0.1:<local_port>` with a short
-    /// timeout (2 seconds).  Returns `Ok(())` if the connection succeeds,
-    /// or an error describing the failure.
+    /// Connects to `127.0.0.1:<local_port>` within the given `timeout`.
+    /// Returns `Ok(())` if the connection succeeds, or an error describing
+    /// the failure.
     ///
-    /// This is useful for verifying that a port forward is actually
-    /// forwarding traffic to the expected remote service.
+    /// **Important:** This only verifies that the local forwarding socket is
+    /// active and accepting connections. It does **NOT** test end-to-end
+    /// connectivity to the remote side — a successful result here does not
+    /// guarantee that traffic is actually being forwarded to the expected
+    /// remote service.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ForwardFailed`] if the connection cannot be
+    /// established (port not listening, connection refused, timeout).
+    pub async fn test_connectivity_with_timeout(
+        &self,
+        local_port: u16,
+        timeout: std::time::Duration,
+    ) -> Result<()> {
+        let addr = format!("127.0.0.1:{local_port}");
+
+        tokio::time::timeout(timeout, tokio::net::TcpStream::connect(&addr))
+            .await
+            .map_err(|_| {
+                Error::ForwardFailed(format!(
+                    "connection to {addr} timed out after {} seconds",
+                    timeout.as_secs()
+                ))
+            })?
+            .map_err(|e| {
+                Error::ForwardFailed(format!("cannot connect to {addr}: {e}"))
+            })?;
+
+        tracing::debug!("successfully connected to forwarded port {local_port}");
+        Ok(())
+    }
+
+    /// Test whether the local port is reachable by attempting a TCP
+    /// connection with the [`default timeout`](Self::TEST_CONNECTIVITY_TIMEOUT).
+    ///
+    /// Convenience wrapper around [`test_connectivity_with_timeout`]
+    /// that uses [`TEST_CONNECTIVITY_TIMEOUT`](Self::TEST_CONNECTIVITY_TIMEOUT).
+    ///
+    /// **Important:** This only verifies that the local forwarding socket is
+    /// active and accepting connections. It does **NOT** test end-to-end
+    /// connectivity to the remote side.
     ///
     /// # Errors
     ///
     /// Returns [`Error::ForwardFailed`] if the connection cannot be
     /// established (port not listening, connection refused, timeout).
     pub async fn test_connectivity(&self, local_port: u16) -> Result<()> {
-        let addr = format!("127.0.0.1:{local_port}");
-
-        tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            tokio::net::TcpStream::connect(&addr),
-        )
-        .await
-        .map_err(|_| {
-            Error::ForwardFailed(format!(
-                "connection to {addr} timed out after 2 seconds"
-            ))
-        })?
-        .map_err(|e| {
-            Error::ForwardFailed(format!("cannot connect to {addr}: {e}"))
-        })?;
-
-        tracing::debug!("successfully connected to forwarded port {local_port}");
-        Ok(())
+        self.test_connectivity_with_timeout(local_port, Self::TEST_CONNECTIVITY_TIMEOUT)
+            .await
     }
 }

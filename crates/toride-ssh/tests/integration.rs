@@ -56,7 +56,7 @@ fn test_config_ast_roundtrip() {
     let host_count = ast1
         .nodes
         .iter()
-        .filter(|n| matches!(n, toride_ssh::config::ast::ConfigNode::HostBlock { .. }))
+        .filter(|n| matches!(n, toride_ssh::config::ast::ConfigNode::HostBlock(_)))
         .count();
     assert_eq!(host_count, 4, "expected 4 Host blocks in config_basic.txt");
 
@@ -65,8 +65,8 @@ fn test_config_ast_roundtrip() {
         .nodes
         .iter()
         .filter_map(|n| {
-            if let toride_ssh::config::ast::ConfigNode::HostBlock { patterns, .. } = n {
-                Some(patterns[0].as_str())
+            if let toride_ssh::config::ast::ConfigNode::HostBlock(b) = n {
+                Some(b.patterns[0].as_str())
             } else {
                 None
             }

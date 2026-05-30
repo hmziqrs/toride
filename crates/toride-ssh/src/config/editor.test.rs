@@ -30,13 +30,9 @@ fn add_host_appends_block() {
     let found = ast
         .nodes
         .iter()
-        .find(|n| matches!(n, ConfigNode::HostBlock { .. } if {
-            if let ConfigNode::HostBlock { patterns, .. } = n {
-                patterns.contains(&"newhost".to_owned())
-            } else {
-                false
-            }
-        }));
+        .find(|n| matches!(n, ConfigNode::HostBlock(b)
+            if b.patterns.contains(&"newhost".to_owned())
+        ));
     assert!(found.is_some());
 }
 

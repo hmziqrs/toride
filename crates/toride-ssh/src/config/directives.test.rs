@@ -161,7 +161,7 @@ fn glob_matches_star_in_middle() {
 
 #[test]
 fn host_matches_patterns_empty_patterns() {
-    assert!(!host_matches_patterns("example.com", &[]));
+    assert!(!host_matches_patterns("example.com", &[] as &[&str]));
 }
 
 #[test]

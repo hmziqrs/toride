@@ -1,3 +1,10 @@
+//! Registry that stores and looks up diagnostic checks by ID.
+//!
+//! Provides [`CheckRegistry`], a `HashMap`-backed collection of
+//! `Box<dyn Check>` entries keyed by their [`Check::id`](super::check::Check::id).
+//! Used by [`DoctorService`](super::DoctorService) to discover and execute
+//! all registered checks.
+
 use std::collections::HashMap;
 
 use crate::doctor::check::Check;

@@ -10,6 +10,9 @@ use std::ffi::OsStr;
 use crate::paths::SshPaths;
 use crate::{Error, KeyCreateParams, KeyDeleteParams, KeyFormat, Result, SshKey};
 
+/// Maximum allowed key name length (typical filesystem limit).
+const MAX_KEY_NAME_LENGTH: usize = 255;
+
 /// Get Unix file permissions from metadata.
 #[cfg(unix)]
 pub(crate) fn get_permissions(path: &std::path::Path) -> Option<crate::Permissions> {
@@ -35,9 +38,9 @@ fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::KeyGenerationFailed("key name must not be empty".to_owned()));
     }
-    if name.len() > 255 {
+    if name.len() > MAX_KEY_NAME_LENGTH {
         return Err(Error::KeyGenerationFailed(
-            "key name must not exceed 255 bytes".to_owned(),
+            format!("key name must not exceed {MAX_KEY_NAME_LENGTH} bytes"),
         ));
     }
     if name.contains('\0') {
@@ -148,7 +151,7 @@ impl<'a> KeyService<'a> {
                 std::fs::rename(&private_path, &backup_path)?;
 
                 if remove_public && public_path.exists() {
-                    let stem = public_path.file_stem().unwrap_or(OsStr::new("")).to_string_lossy();
+                    let stem = public_path.file_stem().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
                     let pub_backup_base = public_path.with_file_name(format!("{stem}.pub.bak"));
                     let pub_backup = unique_backup_path(&pub_backup_base);
                     if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
@@ -157,7 +160,7 @@ impl<'a> KeyService<'a> {
                 }
 
                 if remove_certificate && cert_path.exists() {
-                    let name = cert_path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
+                    let name = cert_path.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
                     let cert_backup_base = cert_path.with_file_name(format!("{name}.bak"));
                     let cert_backup = unique_backup_path(&cert_backup_base);
                     if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
@@ -567,7 +570,7 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
 
         if final_content != content {
             // Atomic write: temp file + rename to prevent corruption on crash.
-            let parent = config_path.parent().unwrap_or(std::path::Path::new("."));
+            let parent = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
             let tmp_path = parent.join(format!(
                 ".config.tmp.{}.{}",
                 std::process::id(),

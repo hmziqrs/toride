@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
+/// Maximum file size (bytes) for a candidate control socket on non-socket
+/// filesystems (e.g. NFS). Files larger than this are not considered sockets.
+const MAX_CONTROL_SOCKET_CANDIDATE_SIZE: u64 = 1024;
+
 /// Whether a forward is local (-L), remote (-R), or dynamic/SOCKS (-D).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ForwardType {
@@ -441,7 +445,7 @@ fn is_socket_or_candidate(path: &Path) -> bool {
             }
             // On some filesystems (e.g. NFS) sockets may appear as regular files.
             // Accept small files with no extension as candidates.
-            if ft.is_file() && meta.len() < 1024 {
+            if ft.is_file() && meta.len() < MAX_CONTROL_SOCKET_CANDIDATE_SIZE {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Only accept names with no extension that don't look like
                 // regular SSH files (known_hosts, config, *.pub, etc.)
@@ -502,7 +506,24 @@ pub(crate) fn extract_host_from_name(name: &str) -> String {
     // Try user@host:port pattern
     if let Some(at_idx) = rest.find('@') {
         let after_at = &rest[at_idx + 1..];
-        // Take up to the colon (port separator)
+        // Check for bracket notation: [host]:port (used for IPv6)
+        if after_at.starts_with('[')
+            && let Some(bracket_end) = after_at.find(']')
+        {
+            return after_at[1..bracket_end].to_owned();
+        }
+        // If the address contains multiple colons it is likely a bare IPv6
+        // address (e.g. "::1:22" or "fe80::1:22").  The helper tries to
+        // split host from port; if it fails we treat the whole string as a
+        // bare IPv6 address without a port.
+        if after_at.matches(':').count() >= 2 {
+            if let Some(host) = split_bare_ipv6_host_port(after_at) {
+                return host.to_owned();
+            }
+            // Bare IPv6 without port (e.g. "::1", "fe80::1")
+            return after_at.to_owned();
+        }
+        // Take up to the first colon (port separator) — IPv4 / hostname
         if let Some(colon_idx) = after_at.find(':') {
             return after_at[..colon_idx].to_owned();
         }
@@ -512,6 +533,32 @@ pub(crate) fn extract_host_from_name(name: &str) -> String {
 
     // Fallback: use the stripped name
     rest.to_owned()
+}
+
+/// Split a bare IPv6 `host:port` string at the last colon that precedes a
+/// numeric-only port suffix.
+///
+/// Returns `Some(host)` when a valid split is found, `None` otherwise.
+///
+/// Heuristic: we only split when the candidate host portion contains `::`
+/// (the IPv6 compression marker) and the input has at least 3 colons, so
+/// that a bare IPv6 address like `::1` (2 colons, no port) is not
+/// mis-split into `::` + port `1`.
+fn split_bare_ipv6_host_port(s: &str) -> Option<&str> {
+    let colon_count = s.matches(':').count();
+    if colon_count < 3 || !s.contains("::") {
+        return None;
+    }
+    let last_colon = s.rfind(':')?;
+    let port_part = &s[last_colon + 1..];
+    if port_part.is_empty() || !port_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let host_part = &s[..last_colon];
+    if host_part.is_empty() {
+        return None;
+    }
+    Some(host_part)
 }
 
 /// Try to extract a PID from the control socket filename.

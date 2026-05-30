@@ -228,7 +228,7 @@ impl<'a> AuthorizedKeysService<'a> {
 /// the rename is on the same filesystem. Uses `create_new` to prevent
 /// symlink attacks on multi-user systems. Permissions are set to 0o600.
 fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let temp_path = parent.join(format!(
         ".authorized_keys.tmp.{}.{}",
         std::process::id(),

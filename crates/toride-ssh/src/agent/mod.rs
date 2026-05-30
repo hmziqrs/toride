@@ -213,20 +213,20 @@ impl<'a> AgentService<'a> {
             .to_str()
             .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
             .to_owned();
-        let script = askpass.script_path().to_path_buf();
+        let script = askpass.script_path().to_string_lossy().into_owned();
 
-        let result = tokio::task::spawn_blocking(move || {
-            let cmd = duct::cmd("ssh-add", [&path_str]);
-            let configured = cmd
-                .env("SSH_ASKPASS", &script)
-                .env("SSH_ASKPASS_REQUIRE", "force")
-                .env("DISPLAY", ":0");
-            configured
-                .read()
-                .map_err(|e| Error::CommandFailed(format!("ssh-add with askpass failed: {e}")))
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(e.to_string()))?;
+        let result = self
+            .runner
+            .run_with_env(
+                "ssh-add",
+                vec![path_str],
+                vec![
+                    ("SSH_ASKPASS".to_owned(), script),
+                    ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
+                    ("DISPLAY".to_owned(), ":0".to_owned()),
+                ],
+            )
+            .await;
 
         // askpass is dropped here, cleaning up the temporary script.
         result?;

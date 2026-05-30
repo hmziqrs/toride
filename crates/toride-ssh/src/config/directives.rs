@@ -1,6 +1,6 @@
 //! Typed accessors for SSH config directives.
 
-use super::ast::{ConfigAst, ConfigNode};
+use super::ast::{ConfigAst, ConfigNode, DirectiveData};
 
 use crate::Result;
 
@@ -15,9 +15,9 @@ pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
-            && host_matches_patterns(host, patterns)
-            && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
+        if let ConfigNode::HostBlock(b) = node
+            && host_matches_patterns(host, &b.patterns)
+            && let Some(val) = find_directive_in_nodes(&b.nodes, &key_lower)
         {
             return Some(val.to_owned());
         }
@@ -34,10 +34,10 @@ pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec
     let mut values = Vec::new();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
-            && host_matches_patterns(host, patterns)
+        if let ConfigNode::HostBlock(b) = node
+            && host_matches_patterns(host, &b.patterns)
         {
-            collect_directives_in_nodes(nodes, &key_lower, &mut values);
+            collect_directives_in_nodes(&b.nodes, &key_lower, &mut values);
         }
     }
     values
@@ -49,9 +49,9 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<S
     let key_lower = key.to_lowercase();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
-            && patterns.iter().any(|p| p == name || p == "*")
-            && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
+        if let ConfigNode::HostBlock(b) = node
+            && b.patterns.iter().any(|p| p == name || p == "*")
+            && let Some(val) = find_directive_in_nodes(&b.nodes, &key_lower)
         {
             return Some(val.to_owned());
         }
@@ -70,10 +70,10 @@ pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> 
     let mut seen = std::collections::HashSet::new();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
-            && host_matches_patterns(host, patterns)
+        if let ConfigNode::HostBlock(b) = node
+            && host_matches_patterns(host, &b.patterns)
         {
-            collect_all_directives(nodes, &mut result, &mut seen);
+            collect_all_directives(&b.nodes, &mut result, &mut seen);
         }
     }
     result
@@ -97,26 +97,26 @@ pub fn set_directive(
     let key_lower = key.to_lowercase();
 
     for node in &mut ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
-            && host_matches_patterns(host, patterns)
+        if let ConfigNode::HostBlock(b) = node
+            && host_matches_patterns(host, &b.patterns)
         {
             // Try to update existing directive.
-            for child in nodes.iter_mut() {
-                if let ConfigNode::Directive { keyword, value: v, .. } = child
-                    && keyword.eq_ignore_ascii_case(&key_lower)
+            for child in &mut b.nodes {
+                if let ConfigNode::Directive(d) = child
+                    && d.keyword.eq_ignore_ascii_case(&key_lower)
                 {
-                    value.clone_into(v);
+                    value.clone_into(&mut d.value);
                     return Ok(());
                 }
             }
             // Not found — append new directive.
-            nodes.push(ConfigNode::Directive {
+            b.nodes.push(ConfigNode::Directive(Box::new(DirectiveData {
                 keyword: key.to_owned(),
                 separator: super::ast::Separator::Space,
                 value: value.to_owned(),
                 comment: None,
                 indent: String::new(),
-            });
+            })));
             return Ok(());
         }
     }
@@ -127,10 +127,10 @@ pub fn set_directive(
 /// Find the first directive matching `key_lower` in a list of nodes.
 fn find_directive_in_nodes<'a>(nodes: &'a [ConfigNode], key_lower: &str) -> Option<&'a str> {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node
-            && keyword.eq_ignore_ascii_case(key_lower)
+        if let ConfigNode::Directive(d) = node
+            && d.keyword.eq_ignore_ascii_case(key_lower)
         {
-            return Some(value);
+            return Some(&d.value);
         }
     }
     None
@@ -139,10 +139,10 @@ fn find_directive_in_nodes<'a>(nodes: &'a [ConfigNode], key_lower: &str) -> Opti
 /// Collect all values for a directive from a list of nodes.
 fn collect_directives_in_nodes(nodes: &[ConfigNode], key_lower: &str, out: &mut Vec<String>) {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node
-            && keyword.eq_ignore_ascii_case(key_lower)
+        if let ConfigNode::Directive(d) = node
+            && d.keyword.eq_ignore_ascii_case(key_lower)
         {
-            out.push(value.clone());
+            out.push(d.value.clone());
         }
     }
 }
@@ -158,14 +158,15 @@ fn collect_all_directives(
     seen: &mut std::collections::HashSet<String>,
 ) {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node {
-            let key_lower = keyword.to_lowercase();
-            if is_accumulative(&key_lower) {
+        if let ConfigNode::Directive(d) = node {
+            if is_accumulative(&d.keyword) {
                 // Always append accumulative directives.
-                out.push((keyword.clone(), value.clone()));
-            } else if !seen.contains(&key_lower) {
-                seen.insert(key_lower);
-                out.push((keyword.clone(), value.clone()));
+                out.push((d.keyword.clone(), d.value.clone()));
+            } else {
+                let key_lower = d.keyword.to_ascii_lowercase();
+                if seen.insert(key_lower) {
+                    out.push((d.keyword.clone(), d.value.clone()));
+                }
             }
         }
     }
@@ -198,19 +199,16 @@ pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<Stri
 ///
 /// `ForwardAgent` is intentionally excluded -- it uses first-match-wins
 /// semantics per OpenSSH ssh_config(5).
-pub(crate) fn is_accumulative(key_lower: &str) -> bool {
-    matches!(
-        key_lower,
-        "identityfile"
-            | "certificatefile"
-            | "proxyjump"
-            | "sendenv"
-            | "setenv"
-            | "dynamicforward"
-            | "localforward"
-            | "remoteforward"
-            | "permitlocalcommand"
-    )
+pub(crate) fn is_accumulative(keyword: &str) -> bool {
+    keyword.eq_ignore_ascii_case("identityfile")
+        || keyword.eq_ignore_ascii_case("certificatefile")
+        || keyword.eq_ignore_ascii_case("proxyjump")
+        || keyword.eq_ignore_ascii_case("sendenv")
+        || keyword.eq_ignore_ascii_case("setenv")
+        || keyword.eq_ignore_ascii_case("dynamicforward")
+        || keyword.eq_ignore_ascii_case("localforward")
+        || keyword.eq_ignore_ascii_case("remoteforward")
+        || keyword.eq_ignore_ascii_case("permitlocalcommand")
 }
 
 /// Check if a hostname matches any of the given SSH config patterns.
@@ -220,14 +218,14 @@ pub(crate) fn is_accumulative(key_lower: &str) -> bool {
 /// - Wildcard `*` matching any host
 /// - `?` matching a single character
 /// - Negation with `!`: `!example.com`
-pub(crate) fn host_matches_patterns(host: &str, patterns: &[String]) -> bool {
+pub(crate) fn host_matches_patterns(host: &str, patterns: &[impl AsRef<str>]) -> bool {
     // SSH hostnames and patterns are ASCII — use ASCII lowercase to avoid
     // Unicode-aware allocation overhead.
     let host_lower = host.to_ascii_lowercase();
     let mut positive_match = false;
 
     for pattern in patterns {
-        let pat_lower = pattern.to_ascii_lowercase();
+        let pat_lower = pattern.as_ref().to_ascii_lowercase();
 
         if let Some(negated) = pat_lower.strip_prefix('!') {
             // Negated pattern — if it matches, the whole result is false.

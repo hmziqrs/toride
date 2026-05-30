@@ -12,6 +12,22 @@ use crate::types::{Diagnostic, Severity};
 use crate::Result;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Number of bytes to read from the start of a file to detect PEM private key
+/// headers without loading potentially large files into memory.
+const PRIVATE_KEY_HEADER_READ_SIZE: usize = 4096;
+
+/// Minimum number of bytes required to contain a PEM header marker.
+const MIN_PEM_HEADER_LENGTH: usize = 8;
+
+/// Minimum recommended RSA key size in bits for long-term security.
+/// NIST recommends 2048 through 2030, but 3072 is the widely accepted
+/// minimum. OpenSSH 9.x+ warns about RSA-2048 keys.
+const RECOMMENDED_RSA_BITS: u32 = 3072;
+
+// ---------------------------------------------------------------------------
 // Concrete check structs
 // ---------------------------------------------------------------------------
 
@@ -90,6 +106,11 @@ struct HostStarPlacementCheck<'a> {
 
 /// Check for deprecated SSHv1 key files (`~/.ssh/identity`).
 struct SshV1KeyCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that `UseKeychain` is only set on macOS.
+struct UseKeychainPlatformCheck<'a> {
     paths: &'a SshPaths,
 }
 
@@ -328,13 +349,13 @@ impl Check for PrivateKeyPermissions<'_> {
                     let Ok(mut file) = tokio::fs::File::open(&path).await else {
                         continue;
                     };
-                    let mut buf = [0u8; 4096];
+                    let mut buf = [0u8; PRIVATE_KEY_HEADER_READ_SIZE];
                     let Ok(n) = file.read(&mut buf).await else {
                         continue;
                     };
                     // `from_utf8_lossy` returns `Cow<str>` so no allocation
                     // occurs when the header is valid UTF-8 (always true for PEM).
-                    if n < 8 || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
+                    if n < MIN_PEM_HEADER_LENGTH || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
                         continue;
                     }
                 }
@@ -1094,19 +1115,15 @@ impl Check for CertificateFileExistsCheck<'_> {
             // Collect CertificateFile directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("CertificateFile") => {
-                        cert_files.push(value.clone());
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("CertificateFile") => {
+                        cert_files.push(d.value.clone());
                     }
-                    ConfigNode::HostBlock { nodes, .. } => {
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("CertificateFile")
+                    ConfigNode::HostBlock(b) => {
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("CertificateFile")
                             {
-                                cert_files.push(value.clone());
+                                cert_files.push(d.value.clone());
                             }
                         }
                     }
@@ -1126,22 +1143,7 @@ impl Check for CertificateFileExistsCheck<'_> {
 
             let mut diagnostics = Vec::new();
             for raw_path in &cert_files {
-                // Expand ~ to home directory.
-                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if let Some(rest) = raw_path.strip_prefix('~') {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if std::path::Path::new(raw_path).is_relative() {
-                    ssh_dir.join(raw_path)
-                } else {
-                    std::path::PathBuf::from(raw_path)
-                };
+                let expanded = crate::paths::expand_path(raw_path, &ssh_dir);
 
                 if tokio::fs::metadata(&expanded).await.is_ok() {
                     diagnostics.push(Diagnostic {
@@ -1209,19 +1211,15 @@ impl Check for IdentityFileExistsCheck<'_> {
             // Collect IdentityFile directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
-                        identity_files.push(value.clone());
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        identity_files.push(d.value.clone());
                     }
-                    ConfigNode::HostBlock { nodes, .. } => {
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                    ConfigNode::HostBlock(b) => {
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("IdentityFile")
                             {
-                                identity_files.push(value.clone());
+                                identity_files.push(d.value.clone());
                             }
                         }
                     }
@@ -1241,22 +1239,7 @@ impl Check for IdentityFileExistsCheck<'_> {
 
             let mut diagnostics = Vec::new();
             for raw_path in &identity_files {
-                // Expand ~ to home directory.
-                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if let Some(rest) = raw_path.strip_prefix('~') {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if std::path::Path::new(raw_path).is_relative() {
-                    ssh_dir.join(raw_path)
-                } else {
-                    std::path::PathBuf::from(raw_path)
-                };
+                let expanded = crate::paths::expand_path(raw_path, &ssh_dir);
 
                 if tokio::fs::metadata(&expanded).await.is_ok() {
                     diagnostics.push(Diagnostic {
@@ -1324,23 +1307,20 @@ impl Check for DuplicateHostCheck<'_> {
             let mut duplicates: Vec<(String, String, String)> = Vec::new();
 
             for node in &ast.nodes {
-                if let ConfigNode::HostBlock {
-                    header, patterns, ..
-                } = node
+                if let ConfigNode::HostBlock(b) = node
                 {
-                    for pat in patterns {
+                    for pat in &b.patterns {
                         if pat == "*" {
                             // Skip wildcard for duplicate detection.
                             continue;
                         }
-                        if let Some(first_header) = seen.get(pat) {
-                            duplicates.push((
-                                pat.clone(),
-                                first_header.clone(),
-                                header.clone(),
-                            ));
-                        } else {
-                            seen.insert(pat.clone(), header.clone());
+                        match seen.entry(pat.clone()) {
+                            std::collections::hash_map::Entry::Occupied(e) => {
+                                duplicates.push((pat.clone(), e.get().clone(), b.header.clone()));
+                            }
+                            std::collections::hash_map::Entry::Vacant(e) => {
+                                e.insert(b.header.clone());
+                            }
                         }
                     }
                 }
@@ -1409,12 +1389,12 @@ impl Check for HostStarPlacementCheck<'_> {
             let mut last_specific_index: Option<usize> = None;
 
             for (i, node) in ast.nodes.iter().enumerate() {
-                if let ConfigNode::HostBlock { patterns, .. } = node {
-                    if patterns.iter().any(|p| p == "*") {
+                if let ConfigNode::HostBlock(b) = node {
+                    if b.patterns.iter().any(|p| p == "*") {
                         if star_index.is_none() {
                             star_index = Some(i);
                         }
-                    } else if !patterns.is_empty() {
+                    } else if !b.patterns.is_empty() {
                         last_specific_index = Some(i);
                     }
                 }
@@ -1503,6 +1483,103 @@ impl Check for SshV1KeyCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// UseKeychainPlatformCheck — warn if UseKeychain is set on non-macOS
+// ---------------------------------------------------------------------------
+
+impl Check for UseKeychainPlatformCheck<'_> {
+    fn id(&self) -> &'static str {
+        "use_keychain_platform"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "use_keychain_platform",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check UseKeychain: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut use_keychain_contexts: Vec<String> = Vec::new();
+
+            // Collect UseKeychain directives from top-level and Host blocks.
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("UseKeychain") => {
+                        use_keychain_contexts.push("top-level".into());
+                    }
+                    ConfigNode::HostBlock(b) => {
+                        let ctx = format!("Host {}", b.patterns.join(", "));
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("UseKeychain")
+                            {
+                                use_keychain_contexts.push(ctx.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if use_keychain_contexts.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "use_keychain_platform",
+                    severity: Severity::Ok,
+                    message: "No UseKeychain directive found in config".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let is_macos = cfg!(target_os = "macos");
+
+            if is_macos {
+                Ok(vec![Diagnostic {
+                    id: "use_keychain_platform",
+                    severity: Severity::Ok,
+                    message: format!(
+                        "UseKeychain is set in {} context(s) on macOS (supported)",
+                        use_keychain_contexts.len()
+                    ),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                let mut diagnostics = Vec::new();
+                for ctx in &use_keychain_contexts {
+                    diagnostics.push(Diagnostic {
+                        id: "use_keychain_platform",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "UseKeychain is set in {ctx} but this is not macOS — \
+                             UseKeychain is a macOS-specific directive and will be ignored"
+                        ),
+                        hint: Some(
+                            "Remove UseKeychain from non-macOS configs, or use a Match block \
+                             to apply it only on macOS: `Match exec \"uname | grep Darwin\"`"
+                                .into(),
+                        ),
+                        module: "local",
+                    });
+                }
+                Ok(diagnostics)
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // IdentityFilePubCheck — warn if IdentityFile points to a .pub file
 // ---------------------------------------------------------------------------
 
@@ -1548,19 +1625,15 @@ impl Check for IdentityFilePubCheck<'_> {
 
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
-                        check_value(value, &mut diagnostics);
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        check_value(&d.value, &mut diagnostics);
                     }
-                    ConfigNode::HostBlock { nodes, .. } => {
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                    ConfigNode::HostBlock(b) => {
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("IdentityFile")
                             {
-                                check_value(value, &mut diagnostics);
+                                check_value(&d.value, &mut diagnostics);
                             }
                         }
                     }
@@ -1611,24 +1684,24 @@ impl Check for IdentitiesOnlyCheck<'_> {
             let mut diagnostics = Vec::new();
 
             for node in &ast.nodes {
-                if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-                    let id_count = nodes
+                if let ConfigNode::HostBlock(b) = node {
+                    let id_count = b.nodes
                         .iter()
                         .filter(|n| {
-                            matches!(n, ConfigNode::Directive { keyword, .. }
-                                if keyword.eq_ignore_ascii_case("IdentityFile"))
+                            matches!(n, ConfigNode::Directive(d)
+                                if d.keyword.eq_ignore_ascii_case("IdentityFile"))
                         })
                         .count();
 
                     if id_count > 1 {
-                        let has_identities_only = nodes.iter().any(|n| {
-                            matches!(n, ConfigNode::Directive { keyword, value, .. }
-                                if keyword.eq_ignore_ascii_case("IdentitiesOnly")
-                                    && value.eq_ignore_ascii_case("yes"))
+                        let has_identities_only = b.nodes.iter().any(|n| {
+                            matches!(n, ConfigNode::Directive(d)
+                                if d.keyword.eq_ignore_ascii_case("IdentitiesOnly")
+                                    && d.value.eq_ignore_ascii_case("yes"))
                         });
 
                         if !has_identities_only {
-                            let host_str = patterns.join(", ");
+                            let host_str = b.patterns.join(", ");
                             diagnostics.push(Diagnostic {
                                 id: "identities_only",
                                 severity: Severity::Warning,
@@ -1891,20 +1964,16 @@ impl Check for PreferredAuthenticationsCheck<'_> {
             // Collect PreferredAuthentications from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("PreferredAuthentications") => {
-                        preferred.push(("top-level".into(), value.clone()));
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("PreferredAuthentications") => {
+                        preferred.push(("top-level".into(), d.value.clone()));
                     }
-                    ConfigNode::HostBlock { patterns, nodes, .. } => {
-                        let ctx = format!("Host {}", patterns.join(", "));
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("PreferredAuthentications")
+                    ConfigNode::HostBlock(b) => {
+                        let ctx = format!("Host {}", b.patterns.join(", "));
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("PreferredAuthentications")
                             {
-                                preferred.push((ctx.clone(), value.clone()));
+                                preferred.push((ctx.clone(), d.value.clone()));
                             }
                         }
                     }
@@ -1990,8 +2059,8 @@ impl Check for ProxyJumpHostCheck<'_> {
             // Collect all Host block patterns for lookup.
             let mut host_patterns: Vec<String> = Vec::new();
             for node in &ast.nodes {
-                if let ConfigNode::HostBlock { patterns, .. } = node {
-                    for pat in patterns {
+                if let ConfigNode::HostBlock(b) = node {
+                    for pat in &b.patterns {
                         if pat != "*" {
                             host_patterns.push(pat.to_lowercase());
                         }
@@ -2003,20 +2072,16 @@ impl Check for ProxyJumpHostCheck<'_> {
             let mut proxy_jumps: Vec<(String, String)> = Vec::new(); // (value, context)
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("ProxyJump") => {
-                        proxy_jumps.push((value.clone(), "top-level".into()));
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("ProxyJump") => {
+                        proxy_jumps.push((d.value.clone(), "top-level".into()));
                     }
-                    ConfigNode::HostBlock { patterns, nodes, .. } => {
-                        let ctx = format!("Host {}", patterns.join(", "));
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("ProxyJump")
+                    ConfigNode::HostBlock(b) => {
+                        let ctx = format!("Host {}", b.patterns.join(", "));
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("ProxyJump")
                             {
-                                proxy_jumps.push((value.clone(), ctx.clone()));
+                                proxy_jumps.push((d.value.clone(), ctx.clone()));
                             }
                         }
                     }
@@ -2199,19 +2264,15 @@ impl Check for AgentIdentityCheck<'_> {
 
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive {
-                        keyword, value, ..
-                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
-                        identity_files.push(value.clone());
+                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        identity_files.push(d.value.clone());
                     }
-                    ConfigNode::HostBlock { nodes, .. } => {
-                        for child in nodes {
-                            if let ConfigNode::Directive {
-                                keyword, value, ..
-                            } = child
-                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                    ConfigNode::HostBlock(b) => {
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && d.keyword.eq_ignore_ascii_case("IdentityFile")
                             {
-                                identity_files.push(value.clone());
+                                identity_files.push(d.value.clone());
                             }
                         }
                     }
@@ -2233,21 +2294,7 @@ impl Check for AgentIdentityCheck<'_> {
             // fingerprint is in the agent.
             let mut diagnostics = Vec::new();
             for raw_path in &identity_files {
-                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if let Some(rest) = raw_path.strip_prefix('~') {
-                    dirs::home_dir().map_or_else(
-                        || std::path::PathBuf::from(raw_path),
-                        |home| home.join(rest),
-                    )
-                } else if std::path::Path::new(raw_path).is_relative() {
-                    self.paths.ssh_dir().join(raw_path)
-                } else {
-                    std::path::PathBuf::from(raw_path)
-                };
+                let expanded = crate::paths::expand_path(raw_path, self.paths.ssh_dir());
 
                 // Get the fingerprint of the public key file.
                 let pub_path = expanded.with_file_name(format!(
@@ -2403,11 +2450,11 @@ impl Check for RsaWeakKeyCheck<'_> {
                     let Ok(mut file) = tokio::fs::File::open(&path).await else {
                         continue;
                     };
-                    let mut buf = [0u8; 4096];
+                    let mut buf = [0u8; PRIVATE_KEY_HEADER_READ_SIZE];
                     let Ok(n) = file.read(&mut buf).await else {
                         continue;
                     };
-                    if n < 8 || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
+                    if n < MIN_PEM_HEADER_LENGTH || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
                         continue;
                     }
                 }
@@ -2428,12 +2475,12 @@ impl Check for RsaWeakKeyCheck<'_> {
                 let public_key = pk.public_key();
                 if let Some(rsa_public) = public_key.key_data().rsa() {
                     let bits = rsa_public.key_size();
-                    if bits < 3072 {
+                    if bits < RECOMMENDED_RSA_BITS {
                         diagnostics.push(Diagnostic {
                             id: "rsa_weak_key",
                             severity: Severity::Warning,
                             message: format!(
-                                "{} is an RSA key with only {} bits (minimum recommended: 3072)",
+                                "{} is an RSA key with only {} bits (minimum recommended: {RECOMMENDED_RSA_BITS})",
                                 path.display(),
                                 bits,
                             ),
@@ -2514,6 +2561,7 @@ pub async fn run_all<'a>(
     checks.push(Box::new(DuplicateHostCheck { paths }));
     checks.push(Box::new(HostStarPlacementCheck { paths }));
     checks.push(Box::new(SshV1KeyCheck { paths }));
+    checks.push(Box::new(UseKeychainPlatformCheck { paths }));
     checks.push(Box::new(IdentityFilePubCheck { paths }));
     checks.push(Box::new(IdentitiesOnlyCheck { paths }));
     checks.push(Box::new(MaxAuthTriesExhaustionCheck));

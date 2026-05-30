@@ -1,7 +1,15 @@
+//! SSH certificate authority and key revocation list inspection.
+//!
+//! Parses CA certificate files and KRL (key revocation list) files produced
+//! by `ssh-keygen`. Exposes [`CertificateInfo`], [`KrlInfo`], and
+//! [`TrustedUserCAKeysStatus`] for diagnostics and inventory reporting.
+
 mod ca;
 mod krl;
 
+/// Parsed details from an OpenSSH certificate file.
 pub use ca::CertificateInfo;
+/// Parsed details from an OpenSSH Key Revocation List (KRL) file.
 pub use krl::KrlInfo;
 
 use std::path::{Path, PathBuf};
@@ -64,16 +72,40 @@ impl CertificateService {
     }
 
     /// Inspect an OpenSSH certificate file and return structured details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CommandFailed`] if the certificate path is not
+    /// valid UTF-8, or if the `ssh-keygen -L` fallback command fails (e.g.
+    /// `ssh-keygen` is not found in `PATH` or returns a non-zero exit code).
+    ///
+    /// Returns [`crate::Error::CertificateParseFailed`] if the certificate file
+    /// cannot be parsed by either the native `ssh_key` crate parser or the
+    /// `ssh-keygen -L` fallback (corrupt file, unsupported format, or
+    /// `ssh-keygen` output that lacks a recognizable key type line).
     pub async fn inspect(&self, path: &Path) -> Result<CertificateInfo> {
         ca::inspect_certificate(path).await
     }
 
     /// Inspect a Key Revocation List (KRL) file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the KRL path is not valid UTF-8, `ssh-keygen` is
+    /// not available or returns a non-zero exit code, or the file is not a
+    /// valid KRL.
     pub async fn inspect_krl(&self, path: &Path) -> Result<KrlInfo> {
         krl::inspect_krl(path).await
     }
 
     /// Check whether a certificate is currently within its validity window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CommandFailed`] if the certificate path is not
+    /// valid UTF-8 or `ssh-keygen -L` fails. Returns
+    /// [`crate::Error::CertificateParseFailed`] if the certificate file cannot
+    /// be parsed.
     pub async fn is_valid(&self, path: &Path) -> Result<bool> {
         let info = self.inspect(path).await?;
         // Clamp to non-negative: timestamp() returns i64, valid_* fields are u64.
@@ -88,6 +120,13 @@ impl CertificateService {
     /// keys of CAs trusted to sign user certificates. This method reads the
     /// file and returns whether it exists, is readable, and how many CA keys
     /// it contains.
+    ///
+    /// # Errors
+    ///
+    /// This method currently never returns an error. File-system failures
+    /// (including a missing file) are captured in the returned status struct
+    /// rather than propagated. The `Result` return type is reserved for future
+    /// use if stricter validation is added.
     pub async fn check_trusted_user_ca_keys(&self, path: &Path) -> Result<TrustedUserCAKeysStatus> {
         match tokio::fs::read_to_string(path).await {
             Ok(content) => {
@@ -129,6 +168,12 @@ impl CertificateService {
     ///
     /// Creates the KRL file if it does not exist, or updates it if it does.
     /// The `key` parameter should be the path to the public key file to revoke.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the KRL path is not valid UTF-8, or if
+    /// `ssh-keygen -k` fails (e.g. `ssh-keygen` is not available, the key
+    /// file does not exist, or the KRL file cannot be written).
     pub async fn revoke_key(&self, krl_path: &Path, key: &str) -> Result<()> {
         let krl_str = krl_path.to_str().ok_or_else(|| {
             crate::Error::CommandFailed(format!(

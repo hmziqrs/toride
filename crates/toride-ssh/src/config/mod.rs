@@ -1,9 +1,16 @@
+//! SSH config file parsing, editing, and host resolution.
+//!
+//! Provides [`ConfigService`] for reading and writing `~/.ssh/config` via a
+//! lossless AST, plus [`ResolvedHost`] for merging config directives into a
+//! final per-host configuration. Sub-modules cover the AST types, individual
+//! directives, in-place editing, managed host blocks, parsing, and resolution.
+
 pub mod ast;
 mod directives;
 mod editor;
 mod managed;
 mod parse;
-mod resolve;
+pub mod resolve;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,7 +65,7 @@ impl<'a> ConfigService<'a> {
         let content = ast.to_string_lossless();
 
         // Atomic write: write to temp file, then rename.
-        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         let tmp_path = parent.join(format!(
             ".config.tmp.{}.{}",
             std::process::id(),
@@ -259,28 +266,24 @@ impl<'a> ConfigService<'a> {
         let mut last_specific_index: Option<usize> = None;
 
         for (i, node) in ast.nodes.iter().enumerate() {
-            let ast::ConfigNode::HostBlock {
-                header,
-                patterns,
-                nodes,
-            } = node
+            let ast::ConfigNode::HostBlock(b) = node
             else {
                 continue;
             };
 
-            check_proxy_conflict(header, nodes, &mut diagnostics);
-            check_duplicate_aliases(header, patterns, &mut seen_patterns, &mut diagnostics);
+            check_proxy_conflict(&b.header, &b.nodes, &mut diagnostics);
+            check_duplicate_aliases(&b.header, &b.patterns, &mut seen_patterns, &mut diagnostics);
 
             // Track Host * ordering.
-            if patterns.iter().any(|p| p == "*") {
+            if b.patterns.iter().any(|p| p == "*") {
                 if star_index.is_none() {
                     star_index = Some(i);
                 }
-            } else if !patterns.is_empty() {
+            } else if !b.patterns.is_empty() {
                 last_specific_index = Some(i);
             }
 
-            check_identity_files(header, nodes, ssh_dir, &mut diagnostics);
+            check_identity_files(&b.header, &b.nodes, ssh_dir, &mut diagnostics);
         }
 
         check_host_star_placement(star_index, last_specific_index, &mut diagnostics);
@@ -298,15 +301,15 @@ fn check_proxy_conflict(
     let has_proxy_command = nodes.iter().any(|n| {
         matches!(
             n,
-            ast::ConfigNode::Directive { keyword, .. }
-                if keyword.eq_ignore_ascii_case("ProxyCommand")
+            ast::ConfigNode::Directive(d)
+                if d.keyword.eq_ignore_ascii_case("ProxyCommand")
         )
     });
     let has_proxy_jump = nodes.iter().any(|n| {
         matches!(
             n,
-            ast::ConfigNode::Directive { keyword, .. }
-                if keyword.eq_ignore_ascii_case("ProxyJump")
+            ast::ConfigNode::Directive(d)
+                if d.keyword.eq_ignore_ascii_case("ProxyJump")
         )
     });
     if has_proxy_command && has_proxy_jump {
@@ -363,19 +366,18 @@ fn check_identity_files(
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     for child in nodes {
-        if let ast::ConfigNode::Directive {
-            keyword, value, ..
-        } = child
-            && keyword.eq_ignore_ascii_case("IdentityFile")
+        if let ast::ConfigNode::Directive(d) = child
+            && d.keyword.eq_ignore_ascii_case("IdentityFile")
         {
             // Points to a .pub file?
-            if value.to_lowercase().ends_with(".pub") {
+            if d.value.to_lowercase().ends_with(".pub") {
                 diagnostics.push(Diagnostic {
                     id: "config_identity_pub",
                     severity: Severity::Warning,
                     message: format!(
-                        "IdentityFile '{value}' in '{header}' points to a public key \
+                        "IdentityFile '{}' in '{header}' points to a public key \
                          (.pub file)",
+                        d.value,
                     ),
                     hint: Some(
                         "IdentityFile should reference the private key, \
@@ -387,14 +389,15 @@ fn check_identity_files(
             }
 
             // Does the file exist?
-            let expanded = expand_identity_path(value, ssh_dir);
+            let expanded = expand_identity_path(&d.value, ssh_dir);
             if !expanded.exists() {
                 diagnostics.push(Diagnostic {
                     id: "config_identity_missing",
                     severity: Severity::Warning,
                     message: format!(
-                        "IdentityFile '{value}' in '{header}' does not exist \
+                        "IdentityFile '{}' in '{header}' does not exist \
                          (resolved: {})",
+                        d.value,
                         expanded.display()
                     ),
                     hint: Some(format!(
@@ -437,30 +440,15 @@ fn check_host_star_placement(
 /// Expand an `IdentityFile` value to an absolute path on disk.
 ///
 /// Handles `~` expansion and relative paths (resolved against the SSH
-/// directory, matching OpenSSH behaviour).  Strips surrounding single or
-/// double quotes that the AST parser preserves verbatim.
+/// directory, matching OpenSSH behaviour).  Delegates to
+/// [`crate::paths::expand_path`].
 pub(crate) fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
-    if let Some(rest) = raw.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    } else if raw == "~"
-        && let Some(home) = dirs::home_dir()
-    {
-        return home;
-    }
-
-    let path = Path::new(raw);
-    if path.is_relative() {
-        ssh_dir.join(path)
-    } else {
-        path.to_path_buf()
-    }
+    crate::paths::expand_path(raw, ssh_dir)
 }
 
 /// Check if a hostname matches any of the given SSH config patterns.
 /// Public re-export for use in other modules.
-pub fn host_matches(host: &str, patterns: &[String]) -> bool {
+pub fn host_matches(host: &str, patterns: &[impl AsRef<str>]) -> bool {
     directives::host_matches_patterns(host, patterns)
 }
 

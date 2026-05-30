@@ -1,3 +1,10 @@
+//! SSH path resolution for the `~/.ssh` directory layout.
+//!
+//! Provides [`SshPaths`], which resolves and caches canonical paths for the
+//! SSH directory, config file, `known_hosts`, `authorized_keys`, and the
+//! global known-hosts file. All other service modules accept `&SshPaths`
+//! to locate the files they operate on.
+
 use std::path::{Path, PathBuf};
 
 use crate::Result;
@@ -94,5 +101,37 @@ impl SshPaths {
     /// Default key file name patterns to scan (without extension).
     pub fn default_key_names() -> &'static [&'static str] {
         &["id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk"]
+    }
+}
+
+/// Expand a path that may start with `~` or be relative.
+///
+/// Handles the common SSH config path expansion logic:
+/// - `~/path` expands to `$HOME/path`
+/// - bare `~` expands to `$HOME`
+/// - Relative paths are resolved against `ssh_dir`
+/// - Absolute paths are returned as-is
+///
+/// When `dirs::home_dir()` returns `None`, `~/` and bare `~` paths are
+/// returned unchanged as a `PathBuf`.
+pub(crate) fn expand_path(raw: &str, ssh_dir: &Path) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest);
+        }
+        return PathBuf::from(raw);
+    }
+    if raw == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return home;
+        }
+        return PathBuf::from(raw);
+    }
+
+    let path = Path::new(raw);
+    if path.is_relative() {
+        ssh_dir.join(path)
+    } else {
+        path.to_path_buf()
     }
 }

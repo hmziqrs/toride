@@ -1,3 +1,11 @@
+//! SSH diagnostic service ("doctor") for environment health checks.
+//!
+//! Provides [`DoctorService`], which orchestrates local and remote checks
+//! covering directory structure, file permissions, key strength, agent
+//! availability, config validity, and remote connectivity. Sub-modules
+//! define the [`Check`](check::Check) trait, the local/remote check
+//! implementations, and the [`CheckRegistry`](registry::CheckRegistry).
+
 mod check;
 mod local;
 mod registry;

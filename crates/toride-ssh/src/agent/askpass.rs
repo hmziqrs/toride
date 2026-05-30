@@ -99,6 +99,8 @@ impl AskpassHandler {
 
     /// Create the temporary askpass script on disk.
     fn create_script(passphrase: &str) -> Result<PathBuf> {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir();
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -127,35 +129,57 @@ impl AskpassHandler {
             })?;
 
             // Make the script executable (rwx------).
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &script_path,
-                    std::fs::Permissions::from_mode(0o700),
-                )
-                .map_err(|e| {
-                    Error::CommandFailed(format!(
-                        "failed to set permissions on askpass script: {e}"
-                    ))
-                })?;
-            }
+            std::fs::set_permissions(
+                &script_path,
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .map_err(|e| {
+                Error::CommandFailed(format!(
+                    "failed to set permissions on askpass script: {e}"
+                ))
+            })?;
         }
 
         #[cfg(windows)]
         {
             // On Windows, write a batch file that echoes the passphrase.
-            let script_content = format!("@echo off\r\necho {passphrase}\r\n");
-            std::fs::write(&script_path.with_extension("bat"), &script_content).map_err(
-                |e| {
-                    Error::CommandFailed(format!(
-                        "failed to write askpass script {}: {e}",
-                        script_path.display()
-                    ))
-                },
-            )?;
+            //
+            // We use `setlocal enabledelayedexpansion` and `set "VAR=value"`
+            // so that shell metacharacters like `&`, `|`, `>`, `<`, and `^`
+            // are treated as literal text (they are harmless inside the
+            // quoted `set` form). The following characters still need
+            // escaping:
+            //
+            // - `%` → `%%` — prevents `%VAR%`-style expansion in the
+            //   percent-expansion phase (phase 1).
+            // - `!` → `^^!` — the first `^` is consumed by phase-1 caret
+            //   processing, leaving `^!`; in the delayed-expansion phase
+            //   (phase 3), `^` escapes `!`, yielding a literal `!`.
+            // - `"` → `""` — embeds a literal double-quote inside the
+            //   `set "VAR=value"` assignment (Windows 10+ / Server 2016+).
+            let bat_path = script_path.with_extension("bat");
+            let escaped = passphrase
+                .replace('%', "%%")
+                .replace('!', "^^!")
+                .replace('"', "\"\"");
+            let script_content = format!(
+                "@echo off\r\n\
+                 setlocal enabledelayedexpansion\r\n\
+                 set \"PASSPHRASE={escaped}\"\r\n\
+                 echo !PASSPHRASE!\r\n"
+            );
+            std::fs::write(&bat_path, &script_content).map_err(|e| {
+                Error::CommandFailed(format!(
+                    "failed to write askpass script {}: {e}",
+                    bat_path.display()
+                ))
+            })?;
+            // Return the actual written path so Drop cleanup removes the
+            // correct file (the .bat, not the extensionless original).
+            return Ok(bat_path);
         }
 
+        #[allow(unreachable_code)]
         Ok(script_path)
     }
 }

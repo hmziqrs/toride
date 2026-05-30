@@ -1,3 +1,10 @@
+//! Known-hosts file parsing and host-key change detection.
+//!
+//! Reads and parses `~/.ssh/known_hosts` entries, scans remote hosts via
+//! `ssh-keyscan`, and compares the two to detect key changes. Provides
+//! [`KnownHostsService`], [`KnownHostEntry`], [`ScannedHostKey`], and
+//! [`HostKeyChangeReport`] for diagnostics and trust management.
+
 mod parse;
 mod scan;
 
@@ -7,7 +14,9 @@ use std::path::{Path, PathBuf};
 use crate::paths::SshPaths;
 use crate::{Error, Result};
 
+/// A single entry parsed from a `known_hosts` file.
 pub use parse::KnownHostEntry;
+/// A host key discovered by `ssh-keyscan`.
 pub use scan::ScannedHostKey;
 
 /// Report from host key change detection.
