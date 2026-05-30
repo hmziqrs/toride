@@ -113,7 +113,29 @@ pub fn read_framework_file(path: &Path) -> Result<String> {
 }
 
 /// Write a framework file atomically.
-pub fn write_framework_file(path: &Path, content: &str) -> Result<()> {
+///
+/// If `backup_dir` is provided and the file already exists, the current
+/// content is backed up before writing.
+pub fn write_framework_file(path: &Path, content: &str, backup_dir: Option<&Path>) -> Result<()> {
+    // Backup existing file if requested
+    if let Some(dir) = backup_dir {
+        if path.exists() {
+            let existing = std::fs::read_to_string(path)
+                .map_err(|e| Error::BackupFailed(format!("read for backup: {e}")))?;
+
+            std::fs::create_dir_all(dir)
+                .map_err(|e| Error::BackupFailed(format!("create backup dir: {e}")))?;
+
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            std::fs::write(dir.join(&name), &existing)
+                .map_err(|e| Error::BackupFailed(format!("write backup {name}: {e}")))?;
+        }
+    }
+
     let dir = path
         .parent()
         .ok_or_else(|| Error::FrameworkBlockError("no parent directory".into()))?;

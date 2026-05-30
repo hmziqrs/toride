@@ -135,9 +135,29 @@ impl Ufw {
     }
 
     /// Reset UFW (destructive!).
+    ///
+    /// If `backup_first` is true, creates a backup of all UFW configuration
+    /// before resetting. The backup is stored in a temporary directory.
     pub fn reset(&self, opts: &ResetOptions) -> Result<()> {
         if !opts.force {
             return Err(Error::ResetRequiresForce);
+        }
+
+        // Backup before reset if requested
+        if opts.backup_first {
+            let paths = crate::paths::UfwPaths::default();
+            let backup_dir = std::env::temp_dir().join(format!(
+                "ufw-kit-backup-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            ));
+            let bundle = crate::backup::create_backup(&paths)
+                .map_err(|e| Error::BackupFailed(format!("pre-reset backup: {e}")))?;
+            crate::backup::write_backup(&bundle, &backup_dir)
+                .map_err(|e| Error::BackupFailed(format!("write pre-reset backup: {e}")))?;
+            tracing::info!("Backup created at {}", backup_dir.display());
         }
 
         let args = if opts.force {

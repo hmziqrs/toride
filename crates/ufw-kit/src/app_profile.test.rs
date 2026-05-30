@@ -22,7 +22,7 @@ fn ensure_app_profile_should_create_new_file() {
         }],
     };
 
-    let created = ensure_app_profile(&paths, &spec, "ufw-kit").unwrap();
+    let created = ensure_app_profile(&paths, &spec, "ufw-kit", None).unwrap();
     assert!(created);
 
     let content = std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
@@ -46,10 +46,10 @@ fn ensure_app_profile_should_skip_if_unchanged() {
         }],
     };
 
-    let created1 = ensure_app_profile(&paths, &spec, "ufw-kit").unwrap();
+    let created1 = ensure_app_profile(&paths, &spec, "ufw-kit", None).unwrap();
     assert!(created1);
 
-    let created2 = ensure_app_profile(&paths, &spec, "ufw-kit").unwrap();
+    let created2 = ensure_app_profile(&paths, &spec, "ufw-kit", None).unwrap();
     assert!(!created2);
 }
 
@@ -85,8 +85,8 @@ fn ensure_app_profile_should_update_if_changed() {
         ],
     };
 
-    ensure_app_profile(&paths, &spec1, "ufw-kit").unwrap();
-    let updated = ensure_app_profile(&paths, &spec2, "ufw-kit").unwrap();
+    ensure_app_profile(&paths, &spec1, "ufw-kit", None).unwrap();
+    let updated = ensure_app_profile(&paths, &spec2, "ufw-kit", None).unwrap();
     assert!(updated);
 
     let content = std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
@@ -113,7 +113,7 @@ fn remove_app_profile_should_remove_managed_file() {
         }],
     };
 
-    ensure_app_profile(&paths, &spec, "ufw-kit").unwrap();
+    ensure_app_profile(&paths, &spec, "ufw-kit", None).unwrap();
     let removed = remove_app_profile(&paths, "MyApp", "ufw-kit").unwrap();
     assert!(removed);
 
@@ -208,7 +208,7 @@ fn ensure_app_profile_should_validate_empty_name() {
         }],
     };
 
-    let result = ensure_app_profile(&paths, &spec, "ufw-kit");
+    let result = ensure_app_profile(&paths, &spec, "ufw-kit", None);
     assert!(result.is_err());
 }
 
@@ -224,7 +224,7 @@ fn ensure_app_profile_should_validate_empty_ports() {
         ports: vec![],
     };
 
-    let result = ensure_app_profile(&paths, &spec, "ufw-kit");
+    let result = ensure_app_profile(&paths, &spec, "ufw-kit", None);
     assert!(result.is_err());
 }
 
@@ -255,4 +255,44 @@ fn render_profile_should_handle_single_port() {
 
     let rendered = render_profile(&spec);
     assert!(rendered.contains("ports=22/tcp"));
+}
+
+// ---------------------------------------------------------------------------
+// Backup integration tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ensure_app_profile_should_create_backup_when_requested() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    // Create existing app profiles directory with a file
+    std::fs::create_dir_all(root.join("etc/ufw/applications.d")).unwrap();
+    std::fs::create_dir_all(root.join("etc/default")).unwrap();
+    std::fs::write(root.join("etc/default/ufw"), "ENABLED=yes\n").unwrap();
+    std::fs::write(
+        root.join("etc/ufw/applications.d/ufw-kit-OldApp"),
+        "[OldApp]\ntitle=Old\n",
+    )
+    .unwrap();
+
+    let paths = UfwPaths::with_root(root);
+    let backup_dir = root.join("backup");
+
+    let spec = AppProfileSpec {
+        name: "NewApp".into(),
+        title: "New Application".into(),
+        description: "New".into(),
+        ports: vec![AppPort {
+            port: "80".into(),
+            protocol: "tcp".into(),
+        }],
+    };
+
+    let created = ensure_app_profile(&paths, &spec, "ufw-kit", Some(&backup_dir)).unwrap();
+    assert!(created);
+
+    // Verify backup was created
+    assert!(backup_dir.join("default-ufw").exists());
+    assert!(backup_dir.join("applications.d/ufw-kit-OldApp").exists());
 }

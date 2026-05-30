@@ -3,8 +3,9 @@
 //! Handles writing, updating, and removing UFW application profiles
 //! in `/etc/ufw/applications.d/`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use crate::backup;
 use crate::error::{Error, Result};
 use crate::paths::UfwPaths;
 use crate::spec::AppProfileSpec;
@@ -12,11 +13,12 @@ use crate::spec::AppProfileSpec;
 /// Ensure an application profile exists and is up to date.
 ///
 /// If the file exists with different content, it is updated.
-/// A backup is created before any write.
+/// If `backup_dir` is provided, a backup is created before any write.
 pub fn ensure_app_profile(
     paths: &UfwPaths,
     spec: &AppProfileSpec,
     namespace: &str,
+    backup_dir: Option<&Path>,
 ) -> Result<bool> {
     spec.validate()?;
 
@@ -30,6 +32,14 @@ pub fn ensure_app_profile(
         if existing == new_content {
             return Ok(false); // Already up to date
         }
+    }
+
+    // Backup before write if requested
+    if let Some(dir) = backup_dir {
+        let bundle = backup::create_backup(paths)
+            .map_err(|e| Error::BackupFailed(format!("pre-write backup: {e}")))?;
+        backup::write_backup(&bundle, dir)
+            .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
     }
 
     // Ensure directory exists
