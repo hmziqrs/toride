@@ -9,6 +9,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::PlatformCommands;
 
+/// Escape a value for safe use in `sh -c` command strings.
+///
+/// Wraps the value in single quotes and escapes embedded single quotes.
+/// Numeric values and simple alphanumeric strings are passed through unchanged.
+fn shell_escape(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    let needs_escape = value.chars().any(|c| {
+        !c.is_ascii_alphanumeric() && c != '_' && c != '-' && c != '.' && c != '/' && c != ':'
+    });
+    if !needs_escape {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// An action executor that runs platform-specific commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionExec {
@@ -75,14 +92,18 @@ impl ActionExec {
     }
 
     /// Expand command templates with the given variables.
+    ///
+    /// All string values are shell-escaped to prevent command injection.
+    /// Numeric values (`<prefix>`, `<ban-time>`, `<fail-count>`) are not escaped
+    /// since they are guaranteed to be numeric.
     pub fn expand_command(template: &str, vars: &ActionVars) -> String {
         template
-            .replace("<ip>", &vars.ip)
+            .replace("<ip>", &shell_escape(&vars.ip))
             .replace("<prefix>", &vars.prefix.to_string())
-            .replace("<jail>", &vars.jail_name)
+            .replace("<jail>", &shell_escape(&vars.jail_name))
             .replace("<ban-time>", &vars.ban_time.to_string())
             .replace("<fail-count>", &vars.fail_count.to_string())
-            .replace("<log-path>", &vars.log_path)
+            .replace("<log-path>", &shell_escape(&vars.log_path))
     }
 
     /// Execute the action for the current platform.

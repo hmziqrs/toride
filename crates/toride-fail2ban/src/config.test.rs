@@ -684,11 +684,11 @@ fn multiple_jails_resolve_independently() {
 }
 
 // ---------------------------------------------------------------------------
-// Edge case: ban_time of 0 is allowed (permanent ban)
+// Edge case: ban_time of 0 is rejected (would create instantly-expiring bans)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn validate_does_not_reject_zero_ban_time() {
+fn validate_rejects_zero_ban_time() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "some log content").unwrap();
@@ -698,8 +698,10 @@ fn validate_does_not_reject_zero_ban_time() {
         ..sample_jail_config(log_path)
     };
     let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
-    // ban_time == 0 means permanent ban and should NOT be rejected.
-    assert!(config.validate().is_ok());
+    let result = config.validate();
+    assert!(result.is_err());
+    let msg = format!("{}", result.unwrap_err());
+    assert!(msg.contains("ban_time must be > 0"), "unexpected error: {msg}");
 }
 
 // ---------------------------------------------------------------------------

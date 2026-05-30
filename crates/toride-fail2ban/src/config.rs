@@ -171,7 +171,7 @@ impl Fail2BanConfig {
         Ok(config)
     }
 
-    /// Save configuration to a JSON file.
+    /// Save configuration to a JSON file using atomic write.
     pub fn save(&self, path: &Path) -> crate::Result<()> {
         let content = serde_json::to_string_pretty(self).map_err(|e| {
             crate::Error::InvalidConfig(format!("Failed to serialize config: {e}"))
@@ -179,7 +179,15 @@ impl Fail2BanConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, content)?;
+        let tmp_path = path.with_extension(format!("json.tmp.{}", std::process::id()));
+        fs::write(&tmp_path, &content)?;
+        let file = fs::File::open(&tmp_path)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp_path, path).map_err(|e| {
+            let _ = fs::remove_file(&tmp_path);
+            crate::Error::Io(e)
+        })?;
         Ok(())
     }
 
@@ -187,8 +195,26 @@ impl Fail2BanConfig {
     ///
     /// # Errors
     ///
-    /// Returns `InvalidConfig` on zero `find_time`, zero `max_retry`, or missing log file.
+    /// Returns `InvalidConfig` on zero `find_time`, zero `max_retry`, zero `ban_time`,
+    /// invalid regex pattern, missing log file, or invalid action references.
     pub fn validate(&self) -> crate::Result<()> {
+        // Validate global defaults.
+        if self.defaults.find_time == 0 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: find_time must be greater than 0".to_string()
+            ));
+        }
+        if self.defaults.max_retry == 0 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: max_retry must be greater than 0".to_string()
+            ));
+        }
+        if self.defaults.ban_time == 0 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: ban_time must be greater than 0".to_string()
+            ));
+        }
+
         for (name, jail) in &self.jails {
             if jail.find_time == Some(0) {
                 return Err(crate::Error::InvalidConfig(format!(
@@ -200,11 +226,41 @@ impl Fail2BanConfig {
                     "Jail '{name}': max_retry must be > 0"
                 )));
             }
+            if jail.ban_time == Some(0) {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': ban_time must be > 0"
+                )));
+            }
             if !jail.log_path.exists() {
                 return Err(crate::Error::InvalidConfig(format!(
                     "Jail '{name}': log file does not exist: {}",
                     jail.log_path.display()
                 )));
+            }
+            // Validate regex pattern.
+            if let Err(e) = regex::Regex::new(&jail.pattern) {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': invalid regex pattern: {e}"
+                )));
+            }
+            // Validate action references.
+            if !self.actions.is_empty() {
+                if let Some(ref action_name) = jail.ban_action
+                    && action_name != "ban"
+                    && !self.actions.contains_key(action_name)
+                {
+                    return Err(crate::Error::InvalidConfig(format!(
+                        "Jail '{name}': ban_action '{action_name}' not found in actions"
+                    )));
+                }
+                if let Some(ref action_name) = jail.unban_action
+                    && action_name != "unban"
+                    && !self.actions.contains_key(action_name)
+                {
+                    return Err(crate::Error::InvalidConfig(format!(
+                        "Jail '{name}': unban_action '{action_name}' not found in actions"
+                    )));
+                }
             }
         }
         Ok(())

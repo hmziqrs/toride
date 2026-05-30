@@ -1,7 +1,9 @@
 //! Jail implementation combining detector, ban manager, and actions.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 
+use chrono::{DateTime, Duration, Utc};
 use ipnet::IpNet;
 
 use crate::action::{ActionExec, ActionVars};
@@ -33,6 +35,8 @@ pub struct Jail {
     unban_action: ActionExec,
     /// IPs that should never be banned.
     ignore_ips: Vec<IgnoreEntry>,
+    /// Tracks failure timestamps per IP for find_time/max_retry logic.
+    failure_tracker: HashMap<IpAddr, Vec<DateTime<Utc>>>,
 }
 
 impl Jail {
@@ -79,6 +83,7 @@ impl Jail {
             ban_action,
             unban_action,
             ignore_ips,
+            failure_tracker: HashMap::new(),
         })
     }
 
@@ -92,6 +97,7 @@ impl Jail {
             } else if let Ok(ip) = s.parse::<IpAddr>() {
                 Some(IgnoreEntry::Single(ip))
             } else {
+                tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
                 None
             }
         }).collect();
@@ -108,94 +114,152 @@ impl Jail {
         &self.config.log_path
     }
 
+    /// Get the regex pattern.
+    pub fn pattern(&self) -> &str {
+        &self.config.pattern
+    }
+
+    /// Create action variables for the given IP.
+    fn make_action_vars(&self, ip: &IpAddr, prefix: u8, fail_count: u32) -> ActionVars {
+        ActionVars::new(
+            &ip.to_string(),
+            prefix,
+            &self.config.name,
+            self.config.ban_time,
+            fail_count,
+            &self.config.log_path.display().to_string(),
+        )
+    }
+
     /// Scan the log file and process any new matches.
+    ///
+    /// Applies find_time/max_retry threshold logic: only bans an IP if it has
+    /// failed at least `max_retry` times within the `find_time` window.
+    ///
+    /// Persists bans to the store and executes firewall commands (unless dry-run).
     pub fn scan(&mut self, mode: ExecutionMode) -> crate::Result<ScanResult> {
         let mut result = self.detector.scan()?;
 
-        // Filter out ignored IPs.
-        result.new_bans.retain(|ban| !self.is_ignored(ban.ip));
+        let now = Utc::now();
+        #[expect(clippy::cast_possible_wrap, reason = "find_time fits in i64")]
+        let find_time = Duration::seconds(self.config.find_time as i64);
 
-        if !mode.is_dry_run() {
-            for ban in &result.new_bans {
-                let vars = ActionVars::new(
-                    &ban.ip.to_string(),
-                    ban.prefix,
-                    &self.config.name,
-                    self.config.ban_time,
-                    ban.fail_count,
-                    &self.config.log_path.display().to_string(),
-                );
+        // Apply find_time/max_retry threshold logic.
+        let mut to_ban = Vec::new();
+        for entry in result.new_bans.drain(..) {
+            if self.is_ignored(entry.ip) {
+                continue;
+            }
 
-                // Execute ban action.
-                if let Err(e) = self.ban_action.exec(&vars) {
-                    tracing::error!(jail = %self.config.name, ip = %ban.ip, error = %e, "ban action failed");
+            // Track failure timestamp.
+            let failures = self.failure_tracker.entry(entry.ip).or_default();
+            failures.push(now);
+            // Prune old failures outside find_time window.
+            failures.retain(|t| now - *t <= find_time);
+
+            // Only ban if we have enough failures.
+            #[expect(clippy::cast_possible_truncation, reason = "failure count fits in u32")]
+            if (failures.len() as u32) < self.config.max_retry {
+                continue;
+            }
+            failures.clear(); // Reset after ban triggers.
+
+            to_ban.push(entry);
+        }
+
+        result.new_bans = Vec::with_capacity(to_ban.len());
+
+        for entry in to_ban {
+            // Persist the ban to the store.
+            match self.ban_manager.ban(
+                entry.ip,
+                entry.prefix,
+                &self.config.name,
+                entry.fail_count,
+                self.config.ban_time,
+                entry.reason.clone(),
+            ) {
+                Ok(persisted) => {
+                    // Execute ban action (skip in dry-run).
+                    if !mode.is_dry_run() {
+                        let vars = self.make_action_vars(&entry.ip, entry.prefix, entry.fail_count);
+                        if let Err(e) = self.ban_action.exec(&vars) {
+                            tracing::error!(jail = %self.config.name, ip = %entry.ip, error = %e, "ban action failed");
+                            // Rollback: remove from store since firewall command failed.
+                            let _ = self.ban_manager.unban(entry.ip, &self.config.name);
+                            return Err(e);
+                        }
+                    }
+                    result.new_bans.push(persisted);
                 }
+                Err(crate::Error::AlreadyBanned(_)) => {
+                    // Already banned, skip.
+                }
+                Err(e) => return Err(e),
             }
         }
+
+        // Update journal position for scan resume.
+        let journal = self.detector.journal();
+        // Store journal if we have a store reference (we do via ban_manager).
+        // This is a best-effort operation.
+        let _ = self.ban_manager.store().update_journal(journal);
 
         Ok(result)
     }
 
     /// Ban a specific IP address.
     ///
+    /// Executes the firewall command first, then persists to store only on success.
+    ///
     /// # Errors
     ///
-    /// Returns `InvalidConfig` if the IP is in the ignore list, or `AlreadyBanned` if already banned.
-    pub fn ban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
+    /// Returns `InvalidConfig` if the IP is in the ignore list,
+    /// `AlreadyBanned` if already banned, or `CommandFailed` if the
+    /// firewall command fails.
+    pub fn ban_ip(&mut self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
         if self.is_ignored(ip) {
             return Err(crate::Error::InvalidConfig(format!(
                 "IP {ip} is in the ignore list"
             )));
         }
 
-        let entry = self.ban_manager.ban(
-            ip,
-            match ip {
-                IpAddr::V4(_) => 32,
-                IpAddr::V6(_) => 128,
-            },
-            &self.config.name,
-            0,
-            self.config.ban_time,
-            None,
-        )?;
+        let prefix = match ip {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
 
+        // Execute ban action FIRST (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = ActionVars::new(
-                &ip.to_string(),
-                entry.prefix,
-                &self.config.name,
-                self.config.ban_time,
-                1,
-                &self.config.log_path.display().to_string(),
-            );
+            let vars = self.make_action_vars(&ip, prefix, 1);
             if let Err(e) = self.ban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
+                return Err(e);
             }
         }
 
-        Ok(entry)
+        // Persist to store only if action succeeded.
+        self.ban_manager.ban(ip, prefix, &self.config.name, 1, self.config.ban_time, None)
     }
 
     /// Unban a specific IP address.
     ///
+    /// Removes from store first, then executes the firewall unban command.
+    ///
     /// # Errors
     ///
-    /// Returns `NotBanned` if the IP is not currently banned.
-    pub fn unban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
+    /// Returns `NotBanned` if the IP is not currently banned,
+    /// or `CommandFailed` if the firewall command fails.
+    pub fn unban_ip(&mut self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
+        // Verify the IP is actually banned and remove from store.
         let entry = self.ban_manager.unban(ip, &self.config.name)?;
 
+        // Execute unban action (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = ActionVars::new(
-                &ip.to_string(),
-                entry.prefix,
-                &self.config.name,
-                self.config.ban_time,
-                entry.fail_count,
-                &self.config.log_path.display().to_string(),
-            );
+            let vars = self.make_action_vars(&ip, entry.prefix, entry.fail_count);
             if let Err(e) = self.unban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "unban action failed");
+                return Err(e);
             }
         }
 

@@ -75,13 +75,16 @@ impl Store {
         Ok(data)
     }
 
-    /// Save store data to disk using atomic write.
+    /// Save store data to disk using atomic write with fsync.
     pub fn save(&self, data: &StoreData) -> crate::Result<()> {
         let content = serde_json::to_string_pretty(data)?;
-        let tmp_path = self.path.with_extension("json.tmp");
+        let tmp_path = self.path.with_extension(format!("json.tmp.{}", std::process::id()));
 
-        // Atomic write: write to temp, then rename.
+        // Atomic write: write to temp, fsync, then rename.
         fs::write(&tmp_path, &content)?;
+        let file = fs::File::open(&tmp_path)?;
+        file.sync_all()?;
+        drop(file);
         if let Err(e) = fs::rename(&tmp_path, &self.path) {
             let _ = fs::remove_file(&tmp_path);
             return Err(crate::Error::Io(std::io::Error::new(e.kind(), format!("Failed to atomically update '{}': {e}", self.path.display()))));

@@ -86,6 +86,9 @@ impl LogDetector {
 
     /// Scan the log file from the last known position.
     ///
+    /// Uses `read_until` with UTF-8 lossy conversion to handle non-UTF-8 log files
+    /// gracefully. Non-UTF-8 bytes are replaced with the Unicode replacement character.
+    ///
     /// # Errors
     ///
     /// Returns `LogFileError` if the file cannot be opened, or `Io` on read/seek failure.
@@ -98,19 +101,23 @@ impl LogDetector {
         let file = fs::File::open(&self.log_path)
             .map_err(|e| crate::Error::LogFileError(format!("Cannot open '{}': {}", self.log_path.display(), e)))?;
 
-        let mut reader = BufReader::new(file);
+        // Use a 64KB buffer for better performance on large log files.
+        let mut reader = BufReader::with_capacity(65536, file);
 
         if self.offset > 0 {
             reader.seek(SeekFrom::Start(self.offset))?;
         }
 
-        let mut line = String::new();
+        let mut raw_line = Vec::new();
         loop {
-            line.clear();
-            let bytes = reader.read_line(&mut line)?;
+            raw_line.clear();
+            let bytes = reader.read_until(b'\n', &mut raw_line)?;
             if bytes == 0 {
                 break;
             }
+
+            // Convert to UTF-8 lossily, replacing invalid bytes with replacement char.
+            let line = String::from_utf8_lossy(&raw_line);
 
             self.line_number += 1;
             lines_scanned += 1;

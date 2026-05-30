@@ -50,6 +50,9 @@ impl PlatformCommands {
     }
 
     /// Get the commands for the current platform.
+    ///
+    /// Returns an empty slice for unsupported platforms instead of falling back
+    /// to the Linux commands.
     pub fn for_current_platform(&self) -> &[String] {
         if cfg!(target_os = "linux") {
             &self.linux
@@ -58,7 +61,7 @@ impl PlatformCommands {
         } else if cfg!(target_os = "freebsd") {
             &self.freebsd
         } else {
-            &self.linux
+            &[]
         }
     }
 }

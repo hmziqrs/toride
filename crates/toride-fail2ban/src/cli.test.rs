@@ -94,7 +94,7 @@ fn parse_unban_with_ip() {
     let cli = Cli::try_parse_from(["toride-fail2ban", "unban", "192.168.1.100"]).unwrap();
     match cli.command {
         Commands::Unban { ip, jail } => {
-            assert_eq!(ip, "192.168.1.100");
+            assert_eq!(ip, "192.168.1.100".parse::<std::net::IpAddr>().unwrap());
             assert_eq!(jail, "default");
         }
         _ => panic!("expected Unban command"),
@@ -113,7 +113,7 @@ fn parse_unban_with_jail_flag() {
     .unwrap();
     match cli.command {
         Commands::Unban { ip, jail } => {
-            assert_eq!(ip, "10.0.0.1");
+            assert_eq!(ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
             assert_eq!(jail, "nginx");
         }
         _ => panic!("expected Unban command"),

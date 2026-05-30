@@ -117,8 +117,8 @@ pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
         ),
         Firewall::Pf => PlatformCommands::new(
             vec![],
-            vec!["echo 'block in from <ip>' | pfctl -f -".to_string()],
-            vec!["echo 'block in from <ip>' | pfctl -f -".to_string()],
+            vec!["pfctl -t toride -T add <ip>".to_string()],
+            vec!["pfctl -t toride -T add <ip>".to_string()],
         ),
         Firewall::Firewalld => PlatformCommands::new(
             vec!["firewall-cmd --add-source=<ip>".to_string()],
@@ -149,8 +149,8 @@ pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
         ),
         Firewall::Pf => PlatformCommands::new(
             vec![],
-            vec!["echo '' | pfctl -f -".to_string()],
-            vec!["echo '' | pfctl -f -".to_string()],
+            vec!["pfctl -t toride -T delete <ip>".to_string()],
+            vec!["pfctl -t toride -T delete <ip>".to_string()],
         ),
         Firewall::Firewalld => PlatformCommands::new(
             vec!["firewall-cmd --remove-source=<ip>".to_string()],

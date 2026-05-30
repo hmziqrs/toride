@@ -94,7 +94,12 @@ impl CidrSet {
         match block.addr() {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
-                    self.singles_v4.insert(u32::from(addr));
+                    let ip = u32::from(addr);
+                    if !self.singles_v4.contains(&ip) {
+                        self.singles_v4.insert(ip);
+                    }
+                } else if block.prefix() == 0 {
+                    self.v4.push((0u32, 0u32));
                 } else {
                     let mask = !((1u32 << (32 - block.prefix())) - 1);
                     let net = u32::from(addr) & mask;
@@ -143,6 +148,10 @@ impl CidrSet {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
                     self.singles_v4.remove(&u32::from(addr))
+                } else if block.prefix() == 0 {
+                    let len_before = self.v4.len();
+                    self.v4.retain(|&(net, mask)| net != 0u32 || mask != 0u32);
+                    self.v4.len() < len_before
                 } else {
                     let mask = !((1u32 << (32 - block.prefix())) - 1);
                     let net = u32::from(addr) & mask;
@@ -186,6 +195,11 @@ impl BanManager {
         Self { store }
     }
 
+    /// Get a reference to the underlying store.
+    pub fn store(&self) -> &Store {
+        &self.store
+    }
+
     /// Ban an IP address.
     ///
     /// # Errors
@@ -201,12 +215,15 @@ impl BanManager {
         reason: Option<String>,
     ) -> crate::Result<BanEntry> {
         let now = Utc::now();
+        let ban_duration_i64 = i64::try_from(ban_duration_secs)
+            .map_err(|_| crate::Error::InvalidConfig(
+                format!("ban duration {ban_duration_secs} exceeds maximum")
+            ))?;
         let entry = BanEntry {
             ip,
             prefix,
             banned_at: now,
-            #[expect(clippy::cast_possible_wrap, reason = "ban duration fits in i64")]
-            expires_at: Some(now + Duration::seconds(ban_duration_secs as i64)),
+            expires_at: Some(now + Duration::seconds(ban_duration_i64)),
             jail_name: jail_name.to_string(),
             fail_count,
             last_fail_at: now,

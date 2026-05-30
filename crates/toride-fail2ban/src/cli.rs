@@ -29,7 +29,7 @@ pub struct Cli {
 
 impl Cli {
     /// Convert the `--dry-run` flag into an [`ExecutionMode`].
-    #[expect(dead_code, reason = "used by CLI binary, not library tests")]
+    #[allow(dead_code, reason = "used by CLI binary, not library tests")]
     pub fn execution_mode(&self) -> ExecutionMode {
         if self.dry_run {
             ExecutionMode::DryRun
@@ -70,7 +70,7 @@ pub enum Commands {
     /// Unban an IP address.
     Unban {
         /// IP address to unban.
-        ip: String,
+        ip: IpAddr,
         /// Jail to unban from.
         #[arg(long, default_value = "default")]
         jail: String,

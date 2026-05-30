@@ -1,5 +1,6 @@
 //! Fail2Ban manager orchestrating multiple jails.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::net::IpAddr;
 
@@ -73,8 +74,8 @@ impl Fail2BanManager {
     }
 
     /// Scan all active jails.
-    pub fn scan_all(&mut self, mode: ExecutionMode) -> crate::Result<HashMap<String, crate::types::ScanResult>> {
-        let mut results = HashMap::new();
+    pub fn scan_all(&mut self, mode: ExecutionMode) -> crate::Result<BTreeMap<String, crate::types::ScanResult>> {
+        let mut results = BTreeMap::new();
 
         for (name, jail) in &mut self.jails {
             let result = jail.scan(mode)?;
@@ -93,8 +94,8 @@ impl Fail2BanManager {
     }
 
     /// Ban an IP in a specific jail.
-    pub fn ban_ip(&self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
-        let jail = self.jails.get(jail_name).ok_or_else(|| {
+    pub fn ban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
+        let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
         })?;
         jail.ban_ip(ip, mode)?;
@@ -102,8 +103,8 @@ impl Fail2BanManager {
     }
 
     /// Unban an IP from a specific jail.
-    pub fn unban_ip(&self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
-        let jail = self.jails.get(jail_name).ok_or_else(|| {
+    pub fn unban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
+        let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
         })?;
         jail.unban_ip(ip, mode)?;
@@ -132,7 +133,7 @@ impl Fail2BanManager {
             banned_ips: bans,
             total_bans: 0, // TODO: track total bans across history
             log_path: jail.log_path().to_path_buf(),
-            pattern: self.config.resolve_jail(name).map(|j| j.pattern).unwrap_or_default(),
+            pattern: jail.pattern().to_string(),
         })
     }
 
@@ -147,15 +148,18 @@ impl Fail2BanManager {
                 banned_ips: bans,
                 total_bans: 0, // TODO: track total bans across history
                 log_path: jail.log_path().to_path_buf(),
-                pattern: self.config.resolve_jail(name).map(|j| j.pattern).unwrap_or_default(),
+                pattern: jail.pattern().to_string(),
             });
         }
         Ok(statuses)
     }
 
-    /// Purge expired bans across all jails.
+    /// Purge expired bans across all jails and trim history.
     pub fn purge_expired(&self) -> crate::Result<Vec<crate::types::BanEntry>> {
-        self.store.clear_expired()
+        let purged = self.store.clear_expired()?;
+        // Trim history to configured max.
+        let _ = self.store.trim_history(self.config.global.max_history);
+        Ok(purged)
     }
 
     /// Get the detected firewall type.
@@ -171,6 +175,11 @@ impl Fail2BanManager {
     /// Get the paths.
     pub fn paths(&self) -> &Fail2BanPaths {
         &self.paths
+    }
+
+    /// Get the configured log level.
+    pub fn log_level(&self) -> &str {
+        &self.config.global.log_level
     }
 }
 

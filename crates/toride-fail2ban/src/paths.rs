@@ -48,6 +48,12 @@ impl Fail2BanPaths {
         })
     }
 
+    /// Returns the PID file path, optionally overridden by config.
+    #[must_use]
+    pub fn pid_file_with_override(&self, config_pid: Option<&std::path::Path>) -> PathBuf {
+        config_pid.map_or_else(|| self.pid_file.clone(), std::path::Path::to_path_buf)
+    }
+
     /// Create all directories. Idempotent.
     pub fn ensure_directories(&self) -> crate::Result<()> {
         std::fs::create_dir_all(&self.config_dir)?;

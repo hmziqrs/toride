@@ -589,8 +589,9 @@ fn scan_regex_matching_empty_string() {
 
 #[test]
 fn scan_non_utf8_content() {
-    // Write raw binary bytes that are not valid UTF-8. read_line() returns
-    // an error on non-UTF-8 data, so the scanner should propagate it.
+    // Write raw binary bytes that are not valid UTF-8. With read_until +
+    // from_utf8_lossy, non-UTF-8 bytes are replaced with the replacement
+    // character and scanning continues.
     let tmp = NamedTempFile::new().expect("failed to create temp file");
     let mut file = tmp.reopen().expect("failed to reopen temp file");
     file.write_all(&[0xFF, 0xFE, 0x80, 0x81, b'\n']).unwrap();
@@ -599,8 +600,9 @@ fn scan_non_utf8_content() {
     let mut detector =
         LogDetector::new("test-jail", tmp.path(), r"pattern").expect("LogDetector::new");
     let result = detector.scan();
-    // read_line fails on non-UTF-8 bytes, so scan returns an error.
-    assert!(result.is_err(), "scan should return error for non-UTF-8 content");
+    // Non-UTF-8 content is handled gracefully via lossy conversion.
+    assert!(result.is_ok(), "scan should succeed for non-UTF-8 content (lossy conversion)");
+    assert_eq!(result.unwrap().lines_scanned, 1);
 }
 
 #[test]

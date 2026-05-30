@@ -85,7 +85,7 @@ fn setup() -> (tempfile::TempDir, Fail2BanManager) {
 
 #[test]
 fn new_creates_manager_successfully() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     // The manager was created without error and the sshd jail is loaded.
     let status = manager.status().unwrap();
     assert!(status.running);
@@ -326,7 +326,7 @@ fn scan_jail_nonexistent_returns_not_found() {
 
 #[test]
 fn ban_ip_succeeds_for_existing_jail() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     // ban_ip with dry_run should succeed without running any commands.
@@ -335,7 +335,7 @@ fn ban_ip_succeeds_for_existing_jail() {
 
 #[test]
 fn ban_ip_nonexistent_jail_returns_not_found() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     let result = manager.ban_ip("nonexistent", ip, ExecutionMode::DryRun);
@@ -348,7 +348,7 @@ fn ban_ip_nonexistent_jail_returns_not_found() {
 
 #[test]
 fn ban_ip_duplicate_returns_already_banned() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
@@ -364,7 +364,7 @@ fn ban_ip_duplicate_returns_already_banned() {
 
 #[test]
 fn unban_ip_succeeds_for_banned_ip() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
@@ -373,7 +373,7 @@ fn unban_ip_succeeds_for_banned_ip() {
 
 #[test]
 fn unban_ip_nonexistent_jail_returns_not_found() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let result = manager.unban_ip("nonexistent", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
@@ -385,7 +385,7 @@ fn unban_ip_nonexistent_jail_returns_not_found() {
 
 #[test]
 fn unban_ip_not_banned_returns_not_banned() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let result = manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
@@ -399,7 +399,7 @@ fn unban_ip_not_banned_returns_not_banned() {
 
 #[test]
 fn status_returns_correct_jail_count() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let status = manager.status().unwrap();
     assert!(status.running);
@@ -460,7 +460,7 @@ fn status_config_path_matches_paths() {
 
 #[test]
 fn jail_status_returns_status_for_existing_jail() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.name, "sshd");
@@ -470,7 +470,7 @@ fn jail_status_returns_status_for_existing_jail() {
 
 #[test]
 fn jail_status_shows_banned_ips() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
@@ -482,7 +482,7 @@ fn jail_status_shows_banned_ips() {
 
 #[test]
 fn jail_status_nonexistent_returns_not_found() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let result = manager.jail_status("nonexistent");
     assert!(result.is_err());
@@ -496,7 +496,7 @@ fn jail_status_nonexistent_returns_not_found() {
 
 #[test]
 fn purge_expired_returns_empty_when_no_expired_bans() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let expired = manager.purge_expired().unwrap();
     assert!(expired.is_empty());
@@ -564,7 +564,7 @@ fn purge_expired_removes_expired_bans() {
 
 #[test]
 fn firewall_returns_detected_firewall() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     // On macOS this will be Pf, on Linux it will be Iptables or Nftables.
     let fw = manager.firewall();
@@ -607,7 +607,7 @@ fn paths_returns_reference_to_paths() {
 
 #[test]
 fn ban_then_unban_reflects_in_status() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
@@ -622,7 +622,7 @@ fn ban_then_unban_reflects_in_status() {
 
 #[test]
 fn multiple_bans_in_same_jail() {
-    let (_dir, manager) = setup();
+    let (_dir, mut manager) = setup();
 
     let ip1: std::net::IpAddr = "192.168.1.1".parse().unwrap();
     let ip2: std::net::IpAddr = "192.168.1.2".parse().unwrap();
