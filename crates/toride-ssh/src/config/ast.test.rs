@@ -573,3 +573,84 @@ fn parse_directive_with_hash_in_quoted_value() {
         _ => panic!("expected HostBlock"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: = separator roundtrip preservation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn round_trip_preserves_equals_separator() {
+    let input = "Host=myserver\n    HostName=example.com\n    User=alice\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_mixed_separators() {
+    // Mix of = and space separators in the same block
+    let input = "Host example\n    HostName=example.com\n    User alice\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_multiple_blank_lines() {
+    let input = "Host example\n    HostName example.com\n\n\n\nHost other\n    HostName other.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_trailing_newline() {
+    let input = "Host example\n    HostName example.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+    assert!(output.ends_with('\n'));
+}
+
+#[test]
+fn round_trip_preserves_inline_comment_with_equals() {
+    // The AST parser strips the space after # in inline comments.
+    let input = "Host example\n    HostName=example.com #my server\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn parse_empty_config() {
+    let ast = parse("");
+    assert!(ast.nodes.is_empty());
+    assert_eq!(ast.to_string_lossless(), "");
+}
+
+#[test]
+fn parse_only_comments_roundtrip() {
+    let input = "# comment 1\n# comment 2\n";
+    let ast = parse(input);
+    assert_eq!(ast.nodes.len(), 2);
+    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::Comment { .. })));
+    assert_eq!(ast.to_string_lossless(), input);
+}
+
+#[test]
+fn parse_only_blank_lines() {
+    let input = "\n\n\n";
+    let ast = parse(input);
+    assert_eq!(ast.nodes.len(), 3);
+    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::BlankLine)));
+    assert_eq!(ast.to_string_lossless(), input);
+}
+
+#[test]
+fn round_trip_preserves_deeply_nested_indent() {
+    // Some users use unusual indentation
+    let input = "Host example\n            HostName example.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}

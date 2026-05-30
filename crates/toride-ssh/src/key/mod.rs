@@ -205,9 +205,7 @@ impl<'a> KeyService<'a> {
 
         tokio::task::spawn_blocking(move || {
             // Rename private key
-            std::fs::rename(&old_private, &new_private).map_err(|e| {
-                Error::CommandFailed(format!("failed to rename private key: {e}"))
-            })?;
+            std::fs::rename(&old_private, &new_private).map_err(Error::Io)?;
 
             // Rename public key if it exists
             if old_public.exists()
@@ -248,7 +246,7 @@ impl<'a> KeyService<'a> {
                     &private_path,
                     std::fs::Permissions::from_mode(0o600),
                 )
-                .map_err(|e| Error::CommandFailed(format!("failed to set private key permissions: {e}")))?;
+                .map_err(Error::Io)?;
 
                 if public_path.exists()
                     && let Err(e) = std::fs::set_permissions(

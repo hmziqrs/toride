@@ -73,7 +73,7 @@ async fn ssh_control_cmd(control_path: &Path, action: &str) -> Result<String> {
             .map_err(|e| Error::CommandFailed(format!("ssh -O {action}: {e}")))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Check whether a control socket is still alive.
@@ -280,7 +280,7 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
         .map_err(|e| Error::CommandFailed(format!("ssh -O cancel: {e}")))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+    .map_err(|e| Error::TaskFailed(e.to_string()))??;
 
     Ok(())
 }
@@ -312,7 +312,7 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
         result
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+    .map_err(|e| Error::TaskFailed(e.to_string()))??;
 
     Ok(())
 }
@@ -365,7 +365,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         candidates
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?;
+    .map_err(|e| Error::TaskFailed(e.to_string()))?;
 
     // Verify candidates sequentially to avoid overwhelming the system
     // with concurrent ssh processes when many stale sockets are present.

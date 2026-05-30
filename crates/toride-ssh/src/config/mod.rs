@@ -189,7 +189,6 @@ impl<'a> ConfigService<'a> {
     /// 3. `Host *` placed before specific Host blocks.
     /// 4. `IdentityFile` paths that do not exist on disk.
     /// 5. `IdentityFile` paths pointing to `.pub` files (should be the private key).
-    #[allow(clippy::too_many_lines)]
     pub async fn diagnose(&self) -> Result<Vec<Diagnostic>> {
         let ast = self.load().await?;
         let ssh_dir = self.paths.ssh_dir();
@@ -212,60 +211,10 @@ impl<'a> ConfigService<'a> {
                 continue;
             };
 
-            // -- 1. ProxyCommand / ProxyJump conflict -----------------------
-            let has_proxy_command = nodes.iter().any(|n| {
-                matches!(
-                    n,
-                    ast::ConfigNode::Directive { keyword, .. }
-                        if keyword.eq_ignore_ascii_case("ProxyCommand")
-                )
-            });
-            let has_proxy_jump = nodes.iter().any(|n| {
-                matches!(
-                    n,
-                    ast::ConfigNode::Directive { keyword, .. }
-                        if keyword.eq_ignore_ascii_case("ProxyJump")
-                )
-            });
-            if has_proxy_command && has_proxy_jump {
-                diagnostics.push(Diagnostic {
-                    id: "config_proxy_conflict",
-                    severity: Severity::Warning,
-                    message: format!(
-                        "Host block '{header}' has both ProxyCommand and ProxyJump set",
-                    ),
-                    hint: Some(
-                        "ProxyJump takes precedence over ProxyCommand; \
-                         remove one to avoid confusion"
-                            .into(),
-                    ),
-                    module: "config",
-                });
-            }
+            check_proxy_conflict(header, nodes, &mut diagnostics);
+            check_duplicate_aliases(header, patterns, &mut seen_patterns, &mut diagnostics);
 
-            // -- 2. Duplicate Host aliases -----------------------------------
-            for pat in patterns {
-                if pat == "*" {
-                    continue;
-                }
-                if let Some(first_header) = seen_patterns.get(pat) {
-                    diagnostics.push(Diagnostic {
-                        id: "config_duplicate_alias",
-                        severity: Severity::Warning,
-                        message: format!(
-                            "Host alias '{pat}' appears in both '{first_header}' and '{header}'",
-                        ),
-                        hint: Some(format!(
-                            "Merge or remove the duplicate entry for '{pat}'",
-                        )),
-                        module: "config",
-                    });
-                } else {
-                    seen_patterns.insert(pat.clone(), header.clone());
-                }
-            }
-
-            // -- 3. Track Host * ordering ------------------------------------
+            // Track Host * ordering.
             if patterns.iter().any(|p| p == "*") {
                 if star_index.is_none() {
                     star_index = Some(i);
@@ -274,74 +223,157 @@ impl<'a> ConfigService<'a> {
                 last_specific_index = Some(i);
             }
 
-            // -- 4 & 5. IdentityFile checks ---------------------------------
-            for child in nodes {
-                if let ast::ConfigNode::Directive {
-                    keyword, value, ..
-                } = child
-                    && keyword.eq_ignore_ascii_case("IdentityFile")
-                {
-                    // 5. Points to a .pub file?
-                    if value.to_lowercase().ends_with(".pub") {
-                        diagnostics.push(Diagnostic {
-                            id: "config_identity_pub",
-                            severity: Severity::Warning,
-                            message: format!(
-                                "IdentityFile '{value}' in '{header}' points to a public key \
-                                 (.pub file)",
-                            ),
-                            hint: Some(
-                                "IdentityFile should reference the private key, \
-                                 not the .pub file"
-                                    .into(),
-                            ),
-                            module: "config",
-                        });
-                    }
-
-                    // 4. Does the file exist?
-                    let expanded = expand_identity_path(value, ssh_dir);
-                    if !expanded.exists() {
-                        diagnostics.push(Diagnostic {
-                            id: "config_identity_missing",
-                            severity: Severity::Warning,
-                            message: format!(
-                                "IdentityFile '{value}' in '{header}' does not exist \
-                                 (resolved: {})",
-                                expanded.display()
-                            ),
-                            hint: Some(format!(
-                                "Generate the missing key or update the \
-                                 IdentityFile entry in '{header}'",
-                            )),
-                            module: "config",
-                        });
-                    }
-                }
-            }
+            check_identity_files(header, nodes, ssh_dir, &mut diagnostics);
         }
 
-        // -- 3 (continued). Emit Host * placement diagnostic ----------------
-        if let (Some(star), Some(last)) = (star_index, last_specific_index)
-            && star < last
-        {
-            diagnostics.push(Diagnostic {
-                id: "config_host_star_placement",
-                severity: Severity::Warning,
-                message:
-                    "'Host *' appears before specific Host blocks; \
-                     later blocks cannot override its defaults"
-                        .into(),
-                hint: Some(
-                    "Move 'Host *' to the end of the config file so \
-                     specific blocks take precedence"
-                        .into(),
-                ),
-                module: "config",
-            });
-        }
+        check_host_star_placement(star_index, last_specific_index, &mut diagnostics);
 
         Ok(diagnostics)
+    }
+}
+
+/// Check for ProxyCommand/ProxyJump conflict in a Host block.
+fn check_proxy_conflict(
+    header: &str,
+    nodes: &[ast::ConfigNode],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let has_proxy_command = nodes.iter().any(|n| {
+        matches!(
+            n,
+            ast::ConfigNode::Directive { keyword, .. }
+                if keyword.eq_ignore_ascii_case("ProxyCommand")
+        )
+    });
+    let has_proxy_jump = nodes.iter().any(|n| {
+        matches!(
+            n,
+            ast::ConfigNode::Directive { keyword, .. }
+                if keyword.eq_ignore_ascii_case("ProxyJump")
+        )
+    });
+    if has_proxy_command && has_proxy_jump {
+        diagnostics.push(Diagnostic {
+            id: "config_proxy_conflict",
+            severity: Severity::Warning,
+            message: format!(
+                "Host block '{header}' has both ProxyCommand and ProxyJump set",
+            ),
+            hint: Some(
+                "ProxyJump takes precedence over ProxyCommand; \
+                 remove one to avoid confusion"
+                    .into(),
+            ),
+            module: "config",
+        });
+    }
+}
+
+/// Check for duplicate Host aliases.
+fn check_duplicate_aliases(
+    header: &str,
+    patterns: &[String],
+    seen_patterns: &mut HashMap<String, String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for pat in patterns {
+        if pat == "*" {
+            continue;
+        }
+        if let Some(first_header) = seen_patterns.get(pat) {
+            diagnostics.push(Diagnostic {
+                id: "config_duplicate_alias",
+                severity: Severity::Warning,
+                message: format!(
+                    "Host alias '{pat}' appears in both '{first_header}' and '{header}'",
+                ),
+                hint: Some(format!(
+                    "Merge or remove the duplicate entry for '{pat}'",
+                )),
+                module: "config",
+            });
+        } else {
+            seen_patterns.insert(pat.clone(), header.to_owned());
+        }
+    }
+}
+
+/// Check IdentityFile directives for .pub references and missing files.
+fn check_identity_files(
+    header: &str,
+    nodes: &[ast::ConfigNode],
+    ssh_dir: &Path,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for child in nodes {
+        if let ast::ConfigNode::Directive {
+            keyword, value, ..
+        } = child
+            && keyword.eq_ignore_ascii_case("IdentityFile")
+        {
+            // Points to a .pub file?
+            if value.to_lowercase().ends_with(".pub") {
+                diagnostics.push(Diagnostic {
+                    id: "config_identity_pub",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "IdentityFile '{value}' in '{header}' points to a public key \
+                         (.pub file)",
+                    ),
+                    hint: Some(
+                        "IdentityFile should reference the private key, \
+                         not the .pub file"
+                            .into(),
+                    ),
+                    module: "config",
+                });
+            }
+
+            // Does the file exist?
+            let expanded = expand_identity_path(value, ssh_dir);
+            if !expanded.exists() {
+                diagnostics.push(Diagnostic {
+                    id: "config_identity_missing",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "IdentityFile '{value}' in '{header}' does not exist \
+                         (resolved: {})",
+                        expanded.display()
+                    ),
+                    hint: Some(format!(
+                        "Generate the missing key or update the \
+                         IdentityFile entry in '{header}'",
+                    )),
+                    module: "config",
+                });
+            }
+        }
+    }
+}
+
+/// Emit Host * placement diagnostic if it appears before specific blocks.
+fn check_host_star_placement(
+    star_index: Option<usize>,
+    last_specific_index: Option<usize>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if let (Some(star), Some(last)) = (star_index, last_specific_index)
+        && star < last
+    {
+        diagnostics.push(Diagnostic {
+            id: "config_host_star_placement",
+            severity: Severity::Warning,
+            message:
+                "'Host *' appears before specific Host blocks; \
+                 later blocks cannot override its defaults"
+                    .into(),
+            hint: Some(
+                "Move 'Host *' to the end of the config file so \
+                 specific blocks take precedence"
+                    .into(),
+            ),
+            module: "config",
+        });
     }
 }
 

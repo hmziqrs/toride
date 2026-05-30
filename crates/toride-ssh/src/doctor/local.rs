@@ -1381,6 +1381,247 @@ impl Check for SshV1KeyCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// IdentityFilePubCheck — warn if IdentityFile points to a .pub file
+// ---------------------------------------------------------------------------
+
+/// Check that `IdentityFile` directives don't accidentally point to `.pub` files.
+struct IdentityFilePubCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for IdentityFilePubCheck<'_> {
+    fn id(&self) -> &'static str {
+        "identity_file_pub"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut diagnostics = Vec::new();
+
+            let check_value = |raw: &str, diags: &mut Vec<Diagnostic>| {
+                let path = std::path::Path::new(raw);
+                let is_pub = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pub"));
+                let is_cert = raw.to_lowercase().ends_with("-cert.pub");
+                if is_pub || is_cert {
+                    diags.push(Diagnostic {
+                        id: "identity_file_pub",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "IdentityFile {raw} points to a public key file; \
+                             IdentityFile should reference the private key"
+                        ),
+                        hint: Some("Change to the private key path (remove .pub suffix)".into()),
+                        module: "local",
+                    });
+                }
+            };
+
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        check_value(value, &mut diagnostics);
+                    }
+                    ConfigNode::HostBlock { nodes, .. } => {
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                            {
+                                check_value(value, &mut diagnostics);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if diagnostics.is_empty() {
+                Ok(vec![Diagnostic {
+                    id: "identity_file_pub",
+                    severity: Severity::Ok,
+                    message: "No IdentityFile directives point to .pub files".into(),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                Ok(diagnostics)
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdentitiesOnlyCheck — warn when multi-key hosts lack IdentitiesOnly
+// ---------------------------------------------------------------------------
+
+/// Check that hosts with multiple `IdentityFile` entries also have
+/// `IdentitiesOnly yes` to prevent the agent from offering wrong keys.
+struct IdentitiesOnlyCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for IdentitiesOnlyCheck<'_> {
+    fn id(&self) -> &'static str {
+        "identities_only"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut diagnostics = Vec::new();
+
+            for node in &ast.nodes {
+                if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
+                    let id_count = nodes
+                        .iter()
+                        .filter(|n| {
+                            matches!(n, ConfigNode::Directive { keyword, .. }
+                                if keyword.eq_ignore_ascii_case("IdentityFile"))
+                        })
+                        .count();
+
+                    if id_count > 1 {
+                        let has_identities_only = nodes.iter().any(|n| {
+                            matches!(n, ConfigNode::Directive { keyword, value, .. }
+                                if keyword.eq_ignore_ascii_case("IdentitiesOnly")
+                                    && value.eq_ignore_ascii_case("yes"))
+                        });
+
+                        if !has_identities_only {
+                            let host_str = patterns.join(", ");
+                            diagnostics.push(Diagnostic {
+                                id: "identities_only",
+                                severity: Severity::Warning,
+                                message: format!(
+                                    "Host {host_str} has {id_count} IdentityFile entries \
+                                     but no IdentitiesOnly yes"
+                                ),
+                                hint: Some(
+                                    "Add IdentitiesOnly yes to prevent the agent from \
+                                     offering keys not listed in this Host block"
+                                        .into(),
+                                ),
+                                module: "local",
+                            });
+                        }
+                    }
+                }
+            }
+
+            if diagnostics.is_empty() {
+                Ok(vec![Diagnostic {
+                    id: "identities_only",
+                    severity: Severity::Ok,
+                    message: "No multi-key Host blocks missing IdentitiesOnly".into(),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                Ok(diagnostics)
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HomeDirPermissionsCheck — StrictModes full chain
+// ---------------------------------------------------------------------------
+
+/// Check that the home directory is not group/world writable (StrictModes).
+#[cfg(unix)]
+struct HomeDirPermissionsCheck;
+
+#[cfg(unix)]
+impl Check for HomeDirPermissionsCheck {
+    fn id(&self) -> &'static str {
+        "home_dir_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        Box::pin(async move {
+            let Some(home) = dirs::home_dir() else {
+                return Ok(vec![Diagnostic {
+                    id: "home_dir_permissions",
+                    severity: Severity::Info,
+                    message: "Cannot determine home directory".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let Ok(meta) = tokio::fs::metadata(&home).await else {
+                return Ok(vec![Diagnostic {
+                    id: "home_dir_permissions",
+                    severity: Severity::Warning,
+                    message: format!("Cannot read home directory: {}", home.display()),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let mode = meta.permissions().mode();
+            let group_write = mode & 0o020 != 0;
+            let other_write = mode & 0o002 != 0;
+
+            if group_write || other_write {
+                let who = match (group_write, other_write) {
+                    (true, true) => "group and world",
+                    (true, false) => "group",
+                    (false, true) => "world",
+                    _ => unreachable!(),
+                };
+                Ok(vec![Diagnostic {
+                    id: "home_dir_permissions",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Home directory {} is {} writable — \
+                         sshd StrictModes may reject authorized_keys",
+                        home.display(),
+                        who,
+                    ),
+                    hint: Some(format!(
+                        "chmod g-w,o-w {}",
+                        home.display(),
+                    )),
+                    module: "local",
+                }])
+            } else {
+                Ok(vec![Diagnostic {
+                    id: "home_dir_permissions",
+                    severity: Severity::Ok,
+                    message: format!(
+                        "Home directory {} has correct permissions",
+                        home.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }])
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run_all — execute every local check
 // ---------------------------------------------------------------------------
 
@@ -1412,6 +1653,10 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
     checks.push(Box::new(DuplicateHostCheck { paths }));
     checks.push(Box::new(HostStarPlacementCheck { paths }));
     checks.push(Box::new(SshV1KeyCheck { paths }));
+    checks.push(Box::new(IdentityFilePubCheck { paths }));
+    checks.push(Box::new(IdentitiesOnlyCheck { paths }));
+    #[cfg(unix)]
+    checks.push(Box::new(HomeDirPermissionsCheck));
     checks.push(Box::new(PlatformCheck));
 
     let mut all_diagnostics = Vec::new();

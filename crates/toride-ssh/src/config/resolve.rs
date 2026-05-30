@@ -413,6 +413,9 @@ struct TokenContext<'a> {
     port: &'a str,
     /// Canonical hostname (same as host unless CanonicalizeHostname is enabled).
     canonical_host: &'a str,
+    /// Identity file being expanded (`%i` → basename).  `None` when
+    /// expanding a non-IdentityFile directive.
+    identity_file: Option<&'a str>,
 }
 
 /// Expand tokens in resolved values.
@@ -444,6 +447,7 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         // On first pass canonical_host == host; second pass uses the
         // canonical name (already substituted as `host` by the caller).
         canonical_host: host,
+        identity_file: None,
     };
 
     // Expand dedicated fields.
@@ -502,7 +506,7 @@ fn is_canonicalize_enabled(resolved: &ResolvedHost) -> bool {
 /// - `%d` → home directory
 /// - `%H` → canonical hostname
 /// - `%h` / `%n` → remote host (alias)
-/// - `%i` → local user
+/// - `%i` → local username (same as `%u`; see note in implementation)
 /// - `%L` → local hostname (short)
 /// - `%l` → local hostname (FQDN)
 /// - `%p` → remote port
@@ -561,8 +565,12 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     chars.next();
                     result.push_str(ctx.remote_user);
                 }
-                Some('u' | 'i') => {
-                    // %u and %i both expand to the local username.
+                Some('i' | 'u') => {
+                    // %i and %u both expand to the local username.
+                    // Note: per OpenSSH, %i is the "identity file name" in some
+                    // contexts, but when used in IdentityFile paths it would create
+                    // a circular reference.  The local username fallback matches
+                    // OpenSSH behaviour for IdentityFile and most other directives.
                     chars.next();
                     result.push_str(ctx.local_user);
                 }
@@ -570,6 +578,53 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     // Unknown token or '%' at end of string — keep as-is.
                     result.push(ch);
                 }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Like [`expand_tokens`] but leaves `%i` sequences untouched.
+///
+/// Used for the first pass of IdentityFile expansion where `%i` must not
+/// be expanded yet (it would create a circular reference when the path
+/// itself contains `%i`).
+fn expand_tokens_skip_i(s: &str, ctx: &TokenContext<'_>) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            match chars.peek().copied() {
+                Some('%') => {
+                    result.push_str("%%");
+                    chars.next();
+                }
+                Some('i') => {
+                    // Preserve %i for the second pass.
+                    result.push_str("%i");
+                    chars.next();
+                }
+                Some('C') => {
+                    chars.next();
+                    let hash_input = format!("{}:{}:{}", ctx.host, ctx.port, ctx.local_user);
+                    result.push_str(&simple_hash(&hash_input));
+                }
+                Some('d') => { chars.next(); result.push_str(ctx.home_dir); }
+                Some('H') => { chars.next(); result.push_str(ctx.canonical_host); }
+                Some('h' | 'n') => { chars.next(); result.push_str(ctx.host); }
+                Some('L') => {
+                    chars.next();
+                    result.push_str(ctx.local_hostname.split('.').next().unwrap_or(ctx.local_hostname));
+                }
+                Some('l') => { chars.next(); result.push_str(ctx.local_hostname); }
+                Some('p') => { chars.next(); result.push_str(ctx.port); }
+                Some('r' | 'T') => { chars.next(); result.push_str(ctx.remote_user); }
+                Some('u') => { chars.next(); result.push_str(ctx.local_user); }
+                _ => { result.push(ch); }
             }
         } else {
             result.push(ch);

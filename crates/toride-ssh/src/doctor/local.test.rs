@@ -490,3 +490,90 @@ async fn keygen_available_returns_valid_diagnostic() {
     // ssh-keygen should be available on macOS/Linux dev machines.
     assert!(matches[0].severity == Severity::Ok || matches[0].severity == Severity::Error);
 }
+
+// ---------------------------------------------------------------------------
+// IdentityFilePubCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn identity_file_pub_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    IdentityFile ~/.ssh/id_ed25519.pub\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identity_file_pub");
+    assert!(matches.iter().any(|d| d.severity == Severity::Warning));
+}
+
+#[tokio::test]
+async fn identity_file_private_key_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    IdentityFile ~/.ssh/id_ed25519\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identity_file_pub");
+    assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}
+
+// ---------------------------------------------------------------------------
+// IdentitiesOnlyCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn identities_only_missing_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host multi
+    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/id_rsa
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identities_only");
+    assert!(matches.iter().any(|d| d.severity == Severity::Warning));
+}
+
+#[tokio::test]
+async fn identities_only_present_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host multi
+    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/id_rsa
+    IdentitiesOnly yes
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identities_only");
+    assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}
+
+#[tokio::test]
+async fn identities_only_single_key_ok() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host single\n    IdentityFile ~/.ssh/id_ed25519\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identities_only");
+    assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}

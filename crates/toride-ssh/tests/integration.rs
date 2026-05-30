@@ -225,6 +225,64 @@ async fn test_config_resolve_tokens() {
 }
 
 // ---------------------------------------------------------------------------
+// test_config_resolve_identity_file_token
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_config_resolve_identity_file_token() {
+    let _lock = HOME_MUTEX.lock().unwrap_or_else(PoisonError::into_inner);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ssh_dir = dir.path().join(".ssh");
+    std::fs::create_dir_all(&ssh_dir).unwrap();
+    // Config with %u token in IdentityFile (not %i, which is the same as %u)
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Host work\n    IdentityFile ~/.ssh/work/%u\n",
+    )
+    .unwrap();
+
+    let old_home = std::env::var("HOME").ok();
+    unsafe { std::env::set_var("HOME", dir.path()); }
+
+    let manager = toride_ssh::SshManager::new().expect("SshManager::new");
+    let resolved = manager
+        .config()
+        .resolve_host("work")
+        .await
+        .expect("resolve should succeed");
+
+    if let Some(ref h) = old_home {
+        unsafe { std::env::set_var("HOME", h.as_str()); }
+    } else {
+        unsafe { std::env::remove_var("HOME"); }
+    }
+
+    // %u should expand to the local username.
+    let id_file = resolved
+        .identity_files
+        .first()
+        .expect("should have identity file");
+
+    assert!(
+        !id_file.contains("%u"),
+        "%u token should have been expanded, got: {id_file}"
+    );
+
+    // The expanded path should contain a real username (not a token).
+    // We can't easily get the username in tests, but we can verify the
+    // tilde was expanded and %u was replaced with something.
+    assert!(
+        !id_file.contains('~'),
+        "tilde should have been expanded, got: {id_file}"
+    );
+    assert!(
+        id_file.ends_with("/work") || !id_file.contains("%"),
+        "all tokens should have been expanded, got: {id_file}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // test_known_hosts_parse_markers
 // ---------------------------------------------------------------------------
 

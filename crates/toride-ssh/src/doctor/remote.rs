@@ -390,7 +390,6 @@ impl RemotePubkeyAuthCheck<'_> {
 // ---------------------------------------------------------------------------
 
 impl RemoteSshdConfigCheck<'_> {
-    #[allow(clippy::too_many_lines)]
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
         let output = tokio::process::Command::new("ssh")
             .args([
@@ -425,83 +424,67 @@ impl RemoteSshdConfigCheck<'_> {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let mut diagnostics = Vec::new();
 
-        let pubkey_auth = find_sshd_setting(&stdout, "pubkeyauthentication");
-        match pubkey_auth.as_deref() {
-            Some("yes") => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Ok,
-                    message: format!("sshd PubkeyAuthentication is enabled on {}", self.host),
-                    hint: None,
-                    module: "remote",
-                });
-            }
-            Some(other) => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Warning,
-                    message: format!(
-                        "sshd PubkeyAuthentication is '{}' on {} (expected 'yes')",
-                        other, self.host
-                    ),
-                    hint: Some("Set `PubkeyAuthentication yes` in /etc/ssh/sshd_config".into()),
-                    module: "remote",
-                });
-            }
-            None => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Ok,
-                    message: format!(
-                        "sshd PubkeyAuthentication not explicitly set on {} (defaults to yes)",
-                        self.host
-                    ),
-                    hint: None,
-                    module: "remote",
-                });
-            }
-        }
-
-        let agent_fwd = find_sshd_setting(&stdout, "allowagentforwarding");
-        match agent_fwd.as_deref() {
-            Some("yes") => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Ok,
-                    message: format!("sshd AllowAgentForwarding is enabled on {}", self.host),
-                    hint: None,
-                    module: "remote",
-                });
-            }
-            Some(other) => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Warning,
-                    message: format!(
-                        "sshd AllowAgentForwarding is '{}' on {} (expected 'yes')",
-                        other, self.host
-                    ),
-                    hint: Some(
-                        "Set `AllowAgentForwarding yes` in /etc/ssh/sshd_config".into(),
-                    ),
-                    module: "remote",
-                });
-            }
-            None => {
-                diagnostics.push(Diagnostic {
-                    id: "remote_sshd_config",
-                    severity: Severity::Ok,
-                    message: format!(
-                        "sshd AllowAgentForwarding not explicitly set on {} (defaults to yes)",
-                        self.host
-                    ),
-                    hint: None,
-                    module: "remote",
-                });
-            }
-        }
+        check_sshd_bool_setting(
+            &stdout,
+            "pubkeyauthentication",
+            "PubkeyAuthentication",
+            self.host,
+            &mut diagnostics,
+        );
+        check_sshd_bool_setting(
+            &stdout,
+            "allowagentforwarding",
+            "AllowAgentForwarding",
+            self.host,
+            &mut diagnostics,
+        );
 
         Ok(diagnostics)
+    }
+}
+
+/// Check a boolean sshd setting and push appropriate diagnostics.
+fn check_sshd_bool_setting(
+    stdout: &str,
+    key_lower: &str,
+    display_name: &str,
+    host: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    match find_sshd_setting(stdout, key_lower).as_deref() {
+        Some("yes") => {
+            diagnostics.push(Diagnostic {
+                id: "remote_sshd_config",
+                severity: Severity::Ok,
+                message: format!("sshd {display_name} is enabled on {host}"),
+                hint: None,
+                module: "remote",
+            });
+        }
+        Some(other) => {
+            diagnostics.push(Diagnostic {
+                id: "remote_sshd_config",
+                severity: Severity::Warning,
+                message: format!(
+                    "sshd {display_name} is '{other}' on {host} (expected 'yes')",
+                ),
+                hint: Some(format!(
+                    "Set `{display_name} yes` in /etc/ssh/sshd_config"
+                )),
+                module: "remote",
+            });
+        }
+        None => {
+            diagnostics.push(Diagnostic {
+                id: "remote_sshd_config",
+                severity: Severity::Ok,
+                message: format!(
+                    "sshd {display_name} not explicitly set on {host} (defaults to yes)",
+                ),
+                hint: None,
+                module: "remote",
+            });
+        }
     }
 }
 
