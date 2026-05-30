@@ -508,6 +508,15 @@ impl RuleSpec {
         self.from_port.validate()?;
         self.to_port.validate()?;
 
+        // Protocol is required for port ranges and port lists (UFW constraint)
+        if self.protocol == ProtocolFilter::Any
+            && (self.to_port.requires_protocol() || self.from_port.requires_protocol())
+        {
+            return Err(Error::Validation(
+                "protocol is required for port ranges and port lists".into(),
+            ));
+        }
+
         // Validate protocol + port combos
         if let ProtocolFilter::Specific(proto) = &self.protocol {
             if proto.rejects_ports() {
@@ -1211,6 +1220,28 @@ fn validate_app_name(name: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// ============================================================================
+// Structs — Show Reports
+// ============================================================================
+
+/// A listening port entry from `ufw show listening`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ListeningPort {
+    /// Protocol (tcp/udp).
+    pub proto: String,
+    /// Address (e.g. "0.0.0.0:22" or "[::]:22").
+    pub address: String,
+}
+
+/// A normalized rule from `ufw show added`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct AddedRule {
+    /// The full normalized rule text.
+    pub raw: String,
 }
 
 // ============================================================================

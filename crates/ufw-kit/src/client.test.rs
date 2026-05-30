@@ -128,6 +128,22 @@ fn enable_should_pass_when_ssh_rule_exists() {
     assert!(ufw.enable(&opts).is_ok());
 }
 
+#[test]
+fn force_enable_should_succeed_when_inactive() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: inactive\n")
+        .respond_ok("ufw", &["--force", "enable"], "Firewall is active and enabled on system startup\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.force_enable().is_ok());
+}
+
+#[test]
+fn force_enable_should_succeed_when_already_active() {
+    let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: active\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.force_enable().is_ok());
+}
+
 // ---------------------------------------------------------------------------
 // Disable
 // ---------------------------------------------------------------------------
@@ -298,6 +314,13 @@ fn app_info_should_return_output() {
     let ufw = Ufw::with_runner(runner);
     let info = ufw.app_info("OpenSSH").unwrap();
     assert!(info.contains("OpenSSH"));
+}
+
+#[test]
+fn app_update_all_should_call_ufw() {
+    let runner = FakeRunner::new().respond_ok("ufw", &["app", "update", "all"], "Updated all application profiles\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.app_update_all().is_ok());
 }
 
 // ---------------------------------------------------------------------------

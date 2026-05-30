@@ -1,0 +1,7 @@
+# Managed by ufw-kit.
+# Do not edit manually unless you also disable this manager.
+
+[WebServer]
+title=WebServer
+description=Web server profile
+ports=80/tcp|443/tcp

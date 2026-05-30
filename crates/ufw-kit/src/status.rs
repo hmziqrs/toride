@@ -5,7 +5,8 @@
 
 use crate::error::Result;
 use crate::spec::{
-    Action, AppDefaultPolicy, Direction, LoggingLevel, ParsedRule, Policy, UfwStatus,
+    Action, AddedRule, AppDefaultPolicy, Direction, ListeningPort, LoggingLevel, ParsedRule,
+    Policy, UfwStatus,
 };
 
 /// Parse `ufw status verbose` output.
@@ -152,6 +153,90 @@ pub fn parse_status_numbered(output: &str) -> Result<UfwStatus> {
     }
 
     Ok(status)
+}
+
+/// Parse `ufw show listening` output.
+///
+/// Expects output of the form:
+///
+/// ```text
+/// Listening:
+///  tcp 0.0.0.0:22
+///  tcp [::]:22
+/// ```
+pub fn parse_show_listening(raw: &str) -> Vec<ListeningPort> {
+    let mut ports = Vec::new();
+    let mut past_header = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+
+        if !past_header {
+            if trimmed.starts_with("Listening:") {
+                past_header = true;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Each data line: "proto address" (separated by whitespace).
+        let mut segments = trimmed.splitn(2, char::is_whitespace);
+        let proto = match segments.next() {
+            Some(p) => p.to_string(),
+            None => continue,
+        };
+        let address = match segments.next() {
+            Some(a) => a.to_string(),
+            None => continue,
+        };
+
+        if proto.is_empty() || address.is_empty() {
+            continue;
+        }
+
+        ports.push(ListeningPort { proto, address });
+    }
+
+    ports
+}
+
+/// Parse `ufw show added` output.
+///
+/// Expects output of the form:
+///
+/// ```text
+/// Added user rules (see 'ufw status'):
+/// allow 22/tcp
+/// deny 53/udp
+/// ```
+pub fn parse_show_added(raw: &str) -> Vec<AddedRule> {
+    let mut rules = Vec::new();
+    let mut past_header = false;
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+
+        if !past_header {
+            // The header line starts with "Added user rules"
+            if trimmed.starts_with("Added user rules") || trimmed.starts_with("Added") {
+                past_header = true;
+            }
+            continue;
+        }
+
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        rules.push(AddedRule {
+            raw: trimmed.to_string(),
+        });
+    }
+
+    rules
 }
 
 /// Parse a single rule line from non-numbered status.

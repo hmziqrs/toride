@@ -1,0 +1,8 @@
+[package]
+name = "ufw-kit-test-support"
+version = "0.1.0"
+edition = "2024"
+description = "Test utilities for ufw-kit"
+
+[dependencies]
+ufw-kit = { path = "../ufw-kit" }

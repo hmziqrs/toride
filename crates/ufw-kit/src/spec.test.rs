@@ -369,6 +369,65 @@ fn rule_spec_validate_should_reject_esp_with_ports() {
 }
 
 // ---------------------------------------------------------------------------
+// Protocol required for port ranges / port lists
+// ---------------------------------------------------------------------------
+
+#[test]
+fn rule_spec_validate_should_reject_port_range_without_protocol() {
+    let spec = RuleSpec {
+        to_port: PortSpec::Range {
+            start: 8000,
+            end: 9000,
+        },
+        ..Default::default()
+    };
+    assert!(spec.validate().is_err());
+}
+
+#[test]
+fn rule_spec_validate_should_accept_port_range_with_protocol() {
+    let spec = RuleSpec {
+        protocol: ProtocolFilter::Specific(Protocol::Tcp),
+        to_port: PortSpec::Range {
+            start: 8000,
+            end: 9000,
+        },
+        ..Default::default()
+    };
+    assert!(spec.validate().is_ok());
+}
+
+#[test]
+fn rule_spec_validate_should_reject_port_list_without_protocol() {
+    let spec = RuleSpec {
+        to_port: PortSpec::List(vec![PortSpec::Single(80), PortSpec::Single(443)]),
+        ..Default::default()
+    };
+    assert!(spec.validate().is_err());
+}
+
+#[test]
+fn rule_spec_validate_should_accept_port_any_without_protocol() {
+    let spec = RuleSpec {
+        to_port: PortSpec::Any,
+        ..Default::default()
+    };
+    assert!(spec.validate().is_ok());
+}
+
+#[test]
+fn rule_spec_validate_should_reject_from_port_range_without_protocol() {
+    let spec = RuleSpec {
+        from_port: PortSpec::Range {
+            start: 8000,
+            end: 9000,
+        },
+        ..Default::default()
+    };
+    assert!(spec.validate().is_err());
+}
+
+// ---------------------------------------------------------------------------
 // Production-grade weird edge cases
 // ---------------------------------------------------------------------------
 

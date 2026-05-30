@@ -108,6 +108,17 @@ impl Ufw {
         Ok(())
     }
 
+    /// Enable UFW with `--force`, bypassing the interactive prompt.
+    ///
+    /// This is a convenience wrapper around [`enable`](Self::enable) that sets
+    /// `allow_force: true` while still performing the SSH lockout safety check.
+    pub fn force_enable(&self) -> Result<()> {
+        self.enable(&EnableOptions {
+            allow_force: true,
+            ..EnableOptions::default()
+        })
+    }
+
     /// Disable UFW.
     pub fn disable(&self, opts: &DisableOptions) -> Result<()> {
         if opts.require_explicit_confirmation {
@@ -278,6 +289,15 @@ impl Ufw {
     /// Update an application profile.
     pub fn app_update(&self, name: &str) -> Result<()> {
         let result = self.run_ufw(&["app", "update", name])?;
+        if !result.stderr.is_empty() && result.exit_code != Some(0) {
+            return Err(Error::AppUpdateFailed(result.stderr));
+        }
+        Ok(())
+    }
+
+    /// Update all application profiles.
+    pub fn app_update_all(&self) -> Result<()> {
+        let result = self.run_ufw(&["app", "update", "all"])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
             return Err(Error::AppUpdateFailed(result.stderr));
         }

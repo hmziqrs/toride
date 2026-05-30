@@ -1,0 +1,7 @@
+# Managed by ufw-kit.
+# Do not edit manually unless you also disable this manager.
+
+[PassiveFTP]
+title=PassiveFTP
+description=Passive FTP data ports
+ports=50000:50100/tcp

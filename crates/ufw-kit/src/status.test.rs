@@ -264,3 +264,139 @@ fn parse_status_verbose_should_parse_accept_as_allow() {
     assert_eq!(status.default_incoming, Some(Policy::Allow));
     assert_eq!(status.default_outgoing, Some(Policy::Allow));
 }
+
+// ---------------------------------------------------------------------------
+// parse_show_listening
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_show_listening_should_parse_empty_input() {
+    let ports = parse_show_listening("");
+    assert!(ports.is_empty());
+}
+
+#[test]
+fn parse_show_listening_should_parse_header_only() {
+    let output = "Listening:\n";
+    let ports = parse_show_listening(output);
+    assert!(ports.is_empty());
+}
+
+#[test]
+fn parse_show_listening_should_parse_multiple_entries() {
+    let output = "\
+Listening:
+ tcp 0.0.0.0:22
+ tcp [::]:22
+ tcp 0.0.0.0:80
+ udp 0.0.0.0:68
+";
+    let ports = parse_show_listening(output);
+    assert_eq!(ports.len(), 4);
+    assert_eq!(ports[0].proto, "tcp");
+    assert_eq!(ports[0].address, "0.0.0.0:22");
+    assert_eq!(ports[1].proto, "tcp");
+    assert_eq!(ports[1].address, "[::]:22");
+    assert_eq!(ports[2].proto, "tcp");
+    assert_eq!(ports[2].address, "0.0.0.0:80");
+    assert_eq!(ports[3].proto, "udp");
+    assert_eq!(ports[3].address, "0.0.0.0:68");
+}
+
+#[test]
+fn parse_show_listening_should_skip_malformed_lines() {
+    let output = "\
+Listening:
+ tcp 0.0.0.0:22
+
+ tcp
+ 0.0.0.0:80
+
+unknown
+ tcp [::]:443
+";
+    let ports = parse_show_listening(output);
+    // "tcp" (no address), "0.0.0.0:80" (no proto), "unknown" (no address) skipped
+    assert_eq!(ports.len(), 2);
+    assert_eq!(ports[0].address, "0.0.0.0:22");
+    assert_eq!(ports[1].address, "[::]:443");
+}
+
+#[test]
+fn parse_show_listening_should_ignore_text_before_header() {
+    let output = "\
+some noise
+more noise
+Listening:
+ tcp 0.0.0.0:22
+";
+    let ports = parse_show_listening(output);
+    assert_eq!(ports.len(), 1);
+    assert_eq!(ports[0].proto, "tcp");
+    assert_eq!(ports[0].address, "0.0.0.0:22");
+}
+
+// ---------------------------------------------------------------------------
+// parse_show_added
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_show_added_should_parse_empty_input() {
+    let rules = parse_show_added("");
+    assert!(rules.is_empty());
+}
+
+#[test]
+fn parse_show_added_should_parse_header_only() {
+    let output = "Added user rules (see 'ufw status'):\n";
+    let rules = parse_show_added(output);
+    assert!(rules.is_empty());
+}
+
+#[test]
+fn parse_show_added_should_parse_multiple_entries() {
+    let output = "\
+Added user rules (see 'ufw status'):
+allow 22/tcp
+allow 80/tcp
+deny 53/udp
+allow in on eth0 proto tcp from any to any port 443 comment managed:https
+";
+    let rules = parse_show_added(output);
+    assert_eq!(rules.len(), 4);
+    assert_eq!(rules[0].raw, "allow 22/tcp");
+    assert_eq!(rules[1].raw, "allow 80/tcp");
+    assert_eq!(rules[2].raw, "deny 53/udp");
+    assert_eq!(
+        rules[3].raw,
+        "allow in on eth0 proto tcp from any to any port 443 comment managed:https"
+    );
+}
+
+#[test]
+fn parse_show_added_should_skip_blank_lines() {
+    let output = "\
+Added user rules (see 'ufw status'):
+
+allow 22/tcp
+
+deny 53/udp
+
+";
+    let rules = parse_show_added(output);
+    assert_eq!(rules.len(), 2);
+    assert_eq!(rules[0].raw, "allow 22/tcp");
+    assert_eq!(rules[1].raw, "deny 53/udp");
+}
+
+#[test]
+fn parse_show_added_should_ignore_text_before_header() {
+    let output = "\
+noise
+Added user rules (see 'ufw status'):
+allow 22/tcp
+";
+    let rules = parse_show_added(output);
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].raw, "allow 22/tcp");
+}
