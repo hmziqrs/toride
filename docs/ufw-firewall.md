@@ -200,6 +200,7 @@ Requirements:
 * support redacted logs
 * return structured errors
 * allow tests to inject fake command output
+* force `LC_ALL=C`/`LANG=C` for commands whose output will be parsed
 
 Example internal command shape:
 
@@ -246,11 +247,13 @@ Operations:
 * `app_list()`
 * `app_info(name)`
 * `app_update(name)`
-* `app_default(policy)`
+* `app_default(app_policy)`
 
 Expose both raw output and parsed summaries.
 
 Do not over-trust parsing in v1. UFW output can vary by distro version, locale, IPv6 setting, and rule format.
+
+For parsed output, run UFW with a stable C locale. Localized output should remain available through raw command APIs, but parsers should not depend on translated column names or messages.
 
 ### `spec`
 
@@ -302,7 +305,11 @@ enum Protocol {
     Gre,
     Ipv6,
     Igmp,
+}
+
+enum ProtocolFilter {
     Any,
+    Specific(Protocol),
 }
 
 enum LoggingLevel {
@@ -312,6 +319,18 @@ enum LoggingLevel {
     Medium,
     High,
     Full,
+}
+
+enum RuleLogging {
+    None,
+    Log,
+    LogAll,
+}
+
+enum AppDefaultPolicy {
+    Skip,
+    Allow,
+    Deny,
 }
 
 enum Address {
@@ -326,11 +345,17 @@ enum PortSpec {
     Range { start: u16, end: u16 },
     List(Vec<PortSpec>),
     ServiceName(String),
-    AppName(String),
+}
+
+enum RuleTarget {
+    Any,
+    Port(PortSpec),
+    AppProfile(String),
 }
 
 enum RulePosition {
     Append,
+    Prepend,
     Insert(u32),
 }
 ```
@@ -340,9 +365,15 @@ Validation rules:
 * port must be `1..=65535`
 * port ranges must be ordered
 * protocol required for port ranges and comma lists where UFW requires it
+* `ProtocolFilter::Any` must render by omitting `proto`, never as `proto any`
+* `ah`, `esp`, `gre`, `ipv6`, and `igmp` must not be combined with port clauses
+* `ipv6` protocol rules require IPv6 addresses and `igmp` protocol rules require IPv4 addresses
 * `limit` should be TCP-only in common presets
 * `limit` IPv6 support must be treated carefully
 * IPv6 addresses require IPv6 enabled in UFW config
+* app profile rules must use `app <name>` instead of `port <name>`
+* app profile rules must not specify a protocol because the profile owns protocol selection
+* application default policy must use `skip|allow|deny`, not normal firewall `allow|deny|reject`
 * interface names must reject whitespace, newline, slash, shell metacharacters
 * comments must reject newline
 * app names must reject newline and path traversal
@@ -391,6 +422,20 @@ deny out proto tcp to any port 25
 reject in from 203.0.113.10
 ```
 
+Support per-rule logging:
+
+```text
+allow in log proto tcp from 10.0.0.0/8 to any port 443
+deny in log-all from 203.0.113.10
+```
+
+Support rule positioning:
+
+```text
+prepend allow from 10.0.0.10
+insert 1 deny from 203.0.113.10
+```
+
 Support route syntax:
 
 ```text
@@ -417,7 +462,6 @@ Support:
 * active
 * verbose defaults
 * logging level
-* new profiles policy
 * numbered rules
 * IPv4 rules
 * IPv6 rules
@@ -425,6 +469,7 @@ Support:
 * rule comments
 * interface-specific rules
 * app profile rules
+* new application profiles policy
 
 Important warning:
 
@@ -443,6 +488,8 @@ ufw show listening
 ```
 
 Expose these as separate report types.
+
+Use `ufw show added` only for normalized command reconstruction and backup context. It does not prove the live firewall state or exact original command ordering.
 
 ### `app_profile`
 
@@ -491,9 +538,11 @@ Operations:
 * `app_info(name)`
 * `app_update(name)`
 * `app_update_all()`
+* `app_default(app_policy)`
 
 Default behavior:
 
+* model app default policy as `skip`, `allow`, or `deny`
 * never set app default policy to `allow`
 * never use `app update --add-new` unless caller explicitly opts in
 * prefer generating profile, then caller explicitly adds an allow/deny rule using that app profile
@@ -534,6 +583,8 @@ ENABLED=yes|no
 ```
 
 Do not treat config editing as a replacement for the `ufw default` command. Prefer the CLI for policy changes. Use config editing only when the CLI does not expose the setting or when preparing UFW before activation.
+
+Changing default policies can make existing rules semantically unsafe or insufficient. Policy-changing APIs must return a migration warning and run SSH lockout checks before changing incoming policy to `deny` or `reject`.
 
 ### `framework`
 
@@ -817,8 +868,10 @@ MVP should include:
 * add rule
 * delete exact rule
 * insert rule
+* prepend rule
 * set default policy
 * set logging level
+* per-rule logging
 * reload
 * enable with SSH safety check
 * disable with explicit dangerous opt-in
@@ -1069,12 +1122,14 @@ Optional but important for VPS usage.
 Check:
 
 * Docker is installed
-* Docker manipulates iptables
+* Docker firewall backend and settings detected: `iptables`, `ip6tables`, and `firewall-backend`
 * UFW rules may not protect published Docker ports as expected
 * published ports are visible via `ss`/Docker inspect
 * recommend binding containers to `127.0.0.1` behind reverse proxy
 * warn when Docker publishes `0.0.0.0:PORT`
 * warn when Docker publishes `[::]:PORT`
+* warn when Docker direct-routing or routed gateway mode may expose published container ports
+* warn that disabling Docker firewall management is likely to break bridge networking unless replacement rules exist
 * detect Dokploy/Traefik common setup
 * recommend provider firewall or Docker-specific firewall strategy if needed
 
@@ -1154,8 +1209,12 @@ All mutating operations should follow this flow:
 3. run `ufw --dry-run ...`
 4. inspect dry-run output for obvious failure
 5. perform change
-6. verify with `ufw status` or `ufw show added`
+6. verify live state with `ufw status`, `ufw status numbered`, `ufw show raw`, or a targeted report
 7. return structured apply report
+
+Use `ufw show added` only as supporting evidence for normalized UFW-managed rules. It is not a live-state verification source.
+
+If the operation changes default incoming, outgoing, or routed policy, include an explicit warning that existing rules may need migration or review under the new default.
 
 For file-backed operations:
 
@@ -1279,6 +1338,16 @@ ufw.set_logging(LoggingLevel::Low)
 ufw.set_logging(LoggingLevel::Off)
 ```
 
+Also support per-rule logging on rule specs:
+
+```rust
+RuleSpec::allow()
+    .proto(Protocol::Tcp)
+    .to_port(443)
+    .logging(RuleLogging::Log)
+    .build()
+```
+
 Doctor should warn:
 
 * `medium`, `high`, and `full` can be noisy
@@ -1388,12 +1457,14 @@ For Prometheus/Grafana/node exporter:
 
 ## Docker and Dokploy notes
 
-For VPS users with Dokploy/Traefik/Docker, UFW alone may not behave like expected because Docker can publish ports and manage iptables rules.
+For VPS users with Dokploy/Traefik/Docker, UFW alone may not behave like expected because Docker can publish ports and manage its own firewall rules. Docker uses iptables by default, can also use an nftables backend, and published container traffic can be diverted before normal UFW input/output rules see it.
 
 The library should include a doctor module that checks:
 
 * Docker installed
+* Docker firewall backend and daemon firewall settings
 * containers publishing public ports
+* containers using direct routing or routed gateway mode
 * Traefik published ports
 * Dokploy dashboard exposed
 * app containers exposed outside reverse proxy
@@ -1434,7 +1505,7 @@ ForwardSpec {
     in_interface: "wg0",
     out_interface: "eth0",
     destination: Address::Any,
-    proto: Protocol::Any,
+    proto: ProtocolFilter::Any,
 }
 ```
 
@@ -1476,9 +1547,17 @@ ufw.show(UfwReport::Raw)
 
 Use reports for doctor diagnostics.
 
+Important report semantics:
+
+* `Raw` is the best UFW-provided view of the live firewall.
+* `Listening` is live socket state plus candidate matching rules.
+* `Added` reconstructs normalized UFW command-line rules and does not prove running firewall status.
+
 ## Parsing strategy
 
 Do not overfit to one distro’s output.
+
+Run parsable UFW commands with `LC_ALL=C` and `LANG=C`. Treat localized output as raw text only unless explicit locale-specific fixtures exist.
 
 Parsing levels:
 
@@ -1522,7 +1601,9 @@ MVP should do levels 1–3 and partial level 4.
 * app profile rendering
 * command arg generation
 * policy arg generation
+* app default policy arg generation
 * logging arg generation
+* per-rule logging arg generation
 * parser fixtures
 
 ### Snapshot tests
@@ -1694,12 +1775,15 @@ Before calling v1 done, the crate must support:
 * add limit rule
 * delete exact rule
 * insert rule
+* prepend rule
 * add route rule
 * delete route rule
 * set incoming default policy
 * set outgoing default policy
 * set routed default policy
 * set logging level
+* set per-rule logging
+* set app default policy with `skip|allow|deny`
 * reload UFW
 * safe enable workflow
 * explicit disable workflow
@@ -1707,6 +1791,7 @@ Before calling v1 done, the crate must support:
 * typed IP/CIDR validation
 * typed port validation
 * typed protocol validation
+* app profile target validation
 * typed interface validation
 * typed comment validation
 * app profile generation
