@@ -3,7 +3,7 @@
 //! Handles writing, updating, and removing UFW application profiles
 //! in `/etc/ufw/applications.d/`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::backup;
 use crate::error::{Error, Result};
