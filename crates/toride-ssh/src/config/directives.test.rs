@@ -465,7 +465,7 @@ fn crlf_in_directive_value_clean() {
     let ast = crate::config::ast::parse(input);
     let val = get_directive(&ast, "example", "HostName");
     if let Some(ref v) = val {
-        assert!(!v.contains('\r'), "\\r leaked into value: {:?}", v);
+        assert!(!v.contains('\r'), "\\r leaked into value: {v:?}");
     }
     assert_eq!(val.as_deref(), Some("myhost.com"));
 }

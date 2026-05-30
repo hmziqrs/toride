@@ -174,6 +174,90 @@ fn guess_key_type_from_name(name: &str) -> KeyType {
     }
 }
 
+/// Scan `~/.ssh/id_*` and the agent for available keys.
+pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
+    let ssh_dir = paths.ssh_dir().to_path_buf();
+    let default_names = SshPaths::default_key_names();
+
+    tokio::task::spawn_blocking(move || {
+        let mut keys = Vec::new();
+        let mut seen_names = std::collections::HashSet::<std::ffi::OsString>::new();
+
+        // Read directory entries
+        let entries = match std::fs::read_dir(&ssh_dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                // If the .ssh directory doesn't exist, return an empty list
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(keys);
+                }
+                return Err(Error::Io(e));
+            }
+        };
+
+        // Collect all id_* files that are NOT .pub or -cert.pub
+        let mut private_key_paths: Vec<PathBuf> = Vec::new();
+
+        for entry in entries.flatten() {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy();
+
+            // Skip non-id_* files, public keys, certificates, and backups
+            if !name.starts_with("id_") {
+                continue;
+            }
+            if name.ends_with(".pub") || name.ends_with(".bak") || name.ends_with(".old") {
+                continue;
+            }
+
+            // Only consider regular files (follow symlinks — users may
+            // symlink keys from other locations).
+            let file_type = entry.file_type()?;
+            if !file_type.is_file() && !file_type.is_symlink() {
+                continue;
+            }
+
+            // Deduplicate by base name
+            if seen_names.insert(file_name.clone()) {
+                private_key_paths.push(entry.path());
+            }
+        }
+
+        // Ensure all default key names are checked even if not in directory listing
+        for &default_name in default_names {
+            let default_os: std::ffi::OsString = default_name.into();
+            if seen_names.insert(default_os) {
+                let default_path = ssh_dir.join(default_name);
+                if default_path.is_file() {
+                    private_key_paths.push(default_path);
+                }
+            }
+        }
+
+        // Sort for deterministic output
+        private_key_paths.sort();
+
+        // Inspect each private key
+        for path in private_key_paths {
+            match inspect_private_key(&path) {
+                Ok(key) => keys.push(key),
+                Err(e) => {
+                    // Log but don't fail the entire scan for one bad key
+                    tracing::warn!(
+                        "skipping key {}: {}",
+                        path.display(),
+                        e
+                    );
+                }
+            }
+        }
+
+        Ok(keys)
+    })
+    .await
+    .map_err(|e| Error::TaskFailed(format!("scan_keys task failed: {e}")))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,88 +400,4 @@ mod tests {
         let data = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n";
         assert!(is_likely_encrypted(data));
     }
-}
-
-/// Scan `~/.ssh/id_*` and the agent for available keys.
-pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
-    let ssh_dir = paths.ssh_dir().to_path_buf();
-    let default_names = SshPaths::default_key_names();
-
-    tokio::task::spawn_blocking(move || {
-        let mut keys = Vec::new();
-        let mut seen_names = std::collections::HashSet::<std::ffi::OsString>::new();
-
-        // Read directory entries
-        let entries = match std::fs::read_dir(&ssh_dir) {
-            Ok(entries) => entries,
-            Err(e) => {
-                // If the .ssh directory doesn't exist, return an empty list
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    return Ok(keys);
-                }
-                return Err(Error::Io(e));
-            }
-        };
-
-        // Collect all id_* files that are NOT .pub or -cert.pub
-        let mut private_key_paths: Vec<PathBuf> = Vec::new();
-
-        for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name = file_name.to_string_lossy();
-
-            // Skip non-id_* files, public keys, certificates, and backups
-            if !name.starts_with("id_") {
-                continue;
-            }
-            if name.ends_with(".pub") || name.ends_with(".bak") || name.ends_with(".old") {
-                continue;
-            }
-
-            // Only consider regular files (follow symlinks — users may
-            // symlink keys from other locations).
-            let file_type = entry.file_type()?;
-            if !file_type.is_file() && !file_type.is_symlink() {
-                continue;
-            }
-
-            // Deduplicate by base name
-            if seen_names.insert(file_name.clone()) {
-                private_key_paths.push(entry.path());
-            }
-        }
-
-        // Ensure all default key names are checked even if not in directory listing
-        for &default_name in default_names {
-            let default_os: std::ffi::OsString = default_name.into();
-            if seen_names.insert(default_os) {
-                let default_path = ssh_dir.join(default_name);
-                if default_path.is_file() {
-                    private_key_paths.push(default_path);
-                }
-            }
-        }
-
-        // Sort for deterministic output
-        private_key_paths.sort();
-
-        // Inspect each private key
-        for path in private_key_paths {
-            match inspect_private_key(&path) {
-                Ok(key) => keys.push(key),
-                Err(e) => {
-                    // Log but don't fail the entire scan for one bad key
-                    tracing::warn!(
-                        "skipping key {}: {}",
-                        path.display(),
-                        e
-                    );
-                }
-            }
-        }
-
-        Ok(keys)
-    })
-    .await
-    .map_err(|e| Error::TaskFailed(format!("scan_keys task failed: {e}")))?
 }

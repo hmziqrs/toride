@@ -123,7 +123,7 @@ fn expand_tilde_just_tilde() {
     let result = expand_tilde_and_env("~");
     // Should expand to home dir
     assert!(!result.is_empty());
-    assert!(!result.starts_with("~"));
+    assert!(!result.starts_with('~'));
 }
 
 #[test]
@@ -223,18 +223,21 @@ fn simple_glob_match_no_wildcards() {
 
 #[test]
 fn match_criteria_host_basic() {
-    assert!(match_criteria_host("host web", "web"));
-    assert!(!match_criteria_host("host web", "db"));
+    assert!(match_criteria_host("host web", "web", "alice", "web"));
+    assert!(!match_criteria_host("host web", "db", "alice", "web"));
 }
 
 #[test]
 fn match_criteria_host_no_host_clause() {
-    assert!(!match_criteria_host("user alice", "web"));
+    // "user alice" with target_user "bob" should not match.
+    assert!(!match_criteria_host("user alice", "web", "bob", "web"));
+    // "user alice" with target_user "alice" should match.
+    assert!(match_criteria_host("user alice", "web", "alice", "web"));
 }
 
 #[test]
 fn match_criteria_host_wildcard() {
-    assert!(match_criteria_host("host *", "anything"));
+    assert!(match_criteria_host("host *", "anything", "alice", "anything"));
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +299,7 @@ fn expand_tilde_just_slash() {
     // ~/ should expand to home dir + /
     let result = expand_tilde_and_env("~/");
     assert!(!result.starts_with("~/"));
-    assert!(result.ends_with("/"));
+    assert!(result.ends_with('/'));
 }
 
 #[test]
@@ -344,23 +347,25 @@ fn expand_env_vars_nested_braces() {
 
 #[test]
 fn match_criteria_host_case_insensitive_keyword() {
-    assert!(match_criteria_host("HOST web", "web"));
-    assert!(match_criteria_host("Host web", "web"));
-    assert!(match_criteria_host("host web", "web"));
+    assert!(match_criteria_host("HOST web", "web", "alice", "web"));
+    assert!(match_criteria_host("Host web", "web", "alice", "web"));
+    assert!(match_criteria_host("host web", "web", "alice", "web"));
 }
 
 #[test]
 fn match_criteria_host_multiple_host_clauses() {
     // Multiple host clauses - either can match
-    assert!(match_criteria_host("host web host db", "web"));
-    assert!(match_criteria_host("host web host db", "db"));
-    assert!(!match_criteria_host("host web host db", "other"));
+    assert!(match_criteria_host("host web host db", "web", "alice", "web"));
+    assert!(match_criteria_host("host web host db", "db", "alice", "web"));
+    assert!(!match_criteria_host("host web host db", "other", "alice", "web"));
 }
 
 #[test]
 fn match_criteria_host_unknown_keyword_before_host() {
-    // Unknown keyword before host clause
-    assert!(match_criteria_host("user alice host web", "web"));
+    // Unknown keyword before host clause — user "alice" must also match.
+    assert!(match_criteria_host("user alice host web", "web", "alice", "web"));
+    // If user doesn't match, the whole block is rejected.
+    assert!(!match_criteria_host("user alice host web", "web", "bob", "web"));
 }
 
 #[test]
@@ -523,25 +528,25 @@ fn expand_tokens_all_new_tokens() {
 #[test]
 fn match_criteria_host_with_port() {
     // Match criteria with port in host pattern
-    assert!(match_criteria_host("host [::1]:22", "[::1]:22"));
+    assert!(match_criteria_host("host [::1]:22", "[::1]:22", "alice", "[::1]:22"));
 }
 
 #[test]
 fn match_criteria_host_with_wildcard_port() {
     // Wildcard host should match any port
-    assert!(match_criteria_host("host *", "example.com:22"));
+    assert!(match_criteria_host("host *", "example.com:22", "alice", "example.com:22"));
 }
 
 #[test]
 fn match_criteria_host_empty_criteria() {
     // Empty criteria should not match
-    assert!(!match_criteria_host("", "host"));
+    assert!(!match_criteria_host("", "host", "alice", "host"));
 }
 
 #[test]
 fn match_criteria_host_only_unknown_keyword() {
-    // Only unsupported keywords
-    assert!(!match_criteria_host("user alice", "host"));
+    // Only unsupported keywords — user "alice" doesn't match target_user "bob".
+    assert!(!match_criteria_host("exec true", "host", "bob", "host"));
 }
 
 #[test]
@@ -569,8 +574,8 @@ fn simple_glob_match_question_only() {
 #[test]
 fn match_criteria_host_negation() {
     // Negation patterns must be comma-separated with positive patterns
-    assert!(!match_criteria_host("host *,!badhost", "badhost"));
-    assert!(match_criteria_host("host *,!badhost", "goodhost"));
+    assert!(!match_criteria_host("host *,!badhost", "badhost", "alice", "badhost"));
+    assert!(match_criteria_host("host *,!badhost", "goodhost", "alice", "goodhost"));
 }
 
 // ---------------------------------------------------------------------------
@@ -638,4 +643,408 @@ fn collapse_double_pct_none() {
 #[test]
 fn collapse_double_pct_empty() {
     assert_eq!(collapse_double_percent(""), "");
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Match user criterion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn match_criteria_user_basic() {
+    assert!(match_criteria_host("user alice", "host", "alice", "host"));
+    assert!(!match_criteria_host("user alice", "host", "bob", "host"));
+}
+
+#[test]
+fn match_criteria_user_case_insensitive() {
+    assert!(match_criteria_host("user Alice", "host", "alice", "host"));
+    assert!(match_criteria_host("user ALICE", "host", "alice", "host"));
+    assert!(match_criteria_host("user alice", "host", "ALICE", "host"));
+}
+
+#[test]
+fn match_criteria_user_multiple_names() {
+    assert!(match_criteria_host("user alice,bob", "host", "alice", "host"));
+    assert!(match_criteria_host("user alice,bob", "host", "bob", "host"));
+    assert!(!match_criteria_host("user alice,bob", "host", "charlie", "host"));
+}
+
+#[test]
+fn match_criteria_user_with_host() {
+    // Both user and host must match (AND logic).
+    assert!(match_criteria_host(
+        "user alice host web",
+        "web",
+        "alice",
+        "web",
+    ));
+    assert!(!match_criteria_host(
+        "user alice host web",
+        "web",
+        "bob",
+        "web",
+    ));
+    assert!(!match_criteria_host(
+        "user alice host web",
+        "db",
+        "alice",
+        "web",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for Match originalhost criterion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn match_criteria_originalhost_basic() {
+    assert!(match_criteria_host(
+        "originalhost web",
+        "canonical.web",
+        "alice",
+        "web",
+    ));
+    assert!(!match_criteria_host(
+        "originalhost web",
+        "canonical.web",
+        "alice",
+        "db",
+    ));
+}
+
+#[test]
+fn match_criteria_originalhost_wildcard() {
+    assert!(match_criteria_host(
+        "originalhost *.example.com",
+        "canonical.example.com",
+        "alice",
+        "web.example.com",
+    ));
+}
+
+#[test]
+fn match_criteria_originalhost_with_host() {
+    // Both originalhost and host are checked.
+    // originalhost matches against the original alias, host against the
+    // current target (which may be the canonical name).
+    assert!(match_criteria_host(
+        "originalhost web host canonical.web",
+        "canonical.web",
+        "alice",
+        "web",
+    ));
+    assert!(!match_criteria_host(
+        "originalhost web host canonical.web",
+        "canonical.web",
+        "alice",
+        "other",
+    ));
+}
+
+#[test]
+fn match_criteria_originalhost_negation() {
+    assert!(!match_criteria_host(
+        "originalhost *,!badhost",
+        "canonical",
+        "alice",
+        "badhost",
+    ));
+    assert!(match_criteria_host(
+        "originalhost *,!badhost",
+        "canonical",
+        "alice",
+        "goodhost",
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for CanonicalizeHostname awareness
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_canonicalize_enabled_yes() {
+    let resolved = ResolvedHost {
+        alias: "test".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("CanonicalizeHostname".into(), "yes".into())],
+        canonicalized: false,
+    };
+    assert!(is_canonicalize_enabled(&resolved));
+}
+
+#[test]
+fn is_canonicalize_enabled_always() {
+    let resolved = ResolvedHost {
+        alias: "test".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("CanonicalizeHostname".into(), "always".into())],
+        canonicalized: false,
+    };
+    assert!(is_canonicalize_enabled(&resolved));
+}
+
+#[test]
+fn is_canonicalize_enabled_no() {
+    let resolved = ResolvedHost {
+        alias: "test".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("CanonicalizeHostname".into(), "no".into())],
+        canonicalized: false,
+    };
+    assert!(!is_canonicalize_enabled(&resolved));
+}
+
+#[test]
+fn is_canonicalize_enabled_missing() {
+    let resolved = ResolvedHost {
+        alias: "test".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![],
+        canonicalized: false,
+    };
+    assert!(!is_canonicalize_enabled(&resolved));
+}
+
+#[test]
+fn is_canonicalize_enabled_case_insensitive() {
+    let resolved = ResolvedHost {
+        alias: "test".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("canonicalizehostname".into(), "YES".into())],
+        canonicalized: false,
+    };
+    assert!(is_canonicalize_enabled(&resolved));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for expanded token expansion (additional directives)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn expand_resolved_certificate_file() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("CertificateFile".into(), "%d/.ssh/%h-cert.pub".into())],
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "example", Path::new("/tmp"));
+    let val = &resolved.directives[0].1;
+    // %d and %h should have been expanded.
+    assert!(!val.contains("%d"));
+    assert!(!val.contains("%h"));
+    assert!(val.contains("example-cert.pub"));
+}
+
+#[test]
+fn expand_resolved_control_path() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![("ControlPath".into(), "/tmp/ssh-%h-%p".into())],
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "example", Path::new("/tmp"));
+    let val = &resolved.directives[0].1;
+    assert!(!val.contains("%h"));
+    assert!(val.contains("example"));
+}
+
+#[test]
+fn expand_resolved_user_known_hosts_file() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![(
+            "UserKnownHostsFile".into(),
+            "%d/.ssh/known_hosts_%h".into(),
+        )],
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "myhost", Path::new("/tmp"));
+    let val = &resolved.directives[0].1;
+    assert!(!val.contains("%d"));
+    assert!(!val.contains("%h"));
+    assert!(val.contains("myhost"));
+}
+
+#[test]
+fn expand_resolved_identity_agent() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        proxy_jump: None,
+        directives: vec![(
+            "IdentityAgent".into(),
+            "${SSH_AUTH_SOCK}".into(),
+        )],
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "h", Path::new("/tmp"));
+    // The env var should have been expanded (or empty if not set).
+    // The important thing is it doesn't contain the literal ${...}.
+    let val = &resolved.directives[0].1;
+    assert!(!val.contains("${SSH_AUTH_SOCK}"));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for resolve_pass (internal)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resolve_pass_default_canonicalized_false() {
+    // A resolved host from resolve_pass should have canonicalized = false.
+    use super::ast;
+    let ast = ast::parse("Host example\n  HostName example.com\n");
+    let resolved = resolve_pass(&ast, "example", "example", "user", Path::new("/tmp"));
+    assert!(!resolved.canonicalized);
+    assert_eq!(resolved.host_name.as_deref(), Some("example.com"));
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: Include chain with cycle detection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_include_cycle_detected() {
+    // Create a config that includes itself through a chain: config -> a -> b -> a
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+
+    // config includes chain_a
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include chain_a\nHost main\n    User root\n",
+    )
+    .unwrap();
+
+    // chain_a includes chain_b
+    std::fs::write(
+        ssh_dir.join("chain_a"),
+        "Host alpha\n    User alice\nInclude chain_b\n",
+    )
+    .unwrap();
+
+    // chain_b includes chain_a (creates cycle!)
+    std::fs::write(
+        ssh_dir.join("chain_b"),
+        "Host beta\n    User bob\nInclude chain_a\n",
+    )
+    .unwrap();
+
+    let result = resolve(ssh_dir, "alpha", None).await;
+
+    assert!(result.is_err(), "should detect include cycle");
+    match result.unwrap_err() {
+        crate::Error::ConfigIncludeCycle(path) => {
+            assert!(
+                path.contains("chain_a"),
+                "cycle error should mention the offending file, got: {path}"
+            );
+        }
+        other => panic!("expected ConfigIncludeCycle error, got: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_include_self_referencing() {
+    // A config that directly includes itself.
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include config\nHost self\n    User me\n",
+    )
+    .unwrap();
+
+    let result = resolve(ssh_dir, "self", None).await;
+
+    assert!(result.is_err(), "should detect self-referencing include");
+    match result.unwrap_err() {
+        crate::Error::ConfigIncludeCycle(_) => {}
+        other => panic!("expected ConfigIncludeCycle error, got: {other}"),
+    }
+}
+
+#[tokio::test]
+async fn resolve_include_chain_without_cycle() {
+    // A valid include chain with no cycle: config -> layer1 -> layer2
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include layer1\nHost main\n    User root\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        ssh_dir.join("layer1"),
+        "Include layer2\nHost web\n    User deploy\n",
+    )
+    .unwrap();
+
+    std::fs::write(
+        ssh_dir.join("layer2"),
+        "Host db\n    User admin\n",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "db", None).await;
+    assert!(resolved.is_ok(), "valid include chain should not error");
+    let resolved = resolved.unwrap();
+    assert_eq!(resolved.user.as_deref(), Some("admin"));
+}
+
+#[tokio::test]
+async fn resolve_include_nonexistent_file() {
+    // Including a file that does not exist should not error (OpenSSH behavior).
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+
+    std::fs::write(
+        ssh_dir.join("config"),
+        "Include does_not_exist\nHost test\n    User alice\n",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "test", None).await;
+    assert!(resolved.is_ok(), "missing include file should be silently skipped");
+    assert_eq!(resolved.unwrap().user.as_deref(), Some("alice"));
 }

@@ -90,7 +90,7 @@ fn add_directive_to_host_works() {
     let (_patterns, nodes) = ast.nodes[find_host_index(&ast, "existing").unwrap()]
         .as_host_block()
         .unwrap();
-    assert!(nodes.iter().any(|n| n.as_directive().map(|(k, v)| k == "Port" && v == "2222").unwrap_or(false)));
+    assert!(nodes.iter().any(|n| n.as_directive().is_some_and(|(k, v)| k == "Port" && v == "2222")));
 }
 
 #[test]
@@ -107,7 +107,7 @@ fn remove_directive_from_host_works() {
     let (_patterns, nodes) = ast.nodes[find_host_index(&ast, "existing").unwrap()]
         .as_host_block()
         .unwrap();
-    assert!(!nodes.iter().any(|n| n.as_directive().map(|(k, _)| k == "User").unwrap_or(false)));
+    assert!(!nodes.iter().any(|n| n.as_directive().is_some_and(|(k, _)| k == "User")));
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn remove_directive_from_host_case_insensitive() {
     let (_patterns, nodes) = ast.nodes[find_host_index(&ast, "existing").unwrap()]
         .as_host_block()
         .unwrap();
-    assert!(!nodes.iter().any(|n| n.as_directive().map(|(k, _)| k == "HostName").unwrap_or(false)));
+    assert!(!nodes.iter().any(|n| n.as_directive().is_some_and(|(k, _)| k == "HostName")));
 }
 
 #[test]

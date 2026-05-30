@@ -149,8 +149,7 @@ Host *
 
     assert!(
         warnings.is_empty(),
-        "clean config should produce no warnings, got: {:?}",
-        warnings
+        "clean config should produce no warnings, got: {warnings:?}",
     );
 
     drop(dir);

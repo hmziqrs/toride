@@ -127,6 +127,53 @@ impl<'a> AgentService<'a> {
         .map_err(|e| Error::TaskFailed(e.to_string()))?
     }
 
+    /// Add a key to the SSH agent and store its passphrase in the macOS Keychain
+    /// (`ssh-add --apple-use-keychain <key>`).
+    ///
+    /// This integrates with the macOS Keychain so the key's passphrase is
+    /// remembered across reboots. Only available on macOS.
+    #[cfg(target_os = "macos")]
+    pub async fn add_to_keychain(&self, key_path: &Path) -> Result<()> {
+        let path_str = key_path
+            .to_str()
+            .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+            .to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            duct::cmd("ssh-add", ["--apple-use-keychain", &path_str])
+                .read()
+                .map_err(|e| {
+                    Error::CommandFailed(format!(
+                        "ssh-add --apple-use-keychain failed: {e}"
+                    ))
+                })?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
+    }
+
+    /// Load all keys from the macOS Keychain into the SSH agent
+    /// (`ssh-add --apple-load-keychain`).
+    ///
+    /// Reads stored passphrases from the Keychain and loads the corresponding
+    /// keys automatically. Only available on macOS.
+    #[cfg(target_os = "macos")]
+    pub async fn load_keychain(&self) -> Result<()> {
+        tokio::task::spawn_blocking(|| {
+            duct::cmd("ssh-add", ["--apple-load-keychain"])
+                .read()
+                .map_err(|e| {
+                    Error::CommandFailed(format!(
+                        "ssh-add --apple-load-keychain failed: {e}"
+                    ))
+                })?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
+    }
+
     /// List active ControlMaster sessions.
     ///
     /// Scans for control socket files in the SSH directory and `/tmp`,

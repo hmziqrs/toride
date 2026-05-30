@@ -20,8 +20,7 @@ struct SshDirExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh` has permission mode `0o700`.
-#[cfg(unix)]
+/// Check that `~/.ssh` has permission mode `0o700` (Unix) or reports ACL info (Windows).
 struct SshDirPermissions<'a> {
     paths: &'a SshPaths,
 }
@@ -36,8 +35,7 @@ struct KnownHostsExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that all private key files under `~/.ssh` have mode `0o600`.
-#[cfg(unix)]
+/// Check that all private key files under `~/.ssh` have mode `0o600` (Unix) or reports ACL info (Windows).
 struct PrivateKeyPermissions<'a> {
     paths: &'a SshPaths,
 }
@@ -53,20 +51,17 @@ struct DefaultKeyExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh` is owned by the current user.
-#[cfg(unix)]
+/// Check that `~/.ssh` is owned by the current user (Unix) or reports ACL info (Windows).
 struct OwnerCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/config` is not group/world writable.
-#[cfg(unix)]
+/// Check that `~/.ssh/config` is not group/world writable (Unix) or reports ACL info (Windows).
 struct ConfigPermissionsCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/authorized_keys` has mode `0o600` or `0o644`.
-#[cfg(unix)]
+/// Check that `~/.ssh/authorized_keys` has mode `0o600` or `0o644` (Unix) or reports ACL info (Windows).
 struct AuthorizedKeysPermissionsCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -700,6 +695,273 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// Non-Unix (Windows) stubs for permission checks
+// ---------------------------------------------------------------------------
+
+#[cfg(not(unix))]
+impl Check for SshDirPermissions<'_> {
+    fn id(&self) -> &'static str {
+        "ssh_dir_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            Ok(vec![Diagnostic {
+                id: "ssh_dir_permissions",
+                severity: Severity::Info,
+                message: format!(
+                    "Permission check for {} skipped (not supported on this platform)",
+                    ssh_dir.display()
+                ),
+                hint: Some(
+                    "On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\"".into(),
+                ),
+                module: "local",
+            }])
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Check for PrivateKeyPermissions<'_> {
+    fn id(&self) -> &'static str {
+        "private_key_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            Ok(vec![Diagnostic {
+                id: "private_key_permissions",
+                severity: Severity::Info,
+                message: format!(
+                    "Private key permission check for {} skipped (not supported on this platform)",
+                    ssh_dir.display()
+                ),
+                hint: Some(
+                    "On Windows, restrict access to private key files with: icacls <keyfile> /inheritance:r /grant:r \"%USERNAME%:R\"".into(),
+                ),
+                module: "local",
+            }])
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Check for OwnerCheck<'_> {
+    fn id(&self) -> &'static str {
+        "owner_check"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            Ok(vec![Diagnostic {
+                id: "owner_check",
+                severity: Severity::Info,
+                message: format!(
+                    "Ownership check for {} skipped (not supported on this platform)",
+                    ssh_dir.display()
+                ),
+                hint: Some(
+                    "On Windows, verify ownership with: icacls \"%USERPROFILE%\\.ssh\"".into(),
+                ),
+                module: "local",
+            }])
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Check for ConfigPermissionsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "config_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            Ok(vec![Diagnostic {
+                id: "config_permissions",
+                severity: Severity::Info,
+                message: format!(
+                    "Permission check for {} skipped (not supported on this platform)",
+                    config_path.display()
+                ),
+                hint: Some(
+                    "On Windows, restrict access to config with: icacls <configfile> /inheritance:r /grant:r \"%USERNAME%:F\"".into(),
+                ),
+                module: "local",
+            }])
+        })
+    }
+}
+
+#[cfg(not(unix))]
+impl Check for AuthorizedKeysPermissionsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "authorized_keys_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ak_path = self.paths.authorized_keys_path().to_path_buf();
+        Box::pin(async move {
+            Ok(vec![Diagnostic {
+                id: "authorized_keys_permissions",
+                severity: Severity::Info,
+                message: format!(
+                    "Permission check for {} skipped (not supported on this platform)",
+                    ak_path.display()
+                ),
+                hint: Some(
+                    "On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\\authorized_keys\"".into(),
+                ),
+                module: "local",
+            }])
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PlatformCheck
+// ---------------------------------------------------------------------------
+
+/// Report platform information: OS, architecture, SSH version, and agent type.
+struct PlatformCheck;
+
+impl Check for PlatformCheck {
+    fn id(&self) -> &'static str {
+        "platform_check"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        Box::pin(async move {
+            let mut diagnostics = Vec::new();
+
+            // Report OS and architecture.
+            diagnostics.push(Diagnostic {
+                id: "platform_os",
+                severity: Severity::Info,
+                message: format!(
+                    "Operating system: {} ({})",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+                hint: None,
+                module: "local",
+            });
+
+            // Detect SSH agent type.
+            #[cfg(unix)]
+            {
+                match std::env::var("SSH_AUTH_SOCK") {
+                    Ok(sock) if !sock.is_empty() => {
+                        diagnostics.push(Diagnostic {
+                            id: "platform_agent_type",
+                            severity: Severity::Info,
+                            message: format!("SSH agent: Unix socket at {sock}"),
+                            hint: None,
+                            module: "local",
+                        });
+                    }
+                    _ => {
+                        diagnostics.push(Diagnostic {
+                            id: "platform_agent_type",
+                            severity: Severity::Info,
+                            message: "SSH agent: not detected ($SSH_AUTH_SOCK not set)".into(),
+                            hint: Some("Start the agent: `eval $(ssh-agent -s)`".into()),
+                            module: "local",
+                        });
+                    }
+                }
+            }
+
+            #[cfg(windows)]
+            {
+                if std::env::var("SSH_AUTH_SOCK").is_ok()
+                    || std::env::var("SSH_AGENT_PID").is_ok()
+                {
+                    diagnostics.push(Diagnostic {
+                        id: "platform_agent_type",
+                        severity: Severity::Info,
+                        message: "SSH agent: OpenSSH agent (Windows)".into(),
+                        hint: None,
+                        module: "local",
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        id: "platform_agent_type",
+                        severity: Severity::Info,
+                        message: "SSH agent: not detected".into(),
+                        hint: Some(
+                            "Enable the OpenSSH agent: \
+                             `Get-Service ssh-agent | Set-Service -StartupType Automatic`"
+                                .into(),
+                        ),
+                        module: "local",
+                    });
+                }
+            }
+
+            // Run `ssh -V` to get the SSH client version.
+            // `ssh -V` prints to stderr.
+            let version_output = tokio::task::spawn_blocking(|| {
+                duct::cmd("ssh", ["-V"])
+                    .stderr_to_stdout()
+                    .read()
+                    .ok()
+            })
+            .await
+            .ok()
+            .flatten();
+
+            match version_output {
+                Some(v) => {
+                    let version = v.trim().to_owned();
+                    diagnostics.push(Diagnostic {
+                        id: "platform_ssh_version",
+                        severity: Severity::Ok,
+                        message: format!("SSH client: {version}"),
+                        hint: None,
+                        module: "local",
+                    });
+                }
+                None => {
+                    diagnostics.push(Diagnostic {
+                        id: "platform_ssh_version",
+                        severity: Severity::Warning,
+                        message: "SSH client not found in PATH".into(),
+                        hint: Some(
+                            "Install OpenSSH: \
+                             `brew install openssh` (macOS), \
+                             `sudo apt install openssh-client` (Linux), \
+                             or enable the OpenSSH Client feature (Windows)"
+                                .into(),
+                        ),
+                        module: "local",
+                    });
+                }
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PublicKeyPairsCheck
 // ---------------------------------------------------------------------------
 
@@ -1128,26 +1390,21 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
         Box::new(SshDirExists { paths }),
     ];
 
-    #[cfg(unix)]
     checks.push(Box::new(SshDirPermissions { paths }));
 
     checks.push(Box::new(ConfigExists { paths }));
     checks.push(Box::new(KnownHostsExists { paths }));
 
-    #[cfg(unix)]
     checks.push(Box::new(PrivateKeyPermissions { paths }));
 
-    #[cfg(unix)]
     checks.push(Box::new(OwnerCheck { paths }));
 
     checks.push(Box::new(AgentAvailable));
     checks.push(Box::new(KeygenAvailable));
     checks.push(Box::new(DefaultKeyExists { paths }));
 
-    #[cfg(unix)]
     checks.push(Box::new(ConfigPermissionsCheck { paths }));
 
-    #[cfg(unix)]
     checks.push(Box::new(AuthorizedKeysPermissionsCheck { paths }));
 
     checks.push(Box::new(PublicKeyPairsCheck { paths }));
@@ -1155,6 +1412,7 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
     checks.push(Box::new(DuplicateHostCheck { paths }));
     checks.push(Box::new(HostStarPlacementCheck { paths }));
     checks.push(Box::new(SshV1KeyCheck { paths }));
+    checks.push(Box::new(PlatformCheck));
 
     let mut all_diagnostics = Vec::new();
     for check in &checks {

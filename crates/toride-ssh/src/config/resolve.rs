@@ -26,7 +26,29 @@ pub struct ResolvedHost {
     pub proxy_jump: Option<String>,
     /// All raw key-value directives from matching blocks.
     pub directives: Vec<(String, String)>,
+    /// Whether the config was re-resolved after `CanonicalizeHostname` took
+    /// effect. When `true`, `%H` tokens expand to the canonical hostname
+    /// rather than the original alias.
+    pub canonicalized: bool,
 }
+
+/// Directives whose values may contain SSH tokens (`%h`, `%d`, etc.) or
+/// tilde/env expansion and should be expanded during resolution.
+const TOKEN_EXPANDABLE: &[&str] = &[
+    "certificatefile",
+    "controlpath",
+    "identityagent",
+    "localforward",
+    "remoteforward",
+    "userknownhostsfile",
+    "proxycommand",
+    "forwardagent",
+    "dynamicforward",
+    "bindaddress",
+    "syslogfacility",
+    "kbdinteractiveauthentication",
+    "preferredauthentications",
+];
 
 /// Fully resolve config for a given host alias.
 ///
@@ -35,22 +57,68 @@ pub struct ResolvedHost {
 /// 2. Inlining `Include` directives (with cycle detection).
 /// 3. Token and environment variable expansion.
 /// 4. First-match-wins resolution with IdentityFile accumulation.
-pub async fn resolve(ssh_dir: &Path, host: &str) -> Result<ResolvedHost> {
+/// 5. If `CanonicalizeHostname` is enabled, a second resolution pass using
+///    the resolved `HostName` as the lookup key.
+///
+/// `user` is the remote username for `Match user` criteria.  When `None`,
+/// the local username is used (matching OpenSSH behaviour when no `-l`
+/// flag is given).
+pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<ResolvedHost> {
     let config_path = ssh_dir.join("config");
 
     // Load and flatten includes.
     let mut visited = HashSet::new();
     let flat_ast = load_and_flatten(&config_path, &mut visited).await?;
 
-    // Resolve host parameters using first-match-wins semantics.
+    // First pass: resolve against the original alias.
+    let local_user = user.map_or_else(whoami, str::to_owned);
+    let mut resolved = resolve_pass(&flat_ast, host, host, &local_user, ssh_dir);
+
+    // Token expansion on first-pass values.
+    expand_resolved(&mut resolved, host, ssh_dir);
+
+    // CanonicalizeHostname: if enabled, re-resolve using the resolved HostName.
+    if is_canonicalize_enabled(&resolved) {
+        let canonical_host = resolved
+            .host_name
+            .clone()
+            .unwrap_or_else(|| host.to_owned());
+
+        let mut canon = resolve_pass(&flat_ast, &canonical_host, host, &local_user, ssh_dir);
+
+        // Expand tokens in the canonicalized result.
+        expand_resolved(&mut canon, &canonical_host, ssh_dir);
+
+        canon.alias.clone_from(&host.to_owned());
+        canon.canonicalized = true;
+        return Ok(canon);
+    }
+
+    Ok(resolved)
+}
+
+/// Perform a single resolution pass over the flattened AST.
+///
+/// `target_host` is the hostname used for pattern matching (the canonical
+/// name on the second pass, or the original alias on the first).
+/// `original_host` is always the alias the user typed — used for
+/// `Match originalhost` criteria.
+fn resolve_pass(
+    flat_ast: &ConfigAst,
+    target_host: &str,
+    original_host: &str,
+    local_user: &str,
+    ssh_dir: &Path,
+) -> ResolvedHost {
     let mut resolved = ResolvedHost {
-        alias: host.to_owned(),
+        alias: target_host.to_owned(),
         host_name: None,
         user: None,
         port: None,
         identity_files: Vec::new(),
         proxy_jump: None,
         directives: Vec::new(),
+        canonicalized: false,
     };
 
     let mut seen_keys = HashSet::new();
@@ -58,24 +126,22 @@ pub async fn resolve(ssh_dir: &Path, host: &str) -> Result<ResolvedHost> {
     for node in &flat_ast.nodes {
         match node {
             ConfigNode::HostBlock { patterns, nodes, .. } => {
-                if host_matches(host, patterns) {
+                if host_matches(target_host, patterns) {
                     resolve_block(
                         nodes,
-                        host,
+                        target_host,
                         ssh_dir,
                         &mut resolved,
                         &mut seen_keys,
                     );
                 }
             }
-            // Only `host <pattern>` criteria is supported for Match blocks.
-            // Full criteria parsing (user, exec, etc.) is tracked separately.
             ConfigNode::MatchBlock { criteria, nodes, .. }
-                if match_criteria_host(criteria, host) =>
+                if match_criteria_host(criteria, target_host, local_user, original_host) =>
             {
                 resolve_block(
                     nodes,
-                    host,
+                    target_host,
                     ssh_dir,
                     &mut resolved,
                     &mut seen_keys,
@@ -85,10 +151,7 @@ pub async fn resolve(ssh_dir: &Path, host: &str) -> Result<ResolvedHost> {
         }
     }
 
-    // Token expansion on all values.
-    expand_resolved(&mut resolved, host, ssh_dir);
-
-    Ok(resolved)
+    resolved
 }
 
 /// Load a config file and recursively inline all Include directives.
@@ -353,6 +416,12 @@ struct TokenContext<'a> {
 }
 
 /// Expand tokens in resolved values.
+///
+/// Applies tilde, environment-variable, and SSH token expansion to all
+/// directive values that may contain them — including the dedicated
+/// fields (`identity_files`, `host_name`, `proxy_jump`) and every
+/// entry in the raw `directives` vec whose key is listed in
+/// [`TOKEN_EXPANDABLE`].
 fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     let local_user = whoami();
     let local_hostname = hostname();
@@ -372,28 +441,57 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         remote_user: &remote_user,
         local_user: &local_user,
         port: &port_str,
-        // Without CanonicalizeHostname, canonical host == alias.
+        // On first pass canonical_host == host; second pass uses the
+        // canonical name (already substituted as `host` by the caller).
         canonical_host: host,
     };
 
-    // Expand identity files.
+    // Expand dedicated fields.
     for id_file in &mut resolved.identity_files {
         *id_file = expand_tilde_and_env(id_file);
         *id_file = expand_tokens(id_file, &ctx);
         *id_file = collapse_double_percent(id_file);
     }
 
-    // Expand host_name.
     if let Some(ref mut hn) = resolved.host_name {
+        *hn = expand_tilde_and_env(hn);
         *hn = expand_tokens(hn, &ctx);
         *hn = collapse_double_percent(hn);
     }
 
-    // Expand proxy_jump.
     if let Some(ref mut pj) = resolved.proxy_jump {
         *pj = expand_tokens(pj, &ctx);
         *pj = collapse_double_percent(pj);
     }
+
+    // Expand all raw directive values that may contain tokens.
+    for (key, value) in &mut resolved.directives {
+        let key_lower = key.to_lowercase();
+        if TOKEN_EXPANDABLE.contains(&key_lower.as_str())
+            || key_lower == "identityfile"
+            || key_lower == "hostname"
+            || key_lower == "proxyjump"
+        {
+            let expanded = expand_tilde_and_env(value);
+            let expanded = expand_tokens(&expanded, &ctx);
+            *value = collapse_double_percent(&expanded);
+        }
+    }
+}
+
+/// Check whether `CanonicalizeHostname` is enabled in the resolved config.
+///
+/// OpenSSH recognises `yes`, `always`, and `no` (the default).  Any other
+/// value is treated as `no`.
+fn is_canonicalize_enabled(resolved: &ResolvedHost) -> bool {
+    resolved
+        .directives
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("canonicalizehostname"))
+        .is_some_and(|(_, v)| {
+            let lv = v.to_lowercase();
+            lv == "yes" || lv == "always"
+        })
 }
 
 /// Expand SSH tokens in a value string.
@@ -525,32 +623,86 @@ fn host_matches(host: &str, patterns: &[String]) -> bool {
     super::directives::host_matches_patterns(host, patterns)
 }
 
-/// Check if `Match` criteria include a `host` clause matching the target.
+/// Check if `Match` criteria are satisfied for the given host context.
 ///
-/// Parses simple `host <pattern>` tokens from the criteria string.
-/// Returns `false` if no `host` clause is present (Match block requires
-/// at least one condition we understand to match).
-fn match_criteria_host(criteria: &str, target_host: &str) -> bool {
+/// Supported criteria keywords (case-insensitive):
+/// - `host <patterns>` — matches against `target_host` (the hostname being
+///   resolved, which may be the canonical name on a second pass).
+/// - `originalhost <patterns>` — matches against `original_host` (the
+///   alias the user typed, before any canonicalization).
+/// - `user <names>` — matches against `target_user` (the remote username;
+///   comma-separated, case-insensitive comparison).
+///
+/// Multiple occurrences of the **same** keyword are OR'd (e.g.
+/// `host web host db` matches either "web" or "db").  Different keywords
+/// are AND'd (e.g. `user alice host web` requires both to match).
+///
+/// Returns `true` only when every recognized criterion type matches and at
+/// least one recognized criterion is present.  Unrecognized keywords
+/// (e.g. `exec`, `localuser`, `address`) are silently skipped.
+fn match_criteria_host(
+    criteria: &str,
+    target_host: &str,
+    target_user: &str,
+    original_host: &str,
+) -> bool {
     let mut tokens = criteria.split_whitespace();
-    let mut host_matched = false;
-    let mut has_host_clause = false;
 
-    while let Some(token) = tokens.next() {
-        if token.eq_ignore_ascii_case("host")
-            && let Some(patterns_str) = tokens.next()
-        {
-            has_host_clause = true;
-            let patterns: Vec<String> = patterns_str
-                .split(',')
-                .map(str::to_owned)
-                .collect();
-            if host_matches(target_host, &patterns) {
-                host_matched = true;
+    // Track per-keyword-type state: whether the type appeared and whether
+    // at least one occurrence matched (OR within a type).
+    let mut has_host = false;
+    let mut host_matched = false;
+    let mut has_originalhost = false;
+    let mut originalhost_matched = false;
+    let mut has_user = false;
+    let mut user_matched = false;
+
+    while let Some(keyword) = tokens.next() {
+        if keyword.eq_ignore_ascii_case("host") {
+            if let Some(patterns_str) = tokens.next() {
+                has_host = true;
+                let patterns: Vec<String> =
+                    patterns_str.split(',').map(str::to_owned).collect();
+                if host_matches(target_host, &patterns) {
+                    host_matched = true;
+                }
             }
+        } else if keyword.eq_ignore_ascii_case("originalhost") {
+            if let Some(patterns_str) = tokens.next() {
+                has_originalhost = true;
+                let patterns: Vec<String> =
+                    patterns_str.split(',').map(str::to_owned).collect();
+                if host_matches(original_host, &patterns) {
+                    originalhost_matched = true;
+                }
+            }
+        } else if keyword.eq_ignore_ascii_case("user") {
+            if let Some(names_str) = tokens.next() {
+                has_user = true;
+                // OpenSSH matches user names case-insensitively.
+                let names: Vec<&str> = names_str.split(',').collect();
+                if names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(target_user))
+                {
+                    user_matched = true;
+                }
+            }
+        } else {
+            // Unknown criterion keyword — consume its value token and skip.
+            // Criteria like `exec`, `localuser`, `address` fall here.
+            tokens.next();
         }
     }
 
-    has_host_clause && host_matched
+    // At least one criterion type must be present.
+    let any_known = has_host || has_originalhost || has_user;
+    // All present types must have matched (AND across types).
+    let all_matched = (!has_host || host_matched)
+        && (!has_originalhost || originalhost_matched)
+        && (!has_user || user_matched);
+
+    any_known && all_matched
 }
 
 #[cfg(test)]

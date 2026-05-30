@@ -77,8 +77,10 @@ impl<'a> ConfigService<'a> {
     /// Get a resolved [`ResolvedHost`] for the given alias.
     ///
     /// Performs full resolution including Include expansion and token expansion.
+    /// If `CanonicalizeHostname` is enabled, a second resolution pass is
+    /// performed using the resolved `HostName` as the lookup key.
     pub async fn resolve_host(&self, host: &str) -> Result<ResolvedHost> {
-        resolve::resolve(self.paths.ssh_dir(), host).await
+        resolve::resolve(self.paths.ssh_dir(), host, None).await
     }
 
     /// Parse the SSH config using ssh2-config-rs for typed access.

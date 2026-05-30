@@ -1,3 +1,5 @@
+#![allow(clippy::unreadable_literal)]
+
 use super::*;
 
 #[test]

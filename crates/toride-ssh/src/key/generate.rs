@@ -175,6 +175,58 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
     })
 }
 
+/// Add a key to the SSH agent.
+///
+/// Uses `duct::Expression::start()` and polls with `try_wait()` to enforce a
+/// 30-second timeout. If the agent is blocked waiting for a passphrase prompt
+/// that never arrives, the process is killed rather than hanging indefinitely.
+async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
+    let path_str = private_path
+        .to_str()
+        .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+        .to_owned();
+
+    tokio::task::spawn_blocking(move || {
+        let child = duct::cmd("ssh-add", [path_str.as_str()])
+            .start()
+            .map_err(|e| Error::CommandFailed(format!("ssh-add failed to start: {e}")))?;
+
+        let timeout = std::time::Duration::from_secs(30);
+        let start = std::time::Instant::now();
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(output)) => {
+                    if output.status.success() {
+                        return Ok(());
+                    }
+                    return Err(Error::CommandFailed(format!(
+                        "ssh-add exited with status: {}",
+                        output.status
+                    )));
+                }
+                Ok(None) => {
+                    if start.elapsed() >= timeout {
+                        let _ = child.kill();
+                        return Err(Error::CommandFailed(
+                            "ssh-add timed out after 30 seconds".to_owned(),
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    return Err(Error::CommandFailed(format!(
+                        "ssh-add wait error: {e}"
+                    )));
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|e| Error::TaskFailed(format!("ssh-add task failed: {e}")))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,56 +363,4 @@ mod tests {
         assert!(args.contains(&"-b".to_owned()));
         assert!(args.contains(&"521".to_owned()));
     }
-}
-
-/// Add a key to the SSH agent.
-///
-/// Uses `duct::Expression::start()` and polls with `try_wait()` to enforce a
-/// 30-second timeout. If the agent is blocked waiting for a passphrase prompt
-/// that never arrives, the process is killed rather than hanging indefinitely.
-async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
-    let path_str = private_path
-        .to_str()
-        .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
-        .to_owned();
-
-    tokio::task::spawn_blocking(move || {
-        let child = duct::cmd("ssh-add", [path_str.as_str()])
-            .start()
-            .map_err(|e| Error::CommandFailed(format!("ssh-add failed to start: {e}")))?;
-
-        let timeout = std::time::Duration::from_secs(30);
-        let start = std::time::Instant::now();
-
-        loop {
-            match child.try_wait() {
-                Ok(Some(output)) => {
-                    if output.status.success() {
-                        return Ok(());
-                    }
-                    return Err(Error::CommandFailed(format!(
-                        "ssh-add exited with status: {}",
-                        output.status
-                    )));
-                }
-                Ok(None) => {
-                    if start.elapsed() >= timeout {
-                        let _ = child.kill();
-                        return Err(Error::CommandFailed(
-                            "ssh-add timed out after 30 seconds".to_owned(),
-                        ));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    return Err(Error::CommandFailed(format!(
-                        "ssh-add wait error: {e}"
-                    )));
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|e| Error::TaskFailed(format!("ssh-add task failed: {e}")))?
 }
