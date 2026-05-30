@@ -174,6 +174,40 @@ impl Preset {
         matches!(self, Self::Diagnostics | Self::TaskManager)
     }
 
+    /// Whether this preset includes GPU information.
+    ///
+    /// Returns `true` for `Diagnostics` and `PrivacySafeBugReport` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_gpu());
+    /// assert!(!Preset::Minimal.includes_gpu());
+    /// ```
+    #[must_use]
+    pub const fn includes_gpu(self) -> bool {
+        matches!(self, Self::Diagnostics | Self::PrivacySafeBugReport)
+    }
+
+    /// Whether this preset includes battery status.
+    ///
+    /// Returns `true` for `Diagnostics` only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_battery());
+    /// assert!(!Preset::Minimal.includes_battery());
+    /// ```
+    #[must_use]
+    pub const fn includes_battery(self) -> bool {
+        matches!(self, Self::Diagnostics)
+    }
+
     /// Whether this preset includes OS info.
     ///
     /// Always returns `true` — OS information is useful in every context.
@@ -432,6 +466,60 @@ mod tests {
     #[test]
     fn privacy_safe_bug_report_includes_os_info() {
         assert!(Preset::PrivacySafeBugReport.includes_os_info());
+    }
+
+    // --- GPU ---
+
+    #[test]
+    fn minimal_excludes_gpu() {
+        assert!(!Preset::Minimal.includes_gpu());
+    }
+
+    #[test]
+    fn task_manager_excludes_gpu() {
+        assert!(!Preset::TaskManager.includes_gpu());
+    }
+
+    #[test]
+    fn diagnostics_includes_gpu() {
+        assert!(Preset::Diagnostics.includes_gpu());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_gpu() {
+        assert!(!Preset::ServerMonitoring.includes_gpu());
+    }
+
+    #[test]
+    fn privacy_safe_includes_gpu() {
+        assert!(Preset::PrivacySafeBugReport.includes_gpu());
+    }
+
+    // --- Battery ---
+
+    #[test]
+    fn minimal_excludes_battery() {
+        assert!(!Preset::Minimal.includes_battery());
+    }
+
+    #[test]
+    fn task_manager_excludes_battery() {
+        assert!(!Preset::TaskManager.includes_battery());
+    }
+
+    #[test]
+    fn diagnostics_includes_battery() {
+        assert!(Preset::Diagnostics.includes_battery());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_battery() {
+        assert!(!Preset::ServerMonitoring.includes_battery());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_battery() {
+        assert!(!Preset::PrivacySafeBugReport.includes_battery());
     }
 
     // --- Preset name edge cases ---

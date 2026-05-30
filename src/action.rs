@@ -2,5 +2,6 @@
 pub enum Action {
     Continue,
     Help,
+    Back,
     Quit,
 }

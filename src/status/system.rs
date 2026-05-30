@@ -64,6 +64,12 @@ use sysinfo::{
     ProcessesToUpdate, RefreshKind, System,
 };
 
+use crate::status::error::StatusResult;
+use crate::status::provider::{
+    BatteryProvider, CpuProvider, DiskProvider, GpuProvider, MemoryProvider, NetworkProvider,
+    OsProvider, ProcessProvider, SensorProvider,
+};
+
 /// OS-level system metrics snapshot.
 ///
 /// All fields are populated by [`collect`](Self::collect). Fields that cannot
@@ -898,6 +904,535 @@ impl fmt::Display for SystemStatus {
         }
 
         Ok(())
+    }
+}
+
+// ── SysinfoProvider ────────────────────────────────────────────────────
+
+/// Concrete provider backed by the [`sysinfo`] crate.
+///
+/// Wraps [`sysinfo::System`] and implements all nine provider traits,
+/// reusing the same data-collection logic as [`SystemStatus::collect`].
+///
+/// # Examples
+///
+/// ```no_run
+/// use toride::status::system::SysinfoProvider;
+/// use toride::status::provider::*;
+///
+/// let mut provider = SysinfoProvider::new();
+/// let cpu = provider.cpu_usage().unwrap();
+/// let mem = provider.memory().unwrap();
+/// ```
+pub struct SysinfoProvider {
+    sys: System,
+}
+
+impl SysinfoProvider {
+    /// Create a new provider with refreshed system data.
+    ///
+    /// Performs the initial CPU measurement sleep, matching the behavior
+    /// of [`SystemStatus::collect`].
+    #[must_use]
+    pub fn new() -> Self {
+        let mut sys = System::new_with_specifics(
+            RefreshKind::nothing()
+                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
+                .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
+        );
+        // sysinfo requires a brief sleep to measure CPU usage accurately.
+        std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        sys.refresh_cpu_usage();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        Self { sys }
+    }
+
+    /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::option_if_let_else
+    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+    fn parse_vram_to_bytes(v: &str) -> Option<u64> {
+        let v = v.trim();
+        if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
+            gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
+        } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
+            mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
+        } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
+            tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
+        } else {
+            // Bare number, assume MB
+            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
+        }
+    }
+
+    /// Read battery status from the OS.
+    #[cfg(target_os = "macos")]
+    fn read_battery() -> Option<BatteryInfo> {
+        use std::process::Command;
+        let output = Command::new("pmset")
+            .arg("-g")
+            .arg("batt")
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let percent_line = text.lines().find(|l| l.contains('%'))?;
+        let pct_str = percent_line
+            .split_whitespace()
+            .find(|w| w.ends_with('%'))?;
+        let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
+        let state = if text.contains("discharging") {
+            "Discharging"
+        } else if text.contains("charging") || text.contains("AC attached") {
+            "Charging"
+        } else {
+            "Unknown"
+        };
+        Some(BatteryInfo {
+            charge_percent: pct,
+            state: state.to_string(),
+            time_to_empty_secs: None,
+            time_to_full_secs: None,
+        })
+    }
+
+    /// Read battery status from the OS.
+    #[cfg(target_os = "linux")]
+    fn read_battery() -> Option<BatteryInfo> {
+        use std::fs;
+        use std::path::Path;
+        // Enumerate all battery entries (BAT0, BAT1, BATT, etc.)
+        let supply_dir = Path::new("/sys/class/power_supply");
+        let entries = fs::read_dir(supply_dir).ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Match BAT* or "battery" entries
+            if !name_str.starts_with("BAT") && name_str != "battery" {
+                continue;
+            }
+            // Verify it's actually a battery (type == "Battery")
+            if let Ok(type_content) = fs::read_to_string(path.join("type")) {
+                if type_content.trim() != "Battery" {
+                    continue;
+                }
+            }
+            let capacity = fs::read_to_string(path.join("capacity")).ok()?;
+            let pct: f32 = capacity.trim().parse().ok()?;
+            let status = fs::read_to_string(path.join("status"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            return Some(BatteryInfo {
+                charge_percent: pct,
+                state: status,
+                time_to_empty_secs: None,
+                time_to_full_secs: None,
+            });
+        }
+        None
+    }
+
+    /// Read battery status from the OS.
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    fn read_battery() -> Option<BatteryInfo> {
+        None
+    }
+}
+
+impl Default for SysinfoProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Provider trait implementations ─────────────────────────────────────
+
+impl CpuProvider for SysinfoProvider {
+    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
+    fn cpu_usage(&mut self) -> StatusResult<Option<f64>> {
+        let cpus = self.sys.cpus();
+        if cpus.is_empty() {
+            return Ok(None);
+        }
+        let total: f64 = cpus.iter().map(|c| f64::from(c.cpu_usage())).sum();
+        Ok(Some(total / cpus.len() as f64))
+    }
+
+    fn cpu_cores(&mut self) -> StatusResult<Vec<CpuCore>> {
+        Ok(self
+            .sys
+            .cpus()
+            .iter()
+            .map(|c| CpuCore {
+                name: c.name().to_string(),
+                usage: f64::from(c.cpu_usage()),
+                frequency: c.frequency(),
+            })
+            .collect())
+    }
+
+    fn physical_cores(&self) -> StatusResult<Option<usize>> {
+        Ok(System::physical_core_count())
+    }
+}
+
+impl MemoryProvider for SysinfoProvider {
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    fn memory(&mut self) -> StatusResult<MemoryStatus> {
+        let total = self.sys.total_memory();
+        let used = self.sys.used_memory().min(total);
+        let percentage = if total > 0 {
+            ((used as f64 / total as f64) * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        Ok(MemoryStatus {
+            used_bytes: used,
+            total_bytes: total,
+            percentage,
+        })
+    }
+
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    fn swap(&mut self) -> StatusResult<Option<SwapStatus>> {
+        let total = self.sys.total_swap();
+        if total == 0 {
+            return Ok(None);
+        }
+        let used = self.sys.used_swap();
+        let percentage = (used as f64 / total as f64) * 100.0;
+        Ok(Some(SwapStatus {
+            used_bytes: used,
+            total_bytes: total,
+            percentage,
+        }))
+    }
+}
+
+impl DiskProvider for SysinfoProvider {
+    fn root_disk(&mut self) -> StatusResult<DiskStatus> {
+        let disks = self.all_disks()?;
+        let root = std::path::Path::new("/");
+        Ok(disks
+            .into_iter()
+            .find(|d| std::path::Path::new(&d.mount_point) == root)
+            .unwrap_or_else(|| DiskStatus {
+                name: String::new(),
+                mount_point: "/".to_string(),
+                filesystem: String::new(),
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                is_removable: false,
+            }))
+    }
+
+    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    fn all_disks(&mut self) -> StatusResult<Vec<DiskStatus>> {
+        let disks = Disks::new_with_refreshed_list();
+        Ok(disks
+            .iter()
+            .map(|d| {
+                let total = d.total_space();
+                let available = d.available_space();
+                let used = total.saturating_sub(available);
+                let percentage = if total > 0 {
+                    (used as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                DiskStatus {
+                    name: d.name().to_string_lossy().to_string(),
+                    mount_point: d.mount_point().to_string_lossy().to_string(),
+                    filesystem: d.file_system().to_string_lossy().to_string(),
+                    used_bytes: used,
+                    total_bytes: total,
+                    percentage,
+                    is_removable: d.is_removable(),
+                }
+            })
+            .collect())
+    }
+}
+
+impl NetworkProvider for SysinfoProvider {
+    fn aggregate(&mut self) -> StatusResult<NetworkStatus> {
+        let networks = Networks::new_with_refreshed_list();
+        let (mut received, mut transmitted) = (0u64, 0u64);
+        for data in networks.values() {
+            received = received.saturating_add(data.total_received());
+            transmitted = transmitted.saturating_add(data.total_transmitted());
+        }
+        Ok(NetworkStatus {
+            bytes_received: received,
+            bytes_transmitted: transmitted,
+        })
+    }
+
+    fn interfaces(&mut self) -> StatusResult<Vec<NetworkInterface>> {
+        let networks = Networks::new_with_refreshed_list();
+        Ok(networks
+            .iter()
+            .map(|(name, data)| NetworkInterface {
+                name: name.clone(),
+                bytes_received: data.total_received(),
+                bytes_transmitted: data.total_transmitted(),
+                packets_received: data.total_packets_received(),
+                packets_transmitted: data.total_packets_transmitted(),
+                errors_received: data.errors_on_received(),
+                errors_transmitted: data.errors_on_transmitted(),
+            })
+            .collect())
+    }
+}
+
+impl OsProvider for SysinfoProvider {
+    fn os_info(&self) -> StatusResult<OsInfo> {
+        Ok(OsInfo {
+            name: System::name(),
+            version: System::os_version(),
+            kernel_version: System::kernel_version(),
+            arch: std::env::consts::ARCH.to_string(),
+        })
+    }
+
+    fn hostname(&self) -> StatusResult<String> {
+        Ok(System::host_name().unwrap_or_default())
+    }
+
+    fn uptime(&self) -> StatusResult<Option<u64>> {
+        let uptime = System::uptime();
+        if uptime > 0 { Ok(Some(uptime)) } else { Ok(None) }
+    }
+
+    fn boot_time(&self) -> StatusResult<Option<u64>> {
+        let bt = System::boot_time();
+        if bt > 0 { Ok(Some(bt)) } else { Ok(None) }
+    }
+
+    #[cfg(unix)]
+    #[allow(clippy::unnecessary_wraps)] // non-unix version returns None; signature must accommodate both platforms
+    fn load_average(&self) -> StatusResult<Option<LoadAverage>> {
+        let load = System::load_average();
+        Ok(Some(LoadAverage {
+            one: load.one,
+            five: load.five,
+            fifteen: load.fifteen,
+        }))
+    }
+
+    #[cfg(not(unix))]
+    fn load_average(&self) -> StatusResult<Option<LoadAverage>> {
+        Ok(None)
+    }
+}
+
+impl ProcessProvider for SysinfoProvider {
+    fn processes(&mut self) -> StatusResult<ProcessSnapshot> {
+        let processes: Vec<ProcessStatus> = self
+            .sys
+            .processes()
+            .iter()
+            .map(|(pid, p)| ProcessStatus {
+                pid: pid.as_u32(),
+                parent_pid: p.parent().map(sysinfo::Pid::as_u32),
+                name: p.name().to_string_lossy().to_string(),
+                cpu_usage: p.cpu_usage(),
+                memory_bytes: p.memory(),
+                status: format!("{}", p.status()),
+                start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+            })
+            .collect();
+        let total_count = processes.len();
+        Ok(ProcessSnapshot {
+            processes,
+            total_count,
+        })
+    }
+}
+
+impl GpuProvider for SysinfoProvider {
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::option_if_let_else
+    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+    fn gpus(&self) -> StatusResult<Vec<GpuInfo>> {
+        let mut gpus = Vec::new();
+        // Try system_profiler on macOS
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("system_profiler")
+                .args(["SPDisplaysDataType", "-json"])
+                .output()
+                && let Ok(text) = String::from_utf8(output.stdout)
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(displays) = json["SPDisplaysDataType"].as_array()
+            {
+                for display in displays {
+                    let name = display["sppci_model"]
+                        .as_str()
+                        .or_else(|| display["_name"].as_str())
+                        .unwrap_or("Unknown GPU")
+                        .to_string();
+                    let vendor = display["sppci_vendor"]
+                        .as_str()
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let vram = display["sppci_vram"]
+                        .as_str()
+                        .and_then(Self::parse_vram_to_bytes);
+                    gpus.push(GpuInfo {
+                        name,
+                        vendor,
+                        vram_bytes: vram,
+                        driver_version: None,
+                    });
+                }
+            }
+        }
+        // Try nvidia-smi on Linux
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("nvidia-smi")
+                .args(["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+                .output()
+            {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    for line in text.lines() {
+                        let parts: Vec<&str> = line.split(", ").collect();
+                        if parts.len() >= 3 {
+                            let name = parts[0].trim().to_string();
+                            let vram_mb: Option<u64> = parts[1].trim().parse().ok();
+                            let driver = parts[2].trim().to_string();
+                            gpus.push(GpuInfo {
+                                name,
+                                vendor: "NVIDIA".to_string(),
+                                vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
+                                driver_version: Some(driver),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(gpus)
+    }
+}
+
+impl BatteryProvider for SysinfoProvider {
+    fn battery(&self) -> StatusResult<Option<BatteryInfo>> {
+        Ok(Self::read_battery())
+    }
+}
+
+impl SensorProvider for SysinfoProvider {
+    fn sensors(&self) -> StatusResult<Vec<SensorStatus>> {
+        let components = Components::new_with_refreshed_list();
+        Ok(components
+            .iter()
+            .map(|c| SensorStatus {
+                label: c.label().to_string(),
+                temperature: c.temperature().filter(|t| !t.is_nan()),
+            })
+            .collect())
+    }
+}
+
+// ── collect_via_provider ───────────────────────────────────────────────
+
+impl SystemStatus {
+    /// Collect a snapshot using the provider abstraction layer.
+    ///
+    /// This method uses [`SysinfoProvider`] to gather metrics through
+    /// the provider traits, exercising the same code paths that custom
+    /// providers would use. The result should be structurally identical
+    /// to [`collect`](Self::collect).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use toride::status::system::SystemStatus;
+    ///
+    /// let status = SystemStatus::collect_via_provider();
+    /// assert!(!status.hostname.is_empty());
+    /// ```
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // Assembles all provider outputs; splitting reduces readability
+    pub fn collect_via_provider() -> Self {
+        let mut provider = SysinfoProvider::new();
+
+        let cpu_usage = provider.cpu_usage().ok().flatten();
+        let memory = provider.memory().unwrap_or(MemoryStatus {
+            used_bytes: 0,
+            total_bytes: 0,
+            percentage: 0.0,
+        });
+        let disk = provider.root_disk().unwrap_or_else(|_| DiskStatus {
+            name: String::new(),
+            mount_point: "/".to_string(),
+            filesystem: String::new(),
+            used_bytes: 0,
+            total_bytes: 0,
+            percentage: 0.0,
+            is_removable: false,
+        });
+        let disks = provider.all_disks().unwrap_or_default();
+        let network = provider.aggregate().unwrap_or(NetworkStatus {
+            bytes_received: 0,
+            bytes_transmitted: 0,
+        });
+        let network_interfaces = provider.interfaces().unwrap_or_default();
+        let load_average = provider.load_average().ok().flatten();
+        let uptime_secs = provider.uptime().ok().flatten();
+        let hostname = provider.hostname().unwrap_or_default();
+        let os_info = provider.os_info().unwrap_or_else(|_| OsInfo {
+            name: None,
+            version: None,
+            kernel_version: None,
+            arch: String::new(),
+        });
+        let cpu_cores = provider.cpu_cores().unwrap_or_default();
+        let physical_cores = provider.physical_cores().ok().flatten();
+        let swap = provider.swap().ok().flatten();
+        let sensors = provider.sensors().unwrap_or_default();
+        let boot_time = provider.boot_time().ok().flatten();
+        let processes = provider.processes().unwrap_or_else(|_| ProcessSnapshot {
+            processes: vec![],
+            total_count: 0,
+        });
+        let gpu = provider.gpus().unwrap_or_default();
+        let battery = provider.battery().ok().flatten();
+
+        Self {
+            cpu_usage,
+            memory,
+            disk,
+            network,
+            load_average,
+            uptime_secs,
+            hostname,
+            os_info,
+            cpu_cores,
+            physical_cores,
+            swap,
+            disks,
+            network_interfaces,
+            sensors,
+            boot_time,
+            processes,
+            gpu,
+            battery,
+        }
     }
 }
 
@@ -2131,5 +2666,420 @@ mod tests {
         let output = format!("{}", status);
         assert!(output.contains("GPU 0: Apple M1 (Apple)"));
         assert!(output.contains("Battery: 85% (Charging)"));
+    }
+
+    // ── SysinfoProvider trait compilation tests ─────────────────────
+
+    #[test]
+    fn provider_impl_all_traits() {
+        fn _assert_cpu<T: CpuProvider>() {}
+        fn _assert_memory<T: MemoryProvider>() {}
+        fn _assert_disk<T: DiskProvider>() {}
+        fn _assert_network<T: NetworkProvider>() {}
+        fn _assert_os<T: OsProvider>() {}
+        fn _assert_process<T: ProcessProvider>() {}
+        fn _assert_gpu<T: GpuProvider>() {}
+        fn _assert_battery<T: BatteryProvider>() {}
+        fn _assert_sensor<T: SensorProvider>() {}
+        _assert_cpu::<SysinfoProvider>();
+        _assert_memory::<SysinfoProvider>();
+        _assert_disk::<SysinfoProvider>();
+        _assert_network::<SysinfoProvider>();
+        _assert_os::<SysinfoProvider>();
+        _assert_process::<SysinfoProvider>();
+        _assert_gpu::<SysinfoProvider>();
+        _assert_battery::<SysinfoProvider>();
+        _assert_sensor::<SysinfoProvider>();
+    }
+
+    #[test]
+    fn provider_implements_status_provider() {
+        use crate::status::provider::StatusProvider;
+        fn _assert<T: StatusProvider>() {}
+        _assert::<SysinfoProvider>();
+    }
+
+    // ── collect_via_provider tests ──────────────────────────────────
+
+    #[test]
+    fn collect_via_provider_returns_valid_cpu_usage() {
+        let status = SystemStatus::collect_via_provider();
+        if let Some(cpu) = status.cpu_usage {
+            assert!(
+                (0.0..=100.0).contains(&cpu),
+                "CPU usage {cpu}% out of range 0–100"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_returns_nonzero_total_memory() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.memory.total_bytes > 0,
+            "total memory should be > 0"
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_memory_used_does_not_exceed_total() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.memory.used_bytes <= status.memory.total_bytes,
+            "used {} > total {}",
+            status.memory.used_bytes,
+            status.memory.total_bytes
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_memory_percentage_is_consistent() {
+        let status = SystemStatus::collect_via_provider();
+        let expected = if status.memory.total_bytes > 0 {
+            (status.memory.used_bytes as f64 / status.memory.total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
+        assert!(
+            (status.memory.percentage - expected).abs() < 0.1,
+            "memory percentage {} != expected {}",
+            status.memory.percentage,
+            expected
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_disk_used_does_not_exceed_total() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.disk.used_bytes <= status.disk.total_bytes,
+            "disk used {} > total {}",
+            status.disk.used_bytes,
+            status.disk.total_bytes
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_disk_percentage_is_consistent() {
+        let status = SystemStatus::collect_via_provider();
+        if status.disk.total_bytes > 0 {
+            let expected = (status.disk.used_bytes as f64 / status.disk.total_bytes as f64) * 100.0;
+            assert!(
+                (status.disk.percentage - expected).abs() < 0.1,
+                "disk percentage {} != expected {}",
+                status.disk.percentage,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_network_fields_are_accessible() {
+        let status = SystemStatus::collect_via_provider();
+        let _ = status.network.bytes_received;
+        let _ = status.network.bytes_transmitted;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_via_provider_load_average_is_populated_on_unix() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.load_average.is_some(),
+            "load average should be populated on Unix"
+        );
+        let load = status.load_average.unwrap();
+        assert!(load.one >= 0.0, "1-min load {}", load.one);
+        assert!(load.five >= 0.0, "5-min load {}", load.five);
+        assert!(load.fifteen >= 0.0, "15-min load {}", load.fifteen);
+    }
+
+    #[test]
+    fn collect_via_provider_uptime_is_positive() {
+        let status = SystemStatus::collect_via_provider();
+        if let Some(uptime) = status.uptime_secs {
+            assert!(uptime > 0, "uptime should be > 0");
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_hostname_is_non_empty() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            !status.hostname.is_empty(),
+            "hostname should not be empty"
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_os_info_fields_are_populated() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(status.os_info.name.is_some(), "os_info.name should be Some");
+        assert!(
+            status.os_info.arch.is_ascii() && !status.os_info.arch.is_empty(),
+            "arch should be non-empty"
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_cpu_cores_is_non_empty() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(!status.cpu_cores.is_empty(), "cpu_cores should be non-empty");
+        for core in &status.cpu_cores {
+            assert!(!core.name.is_empty(), "core name should not be empty");
+            assert!(
+                (0.0..=100.0).contains(&core.usage),
+                "core usage out of range: {}",
+                core.usage
+            );
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_disks_is_non_empty() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(!status.disks.is_empty(), "disks should be non-empty");
+        for disk in &status.disks {
+            assert!(disk.used_bytes <= disk.total_bytes, "disk used > total");
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_network_interfaces_is_non_empty() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            !status.network_interfaces.is_empty(),
+            "network_interfaces should be non-empty"
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_physical_cores_is_some() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.physical_cores.is_some(),
+            "physical_cores should be Some on real hardware"
+        );
+        assert!(
+            status.physical_cores.unwrap() > 0,
+            "physical_cores should be > 0"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_via_provider_swap_is_some_when_available() {
+        let status = SystemStatus::collect_via_provider();
+        if let Some(swap) = &status.swap {
+            assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
+            assert!(
+                (0.0..=100.0).contains(&swap.percentage),
+                "swap percentage out of range"
+            );
+        }
+    }
+
+    #[test]
+    fn collect_via_provider_processes_is_non_empty() {
+        let status = SystemStatus::collect_via_provider();
+        assert!(
+            status.processes.total_count > 0,
+            "processes.total_count should be > 0"
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_gpu_vec_is_accessible() {
+        let status = SystemStatus::collect_via_provider();
+        let _ = &status.gpu;
+    }
+
+    #[test]
+    fn collect_via_provider_battery_is_accessible() {
+        let status = SystemStatus::collect_via_provider();
+        let _ = &status.battery;
+    }
+
+    #[test]
+    fn collect_via_provider_display_contains_expected_sections() {
+        let status = SystemStatus::collect_via_provider();
+        let output = format!("{status}");
+        assert!(output.contains("System:"));
+        assert!(output.contains("Hostname:"));
+        assert!(output.contains("Memory:"));
+        assert!(output.contains("Disk:"));
+        assert!(output.contains("Network:"));
+    }
+
+    #[test]
+    fn collect_via_provider_serialize_to_json_succeeds() {
+        let status = SystemStatus::collect_via_provider();
+        let json = serde_json::to_string(&status);
+        assert!(
+            json.is_ok(),
+            "serialization should succeed: {:?}",
+            json.err()
+        );
+    }
+
+    #[test]
+    fn collect_via_provider_json_parses_correctly() {
+        let status = SystemStatus::collect_via_provider();
+        let json = serde_json::to_string(&status).expect("serialization must succeed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json).expect("JSON must be valid and parseable");
+        assert!(parsed.is_object(), "JSON must be an object");
+        assert!(parsed.get("hostname").is_some(), "JSON must contain 'hostname'");
+        assert!(parsed.get("memory").is_some(), "JSON must contain 'memory'");
+    }
+
+    // ── Individual SysinfoProvider method tests ─────────────────────
+
+    #[test]
+    fn provider_cpu_usage_returns_valid_range() {
+        let mut provider = SysinfoProvider::new();
+        let cpu = provider.cpu_usage().expect("cpu_usage should succeed");
+        if let Some(usage) = cpu {
+            assert!((0.0..=100.0).contains(&usage), "CPU usage out of range: {usage}");
+        }
+    }
+
+    #[test]
+    fn provider_cpu_cores_returns_non_empty() {
+        let mut provider = SysinfoProvider::new();
+        let cores = provider.cpu_cores().expect("cpu_cores should succeed");
+        assert!(!cores.is_empty(), "should have at least one CPU core");
+    }
+
+    #[test]
+    fn provider_physical_cores_returns_some() {
+        let provider = SysinfoProvider::new();
+        let cores = provider.physical_cores().expect("physical_cores should succeed");
+        assert!(cores.is_some(), "physical_cores should be Some on real hardware");
+        assert!(cores.unwrap() > 0, "physical_cores should be > 0");
+    }
+
+    #[test]
+    fn provider_memory_returns_nonzero_total() {
+        let mut provider = SysinfoProvider::new();
+        let mem = provider.memory().expect("memory should succeed");
+        assert!(mem.total_bytes > 0, "total memory should be > 0");
+    }
+
+    #[test]
+    fn provider_memory_used_does_not_exceed_total() {
+        let mut provider = SysinfoProvider::new();
+        let mem = provider.memory().expect("memory should succeed");
+        assert!(mem.used_bytes <= mem.total_bytes, "used > total");
+    }
+
+    #[test]
+    fn provider_swap_returns_consistent_data() {
+        let mut provider = SysinfoProvider::new();
+        let swap = provider.swap().expect("swap should succeed");
+        if let Some(swap) = swap {
+            assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
+            assert!((0.0..=100.0).contains(&swap.percentage), "swap percentage out of range");
+        }
+    }
+
+    #[test]
+    fn provider_root_disk_returns_valid_data() {
+        let mut provider = SysinfoProvider::new();
+        let disk = provider.root_disk().expect("root_disk should succeed");
+        assert_eq!(disk.mount_point, "/", "root disk should be mounted at /");
+    }
+
+    #[test]
+    fn provider_all_disks_returns_non_empty() {
+        let mut provider = SysinfoProvider::new();
+        let disks = provider.all_disks().expect("all_disks should succeed");
+        assert!(!disks.is_empty(), "should have at least one disk");
+    }
+
+    #[test]
+    fn provider_aggregate_returns_valid_network() {
+        let mut provider = SysinfoProvider::new();
+        let net = provider.aggregate().expect("aggregate should succeed");
+        // Just verify the struct is accessible; values are always >= 0 for u64.
+        let _ = net.bytes_received;
+        let _ = net.bytes_transmitted;
+    }
+
+    #[test]
+    fn provider_interfaces_returns_non_empty() {
+        let mut provider = SysinfoProvider::new();
+        let ifaces = provider.interfaces().expect("interfaces should succeed");
+        assert!(!ifaces.is_empty(), "should have at least one interface");
+    }
+
+    #[test]
+    fn provider_os_info_returns_populated_data() {
+        let provider = SysinfoProvider::new();
+        let info = provider.os_info().expect("os_info should succeed");
+        assert!(info.name.is_some(), "OS name should be Some");
+        assert!(!info.arch.is_empty(), "arch should not be empty");
+    }
+
+    #[test]
+    fn provider_hostname_returns_non_empty() {
+        let provider = SysinfoProvider::new();
+        let hostname = provider.hostname().expect("hostname should succeed");
+        assert!(!hostname.is_empty(), "hostname should not be empty");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_load_average_returns_some_on_unix() {
+        let provider = SysinfoProvider::new();
+        let load = provider.load_average().expect("load_average should succeed");
+        assert!(load.is_some(), "load average should be Some on Unix");
+    }
+
+    #[test]
+    fn provider_uptime_returns_positive() {
+        let provider = SysinfoProvider::new();
+        let uptime = provider.uptime().expect("uptime should succeed");
+        if let Some(secs) = uptime {
+            assert!(secs > 0, "uptime should be > 0");
+        }
+    }
+
+    #[test]
+    fn provider_processes_returns_non_empty() {
+        let mut provider = SysinfoProvider::new();
+        let procs = provider.processes().expect("processes should succeed");
+        assert!(procs.total_count > 0, "should have at least one process");
+    }
+
+    #[test]
+    fn provider_sensors_returns_accessible_data() {
+        let provider = SysinfoProvider::new();
+        let sensors = provider.sensors().expect("sensors should succeed");
+        // Sensors may or may not be available; verify the vec is accessible.
+        let _ = sensors.len();
+    }
+
+    #[test]
+    fn provider_gpus_returns_accessible_data() {
+        let provider = SysinfoProvider::new();
+        let gpus = provider.gpus().expect("gpus should succeed");
+        // GPU detection may or may not find devices; verify the vec is accessible.
+        let _ = gpus.len();
+    }
+
+    #[test]
+    fn provider_battery_returns_accessible_data() {
+        let provider = SysinfoProvider::new();
+        let battery = provider.battery().expect("battery should succeed");
+        // Battery may or may not be present; verify the option is accessible.
+        let _ = battery.is_some();
+    }
+
+    #[test]
+    fn provider_boot_time_returns_accessible_data() {
+        let provider = SysinfoProvider::new();
+        let bt = provider.boot_time().expect("boot_time should succeed");
+        let _ = bt.is_some();
     }
 }
