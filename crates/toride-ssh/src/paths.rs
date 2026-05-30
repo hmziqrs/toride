@@ -30,6 +30,17 @@ impl Default for SshPaths {
 }
 
 impl SshPaths {
+    /// Create an `SshPaths` rooted at an arbitrary directory (for tests).
+    #[cfg(test)]
+    pub(crate) fn with_dir(dir: &std::path::Path) -> Self {
+        Self {
+            ssh_dir: dir.to_path_buf(),
+            config_path: dir.join("config"),
+            known_hosts_path: dir.join("known_hosts"),
+            authorized_keys_path: dir.join("authorized_keys"),
+        }
+    }
+
     /// Resolve paths from the user's home directory.
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().ok_or(crate::Error::HomeNotFound)?;

@@ -1,8 +1,11 @@
 //! Local SSH diagnostic checks.
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use std::collections::HashMap;
 
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+use crate::config::ast::{self, ConfigNode};
 use crate::doctor::check::{Check, CheckFuture};
 use crate::paths::SshPaths;
 use crate::types::{Diagnostic, Severity};
@@ -47,6 +50,49 @@ struct KeygenAvailable;
 
 /// Check that at least one default key pair exists.
 struct DefaultKeyExists<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that `~/.ssh` is owned by the current user.
+#[cfg(unix)]
+struct OwnerCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that `~/.ssh/config` is not group/world writable.
+#[cfg(unix)]
+struct ConfigPermissionsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that `~/.ssh/authorized_keys` has mode `0o600` or `0o644`.
+#[cfg(unix)]
+struct AuthorizedKeysPermissionsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that every `id_*` private key has a matching `.pub` file.
+struct PublicKeyPairsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check that `IdentityFile` paths referenced in config actually exist.
+struct IdentityFileExistsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Detect duplicate `Host` blocks with the same pattern.
+struct DuplicateHostCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Detect `Host *` appearing before specific `Host` blocks.
+struct HostStarPlacementCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check for deprecated SSHv1 key files (`~/.ssh/identity`).
+struct SshV1KeyCheck<'a> {
     paths: &'a SshPaths,
 }
 
@@ -469,6 +515,610 @@ impl Check for DefaultKeyExists<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// OwnerCheck
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+impl Check for OwnerCheck<'_> {
+    fn id(&self) -> &'static str {
+        "owner_check"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let meta = tokio::fs::metadata(&ssh_dir).await;
+            match meta {
+                Ok(m) => {
+                    let file_uid = m.uid();
+                    let current_uid = unsafe { libc::getuid() };
+                    if file_uid == current_uid {
+                        Ok(vec![Diagnostic {
+                            id: "owner_check",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "{} is owned by current user (uid {})",
+                                ssh_dir.display(),
+                                current_uid
+                            ),
+                            hint: None,
+                            module: "local",
+                        }])
+                    } else {
+                        Ok(vec![Diagnostic {
+                            id: "owner_check",
+                            severity: Severity::Error,
+                            message: format!(
+                                "{} is owned by uid {} but current user is uid {}",
+                                ssh_dir.display(),
+                                file_uid,
+                                current_uid
+                            ),
+                            hint: Some(format!(
+                                "Run `sudo chown -R $(id -u) {}`",
+                                ssh_dir.display()
+                            )),
+                            module: "local",
+                        }])
+                    }
+                }
+                Err(_) => Ok(vec![Diagnostic {
+                    id: "owner_check",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Cannot check ownership: {} does not exist",
+                        ssh_dir.display()
+                    ),
+                    hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),
+                    module: "local",
+                }]),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ConfigPermissionsCheck
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+impl Check for ConfigPermissionsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "config_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let meta = tokio::fs::metadata(&config_path).await;
+            match meta {
+                Ok(m) => {
+                    let mode = m.permissions().mode() & 0o777;
+                    if mode & 0o022 == 0 {
+                        Ok(vec![Diagnostic {
+                            id: "config_permissions",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "{} is not group/world writable ({:o})",
+                                config_path.display(),
+                                mode
+                            ),
+                            hint: None,
+                            module: "local",
+                        }])
+                    } else {
+                        Ok(vec![Diagnostic {
+                            id: "config_permissions",
+                            severity: Severity::Error,
+                            message: format!(
+                                "{} is group/world writable ({:o}), expected no group/world write bits",
+                                config_path.display(),
+                                mode
+                            ),
+                            hint: Some(format!("Run `chmod 600 {}`", config_path.display())),
+                            module: "local",
+                        }])
+                    }
+                }
+                Err(_) => Ok(vec![Diagnostic {
+                    id: "config_permissions",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check permissions: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AuthorizedKeysPermissionsCheck
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+impl Check for AuthorizedKeysPermissionsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "authorized_keys_permissions"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ak_path = self.paths.authorized_keys_path().to_path_buf();
+        Box::pin(async move {
+            let meta = tokio::fs::metadata(&ak_path).await;
+            match meta {
+                Ok(m) => {
+                    let mode = m.permissions().mode() & 0o777;
+                    if mode == 0o600 || mode == 0o644 {
+                        Ok(vec![Diagnostic {
+                            id: "authorized_keys_permissions",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "{} has acceptable permissions ({:o})",
+                                ak_path.display(),
+                                mode
+                            ),
+                            hint: None,
+                            module: "local",
+                        }])
+                    } else {
+                        Ok(vec![Diagnostic {
+                            id: "authorized_keys_permissions",
+                            severity: Severity::Error,
+                            message: format!(
+                                "{} has permissions {:o}, expected 600 or 644",
+                                ak_path.display(),
+                                mode
+                            ),
+                            hint: Some(format!("Run `chmod 600 {}`", ak_path.display())),
+                            module: "local",
+                        }])
+                    }
+                }
+                Err(_) => Ok(vec![Diagnostic {
+                    id: "authorized_keys_permissions",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check permissions: {} does not exist",
+                        ak_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PublicKeyPairsCheck
+// ---------------------------------------------------------------------------
+
+impl Check for PublicKeyPairsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "public_key_pairs"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let mut diagnostics = Vec::new();
+            let Ok(mut read_dir) = tokio::fs::read_dir(&ssh_dir).await else {
+                return Ok(vec![Diagnostic {
+                    id: "public_key_pairs",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Cannot scan {}: directory does not exist",
+                        ssh_dir.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let mut private_keys = Vec::new();
+            while let Some(entry) = read_dir.next_entry().await? {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy().to_string();
+
+                // Match id_* private keys (not .pub, not -cert.pub).
+                if name_str.starts_with("id_")
+                    && !name_str.to_lowercase().ends_with(".pub")
+                    && !name_str.to_lowercase().ends_with("-cert.pub")
+                {
+                    let path = entry.path();
+                    let Ok(meta) = tokio::fs::metadata(&path).await else {
+                        continue;
+                    };
+                    if meta.is_file() {
+                        private_keys.push((name_str, path));
+                    }
+                }
+            }
+
+            if private_keys.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "public_key_pairs",
+                    severity: Severity::Info,
+                    message: "No id_* private keys found in ~/.ssh".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            for (name, path) in &private_keys {
+                let pub_path = path.with_file_name(format!("{name}.pub"));
+                if tokio::fs::metadata(&pub_path).await.is_ok() {
+                    diagnostics.push(Diagnostic {
+                        id: "public_key_pairs",
+                        severity: Severity::Ok,
+                        message: format!("{} has matching public key", path.display()),
+                        hint: None,
+                        module: "local",
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        id: "public_key_pairs",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "{} has no matching public key file ({}.pub)",
+                            path.display(),
+                            name
+                        ),
+                        hint: Some(format!(
+                            "Run `ssh-keygen -y -f {} > {}.pub`",
+                            path.display(),
+                            path.display()
+                        )),
+                        module: "local",
+                    });
+                }
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IdentityFileExistsCheck
+// ---------------------------------------------------------------------------
+
+impl Check for IdentityFileExistsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "identity_file_exists"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "identity_file_exists",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check IdentityFile directives: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut identity_files: Vec<String> = Vec::new();
+
+            // Collect IdentityFile directives from top-level and Host blocks.
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        identity_files.push(value.clone());
+                    }
+                    ConfigNode::HostBlock { nodes, .. } => {
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                            {
+                                identity_files.push(value.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if identity_files.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "identity_file_exists",
+                    severity: Severity::Info,
+                    message: "No IdentityFile directives found in config".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let mut diagnostics = Vec::new();
+            for raw_path in &identity_files {
+                // Expand ~ to home directory.
+                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if let Some(rest) = raw_path.strip_prefix('~') {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if std::path::Path::new(raw_path).is_relative() {
+                    ssh_dir.join(raw_path)
+                } else {
+                    std::path::PathBuf::from(raw_path)
+                };
+
+                if tokio::fs::metadata(&expanded).await.is_ok() {
+                    diagnostics.push(Diagnostic {
+                        id: "identity_file_exists",
+                        severity: Severity::Ok,
+                        message: format!(
+                            "IdentityFile {raw_path} exists ({})",
+                            expanded.display()
+                        ),
+                        hint: None,
+                        module: "local",
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        id: "identity_file_exists",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "IdentityFile {raw_path} does not exist ({})",
+                            expanded.display()
+                        ),
+                        hint: Some(format!(
+                            "Generate the missing key or update the config entry for {raw_path}",
+                        )),
+                        module: "local",
+                    });
+                }
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DuplicateHostCheck
+// ---------------------------------------------------------------------------
+
+impl Check for DuplicateHostCheck<'_> {
+    fn id(&self) -> &'static str {
+        "duplicate_host"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "duplicate_host",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check for duplicate hosts: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+
+            // Track each pattern and the first Host block header it appeared in.
+            let mut seen: HashMap<String, String> = HashMap::new();
+            let mut duplicates: Vec<(String, String, String)> = Vec::new();
+
+            for node in &ast.nodes {
+                if let ConfigNode::HostBlock {
+                    header, patterns, ..
+                } = node
+                {
+                    for pat in patterns {
+                        if pat == "*" {
+                            // Skip wildcard for duplicate detection.
+                            continue;
+                        }
+                        if let Some(first_header) = seen.get(pat) {
+                            duplicates.push((
+                                pat.clone(),
+                                first_header.clone(),
+                                header.clone(),
+                            ));
+                        } else {
+                            seen.insert(pat.clone(), header.clone());
+                        }
+                    }
+                }
+            }
+
+            if duplicates.is_empty() {
+                Ok(vec![Diagnostic {
+                    id: "duplicate_host",
+                    severity: Severity::Ok,
+                    message: "No duplicate Host patterns found in config".into(),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                let mut diagnostics = Vec::new();
+                for (pattern, first, second) in &duplicates {
+                    diagnostics.push(Diagnostic {
+                        id: "duplicate_host",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "Host pattern '{pattern}' appears in multiple blocks: '{first}' and '{second}'",
+                        ),
+                        hint: Some(format!(
+                            "Merge or remove the duplicate entry for '{pattern}'",
+                        )),
+                        module: "local",
+                    });
+                }
+                Ok(diagnostics)
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HostStarPlacementCheck
+// ---------------------------------------------------------------------------
+
+impl Check for HostStarPlacementCheck<'_> {
+    fn id(&self) -> &'static str {
+        "host_star_placement"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "host_star_placement",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check Host * placement: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+
+            // Find the index of the first Host * and the last specific Host block.
+            let mut star_index: Option<usize> = None;
+            let mut last_specific_index: Option<usize> = None;
+
+            for (i, node) in ast.nodes.iter().enumerate() {
+                if let ConfigNode::HostBlock { patterns, .. } = node {
+                    if patterns.iter().any(|p| p == "*") {
+                        if star_index.is_none() {
+                            star_index = Some(i);
+                        }
+                    } else if !patterns.is_empty() {
+                        last_specific_index = Some(i);
+                    }
+                }
+            }
+
+            match (star_index, last_specific_index) {
+                (Some(star), Some(last)) if star < last => Ok(vec![Diagnostic {
+                    id: "host_star_placement",
+                    severity: Severity::Warning,
+                    message:
+                        "'Host *' appears before specific Host blocks; \
+                         later Host blocks cannot override its defaults"
+                            .into(),
+                    hint: Some(
+                        "Move 'Host *' to the end of the config file so specific \
+                         blocks take precedence"
+                            .into(),
+                    ),
+                    module: "local",
+                }]),
+                _ => Ok(vec![Diagnostic {
+                    id: "host_star_placement",
+                    severity: Severity::Ok,
+                    message: "'Host *' placement is correct (after specific Host blocks, or absent)".into(),
+                    hint: None,
+                    module: "local",
+                }]),
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SshV1KeyCheck
+// ---------------------------------------------------------------------------
+
+impl Check for SshV1KeyCheck<'_> {
+    fn id(&self) -> &'static str {
+        "ssh_v1_key"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let identity_path = ssh_dir.join("identity");
+            let identity_pub_path = ssh_dir.join("identity.pub");
+
+            let has_private = tokio::fs::metadata(&identity_path).await.is_ok();
+            let has_public = tokio::fs::metadata(&identity_pub_path).await.is_ok();
+
+            if has_private || has_public {
+                let mut found = Vec::new();
+                if has_private {
+                    found.push(identity_path.display().to_string());
+                }
+                if has_public {
+                    found.push(identity_pub_path.display().to_string());
+                }
+                Ok(vec![Diagnostic {
+                    id: "ssh_v1_key",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Deprecated SSHv1 key file(s) found: {}",
+                        found.join(", ")
+                    ),
+                    hint: Some(
+                        "SSHv1 keys are insecure. Remove them and use Ed25519 or RSA keys instead: \
+                         `rm ~/.ssh/identity ~/.ssh/identity.pub`"
+                            .into(),
+                    ),
+                    module: "local",
+                }])
+            } else {
+                Ok(vec![Diagnostic {
+                    id: "ssh_v1_key",
+                    severity: Severity::Ok,
+                    message: "No deprecated SSHv1 key files found".into(),
+                    hint: None,
+                    module: "local",
+                }])
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run_all — execute every local check
 // ---------------------------------------------------------------------------
 
@@ -487,9 +1137,24 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
     #[cfg(unix)]
     checks.push(Box::new(PrivateKeyPermissions { paths }));
 
+    #[cfg(unix)]
+    checks.push(Box::new(OwnerCheck { paths }));
+
     checks.push(Box::new(AgentAvailable));
     checks.push(Box::new(KeygenAvailable));
     checks.push(Box::new(DefaultKeyExists { paths }));
+
+    #[cfg(unix)]
+    checks.push(Box::new(ConfigPermissionsCheck { paths }));
+
+    #[cfg(unix)]
+    checks.push(Box::new(AuthorizedKeysPermissionsCheck { paths }));
+
+    checks.push(Box::new(PublicKeyPairsCheck { paths }));
+    checks.push(Box::new(IdentityFileExistsCheck { paths }));
+    checks.push(Box::new(DuplicateHostCheck { paths }));
+    checks.push(Box::new(HostStarPlacementCheck { paths }));
+    checks.push(Box::new(SshV1KeyCheck { paths }));
 
     let mut all_diagnostics = Vec::new();
     for check in &checks {
@@ -506,3 +1171,7 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
     }
     Ok(all_diagnostics)
 }
+
+#[cfg(test)]
+#[path = "local.test.rs"]
+mod tests;

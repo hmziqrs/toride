@@ -1,14 +1,16 @@
-mod ast;
+pub mod ast;
 mod directives;
 mod editor;
 mod managed;
 mod parse;
 mod resolve;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::Result;
 use crate::paths::SshPaths;
+use crate::types::{Diagnostic, Severity};
 
 pub use resolve::ResolvedHost;
 
@@ -176,6 +178,192 @@ impl<'a> ConfigService<'a> {
         f(&mut ast)?;
         self.save(&ast).await
     }
+
+    /// Run config-specific diagnostics on the loaded SSH config.
+    ///
+    /// Checks for:
+    /// 1. `ProxyCommand` / `ProxyJump` conflicts in the same Host block.
+    /// 2. Duplicate Host aliases across blocks.
+    /// 3. `Host *` placed before specific Host blocks.
+    /// 4. `IdentityFile` paths that do not exist on disk.
+    /// 5. `IdentityFile` paths pointing to `.pub` files (should be the private key).
+    #[allow(clippy::too_many_lines)]
+    pub async fn diagnose(&self) -> Result<Vec<Diagnostic>> {
+        let ast = self.load().await?;
+        let ssh_dir = self.paths.ssh_dir();
+        let mut diagnostics = Vec::new();
+
+        // Tracks first-seen header for each host pattern (duplicate detection).
+        let mut seen_patterns: HashMap<String, String> = HashMap::new();
+
+        // Tracks `Host *` ordering relative to specific blocks.
+        let mut star_index: Option<usize> = None;
+        let mut last_specific_index: Option<usize> = None;
+
+        for (i, node) in ast.nodes.iter().enumerate() {
+            let ast::ConfigNode::HostBlock {
+                header,
+                patterns,
+                nodes,
+            } = node
+            else {
+                continue;
+            };
+
+            // -- 1. ProxyCommand / ProxyJump conflict -----------------------
+            let has_proxy_command = nodes.iter().any(|n| {
+                matches!(
+                    n,
+                    ast::ConfigNode::Directive { keyword, .. }
+                        if keyword.eq_ignore_ascii_case("ProxyCommand")
+                )
+            });
+            let has_proxy_jump = nodes.iter().any(|n| {
+                matches!(
+                    n,
+                    ast::ConfigNode::Directive { keyword, .. }
+                        if keyword.eq_ignore_ascii_case("ProxyJump")
+                )
+            });
+            if has_proxy_command && has_proxy_jump {
+                diagnostics.push(Diagnostic {
+                    id: "config_proxy_conflict",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Host block '{header}' has both ProxyCommand and ProxyJump set",
+                    ),
+                    hint: Some(
+                        "ProxyJump takes precedence over ProxyCommand; \
+                         remove one to avoid confusion"
+                            .into(),
+                    ),
+                    module: "config",
+                });
+            }
+
+            // -- 2. Duplicate Host aliases -----------------------------------
+            for pat in patterns {
+                if pat == "*" {
+                    continue;
+                }
+                if let Some(first_header) = seen_patterns.get(pat) {
+                    diagnostics.push(Diagnostic {
+                        id: "config_duplicate_alias",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "Host alias '{pat}' appears in both '{first_header}' and '{header}'",
+                        ),
+                        hint: Some(format!(
+                            "Merge or remove the duplicate entry for '{pat}'",
+                        )),
+                        module: "config",
+                    });
+                } else {
+                    seen_patterns.insert(pat.clone(), header.clone());
+                }
+            }
+
+            // -- 3. Track Host * ordering ------------------------------------
+            if patterns.iter().any(|p| p == "*") {
+                if star_index.is_none() {
+                    star_index = Some(i);
+                }
+            } else if !patterns.is_empty() {
+                last_specific_index = Some(i);
+            }
+
+            // -- 4 & 5. IdentityFile checks ---------------------------------
+            for child in nodes {
+                if let ast::ConfigNode::Directive {
+                    keyword, value, ..
+                } = child
+                    && keyword.eq_ignore_ascii_case("IdentityFile")
+                {
+                    // 5. Points to a .pub file?
+                    if value.to_lowercase().ends_with(".pub") {
+                        diagnostics.push(Diagnostic {
+                            id: "config_identity_pub",
+                            severity: Severity::Warning,
+                            message: format!(
+                                "IdentityFile '{value}' in '{header}' points to a public key \
+                                 (.pub file)",
+                            ),
+                            hint: Some(
+                                "IdentityFile should reference the private key, \
+                                 not the .pub file"
+                                    .into(),
+                            ),
+                            module: "config",
+                        });
+                    }
+
+                    // 4. Does the file exist?
+                    let expanded = expand_identity_path(value, ssh_dir);
+                    if !expanded.exists() {
+                        diagnostics.push(Diagnostic {
+                            id: "config_identity_missing",
+                            severity: Severity::Warning,
+                            message: format!(
+                                "IdentityFile '{value}' in '{header}' does not exist \
+                                 (resolved: {})",
+                                expanded.display()
+                            ),
+                            hint: Some(format!(
+                                "Generate the missing key or update the \
+                                 IdentityFile entry in '{header}'",
+                            )),
+                            module: "config",
+                        });
+                    }
+                }
+            }
+        }
+
+        // -- 3 (continued). Emit Host * placement diagnostic ----------------
+        if let (Some(star), Some(last)) = (star_index, last_specific_index)
+            && star < last
+        {
+            diagnostics.push(Diagnostic {
+                id: "config_host_star_placement",
+                severity: Severity::Warning,
+                message:
+                    "'Host *' appears before specific Host blocks; \
+                     later blocks cannot override its defaults"
+                        .into(),
+                hint: Some(
+                    "Move 'Host *' to the end of the config file so \
+                     specific blocks take precedence"
+                        .into(),
+                ),
+                module: "config",
+            });
+        }
+
+        Ok(diagnostics)
+    }
+}
+
+/// Expand an `IdentityFile` value to an absolute path on disk.
+///
+/// Handles `~` expansion and relative paths (resolved against the SSH
+/// directory, matching OpenSSH behaviour).
+fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
+    } else if raw == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
+    }
+
+    let path = Path::new(raw);
+    if path.is_relative() {
+        ssh_dir.join(path)
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// Check if a hostname matches any of the given SSH config patterns.
@@ -188,3 +376,7 @@ pub fn host_matches(host: &str, patterns: &[String]) -> bool {
 pub fn is_in_ssh_dir(path: &Path, ssh_dir: &Path) -> bool {
     path.starts_with(ssh_dir)
 }
+
+#[cfg(test)]
+#[path = "mod.test.rs"]
+mod tests;

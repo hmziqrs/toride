@@ -5,7 +5,7 @@ mod repair;
 use std::ffi::OsStr;
 
 use crate::paths::SshPaths;
-use crate::{Error, KeyCreateParams, KeyDeleteParams, Result, SshKey};
+use crate::{Error, KeyCreateParams, KeyDeleteParams, KeyFormat, Result, SshKey};
 
 /// Get Unix file permissions from metadata.
 #[cfg(unix)]
@@ -55,6 +55,24 @@ fn validate_key_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Return a unique backup path by appending a Unix timestamp suffix if the
+/// path already exists.  For example, if `foo.bak` exists, returns
+/// `foo.bak.1717020000`.
+fn unique_backup_path(base: &std::path::Path) -> std::path::PathBuf {
+    if !base.exists() {
+        return base.to_path_buf();
+    }
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ext = match base.extension() {
+        Some(e) => format!("{}.{}", e.to_string_lossy(), ts),
+        None => ts.to_string(),
+    };
+    base.with_extension(ext)
+}
+
 /// Key management operations.
 pub struct KeyService<'a> {
     paths: &'a SshPaths,
@@ -97,12 +115,13 @@ impl<'a> KeyService<'a> {
         tokio::task::spawn_blocking(move || {
             // Backup if requested
             if backup {
-                let backup_path = private_path.with_extension("bak");
+                let backup_path = unique_backup_path(&private_path.with_extension("bak"));
                 std::fs::rename(&private_path, &backup_path)?;
 
                 if remove_public && public_path.exists() {
                     let stem = public_path.file_stem().unwrap_or(OsStr::new("")).to_string_lossy();
-                    let pub_backup = public_path.with_file_name(format!("{stem}.pub.bak"));
+                    let pub_backup_base = public_path.with_file_name(format!("{stem}.pub.bak"));
+                    let pub_backup = unique_backup_path(&pub_backup_base);
                     if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
                         tracing::warn!("failed to backup {}: {e}", public_path.display());
                     }
@@ -110,7 +129,8 @@ impl<'a> KeyService<'a> {
 
                 if remove_certificate && cert_path.exists() {
                     let name = cert_path.file_name().unwrap_or(OsStr::new("")).to_string_lossy();
-                    let cert_backup = cert_path.with_file_name(format!("{name}.bak"));
+                    let cert_backup_base = cert_path.with_file_name(format!("{name}.bak"));
+                    let cert_backup = unique_backup_path(&cert_backup_base);
                     if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
                         tracing::warn!("failed to backup {}: {e}", cert_path.display());
                     }
@@ -322,6 +342,51 @@ impl<'a> KeyService<'a> {
         })
         .await
         .map_err(|e| Error::TaskFailed(format!("comment change task failed: {e}")))?
+    }
+
+    /// Convert a key between OpenSSH and PEM formats.
+    ///
+    /// - [`KeyFormat::Pem`]: exports the key in PEM format via `ssh-keygen -e -m PEM`.
+    /// - [`KeyFormat::OpenSSH`]: imports a PEM-format key to OpenSSH format via `ssh-keygen -i -m PEM`.
+    ///
+    /// Returns the converted key content as a string.
+    pub async fn convert(
+        &self,
+        key_path: &std::path::Path,
+        target_format: KeyFormat,
+    ) -> Result<String> {
+        if !key_path.exists() {
+            return Err(Error::KeyNotFound(key_path.display().to_string()));
+        }
+
+        if !crate::runner::tool_exists("ssh-keygen") {
+            return Err(Error::ToolNotFound("ssh-keygen".to_owned()));
+        }
+
+        let path_str = key_path
+            .to_str()
+            .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
+            .to_owned();
+
+        tokio::task::spawn_blocking(move || {
+            let output = match target_format {
+                KeyFormat::Pem => {
+                    // Export: read an OpenSSH key and output PEM format.
+                    duct::cmd("ssh-keygen", ["-e", "-m", "PEM", "-f", path_str.as_str()])
+                        .read()
+                        .map_err(|e| Error::CommandFailed(format!("ssh-keygen export failed: {e}")))?
+                }
+                KeyFormat::OpenSSH => {
+                    // Import: read a PEM key and output OpenSSH format.
+                    duct::cmd("ssh-keygen", ["-i", "-m", "PEM", "-f", path_str.as_str()])
+                        .read()
+                        .map_err(|e| Error::CommandFailed(format!("ssh-keygen import failed: {e}")))?
+                }
+            };
+            Ok(output)
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("key conversion task failed: {e}")))?
     }
 }
 

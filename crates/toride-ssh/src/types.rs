@@ -26,6 +26,15 @@ pub enum KeyType {
     SkEcdsaP256,
 }
 
+/// Target format for key conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum KeyFormat {
+    /// PEM (RFC 7468 / legacy OpenSSL PEM).
+    Pem,
+    /// OpenSSH format (the default since OpenSSH 6.5).
+    OpenSSH,
+}
+
 /// SHA-256 fingerprint of an SSH key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Fingerprint {

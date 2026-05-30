@@ -4,6 +4,11 @@
 //! FIDO key generation, `ssh-keyscan`, `ssh-copy-id`, passphrase changes, etc.
 //! All calls go through `tokio::task::spawn_blocking` to avoid blocking the
 //! async runtime.
+//!
+//! The [`cli_runner`] module provides a [`CliRunner`](cli_runner::CliRunner)
+//! trait that abstracts over command execution for testability.
+
+pub mod cli_runner;
 
 use std::path::Path;
 
