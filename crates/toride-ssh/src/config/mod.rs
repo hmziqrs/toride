@@ -15,6 +15,8 @@ use crate::types::{Diagnostic, Severity};
 pub use resolve::ResolvedHost;
 
 /// SSH config file operations.
+///
+/// Obtained from [`SshManager::config()`](crate::SshManager::config).
 pub struct ConfigService<'a> {
     paths: &'a SshPaths,
 }
@@ -27,6 +29,10 @@ impl<'a> ConfigService<'a> {
     /// Load and parse the SSH config into a lossless AST.
     ///
     /// If the config file does not exist, returns an empty AST.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the config file exists but cannot be read.
     pub async fn load(&self) -> Result<ast::ConfigAst> {
         let path = self.paths.config_path();
         if !path.exists() {
@@ -42,6 +48,11 @@ impl<'a> ConfigService<'a> {
     /// has appropriate permissions (0o600 — owner read/write only).
     /// OpenSSH requires user config not be writable by others; 0o600 is
     /// the strictest correct permission.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigWriteFailed`] if the atomic write (temp
+    /// file + rename) fails, or [`Error::Io`] if permissions cannot be set.
     pub async fn save(&self, ast: &ast::ConfigAst) -> Result<()> {
         let path = self.paths.config_path();
         let content = ast.to_string_lossless();
@@ -79,6 +90,11 @@ impl<'a> ConfigService<'a> {
     /// Performs full resolution including Include expansion and token expansion.
     /// If `CanonicalizeHostname` is enabled, a second resolution pass is
     /// performed using the resolved `HostName` as the lookup key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigIncludeCycle`] if an Include chain forms a
+    /// cycle, or [`Error::Io`] if the config file cannot be read.
     pub async fn resolve_host(&self, host: &str) -> Result<ResolvedHost> {
         resolve::resolve(self.paths.ssh_dir(), host, None).await
     }
@@ -87,6 +103,11 @@ impl<'a> ConfigService<'a> {
     ///
     /// Returns the ssh2-config-rs [`ssh2_config_rs::SshConfig`] which supports
     /// `.query(host)` for resolving parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConfigParseFailed`] if the config file cannot be
+    /// parsed, or [`Error::Io`] if it cannot be read.
     pub async fn parse_typed(&self) -> Result<ssh2_config_rs::SshConfig> {
         parse::parse_config(self.paths.config_path()).await
     }
@@ -104,6 +125,11 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Add a new Host block to the AST.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DuplicateHost`] if a Host block with the given
+    /// name already exists.
     pub fn add_host(
         ast: &mut ast::ConfigAst,
         name: &str,
@@ -113,11 +139,20 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Remove a Host block from the AST by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
     pub fn remove_host(ast: &mut ast::ConfigAst, name: &str) -> Result<()> {
         editor::remove_host(ast, name)
     }
 
     /// Rename a Host block.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HostNotFound`] if no Host block matches `old_name`,
+    /// or [`Error::DuplicateHost`] if a block with `new_name` already exists.
     pub fn rename_host(ast: &mut ast::ConfigAst, old_name: &str, new_name: &str) -> Result<()> {
         editor::rename_host(ast, old_name, new_name)
     }
@@ -132,6 +167,11 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Remove a managed block by name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ManagedBlockNotFound`] if no managed block with
+    /// the given name exists.
     pub fn remove_managed_block(ast: &mut ast::ConfigAst, name: &str) -> Result<()> {
         managed::remove_managed_block(ast, name)
     }
@@ -142,6 +182,14 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Ensure the config file exists (touch it if not).
+    ///
+    /// Creates the `~/.ssh` directory and an empty config file if either
+    /// is missing.  On Unix, sets directory permissions to `0o700` and
+    /// file permissions to `0o600`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if directory creation or file writing fails.
     pub async fn ensure_config_file(&self) -> Result<()> {
         let path = self.paths.config_path();
         if !path.exists() {
@@ -171,6 +219,11 @@ impl<'a> ConfigService<'a> {
     /// Load, modify, and save the config atomically.
     ///
     /// Takes a closure that mutates the AST. Loads before, saves after.
+    ///
+    /// # Errors
+    ///
+    /// Returns any error from loading, from the mutation closure, or from
+    /// saving.  See [`Self::load`] and [`Self::save`] for specifics.
     pub async fn edit<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut ast::ConfigAst) -> Result<()>,
@@ -189,6 +242,10 @@ impl<'a> ConfigService<'a> {
     /// 3. `Host *` placed before specific Host blocks.
     /// 4. `IdentityFile` paths that do not exist on disk.
     /// 5. `IdentityFile` paths pointing to `.pub` files (should be the private key).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the config file cannot be read.
     pub async fn diagnose(&self) -> Result<Vec<Diagnostic>> {
         let ast = self.load().await?;
         let ssh_dir = self.paths.ssh_dir();
@@ -380,8 +437,9 @@ fn check_host_star_placement(
 /// Expand an `IdentityFile` value to an absolute path on disk.
 ///
 /// Handles `~` expansion and relative paths (resolved against the SSH
-/// directory, matching OpenSSH behaviour).
-fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
+/// directory, matching OpenSSH behaviour).  Strips surrounding single or
+/// double quotes that the AST parser preserves verbatim.
+pub(crate) fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
     if let Some(rest) = raw.strip_prefix("~/")
         && let Some(home) = dirs::home_dir()
     {

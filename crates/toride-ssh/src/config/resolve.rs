@@ -22,10 +22,37 @@ pub struct ResolvedHost {
     pub port: Option<u16>,
     /// Identity files to try.
     pub identity_files: Vec<String>,
+    /// Certificate files (accumulative across matching blocks).
+    pub certificate_files: Vec<String>,
     /// ProxyJump hosts.
     pub proxy_jump: Option<String>,
+    /// IdentityAgent socket path.
+    pub identity_agent: Option<String>,
+    /// ForwardAgent setting (yes/no).
+    pub forward_agent: Option<String>,
+    /// AddKeysToAgent setting (yes/confirm/ask/no/lifetime).
+    pub add_keys_to_agent: Option<String>,
+    /// UseKeychain setting (yes/no, macOS only).
+    pub use_keychain: Option<String>,
+    /// ControlMaster setting (yes/no/auto/ask/autoask).
+    pub control_master: Option<String>,
+    /// ControlPath socket path.
+    pub control_path: Option<String>,
+    /// ControlPersist duration.
+    pub control_persist: Option<String>,
+    /// LocalForward entries (accumulative).
+    pub local_forwards: Vec<String>,
+    /// RemoteForward entries (accumulative).
+    pub remote_forwards: Vec<String>,
+    /// DynamicForward entries (accumulative).
+    pub dynamic_forwards: Vec<String>,
     /// All raw key-value directives from matching blocks.
     pub directives: Vec<(String, String)>,
+    /// `UserKnownHostsFile` value, if set.
+    ///
+    /// When `None`, the default `~/.ssh/known_hosts` is used.
+    /// May contain SSH tokens (already expanded).
+    pub user_known_hosts_file: Option<String>,
     /// Whether the config was re-resolved after `CanonicalizeHostname` took
     /// effect. When `true`, `%H` tokens expand to the canonical hostname
     /// rather than the original alias.
@@ -35,19 +62,23 @@ pub struct ResolvedHost {
 /// Directives whose values may contain SSH tokens (`%h`, `%d`, etc.) or
 /// tilde/env expansion and should be expanded during resolution.
 const TOKEN_EXPANDABLE: &[&str] = &[
+    "addkeystoagent",
+    "bindaddress",
     "certificatefile",
+    "controlmaster",
     "controlpath",
+    "controlpersist",
+    "dynamicforward",
+    "forwardagent",
     "identityagent",
+    "kbdinteractiveauthentication",
     "localforward",
+    "preferredauthentications",
     "remoteforward",
+    "syslogfacility",
+    "usekeychain",
     "userknownhostsfile",
     "proxycommand",
-    "forwardagent",
-    "dynamicforward",
-    "bindaddress",
-    "syslogfacility",
-    "kbdinteractiveauthentication",
-    "preferredauthentications",
 ];
 
 /// Fully resolve config for a given host alias.
@@ -116,8 +147,20 @@ fn resolve_pass(
         user: None,
         port: None,
         identity_files: Vec::new(),
+        certificate_files: Vec::new(),
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: Vec::new(),
+        remote_forwards: Vec::new(),
+        dynamic_forwards: Vec::new(),
         directives: Vec::new(),
+        user_known_hosts_file: None,
         canonicalized: false,
     };
 
@@ -136,16 +179,22 @@ fn resolve_pass(
                     );
                 }
             }
-            ConfigNode::MatchBlock { criteria, nodes, .. }
-                if match_criteria_host(criteria, target_host, local_user, original_host) =>
-            {
-                resolve_block(
-                    nodes,
-                    target_host,
-                    ssh_dir,
-                    &mut resolved,
-                    &mut seen_keys,
-                );
+            ConfigNode::MatchBlock { criteria, nodes, .. } => {
+                // Warn about `exec` criteria — we cannot evaluate them safely.
+                if contains_exec_criteria(criteria) {
+                    tracing::warn!(
+                        "Match block contains 'exec' criteria which are not evaluated: {criteria}"
+                    );
+                }
+                if match_criteria_host(criteria, target_host, local_user, original_host) {
+                    resolve_block(
+                        nodes,
+                        target_host,
+                        ssh_dir,
+                        &mut resolved,
+                        &mut seen_keys,
+                    );
+                }
             }
             _ => {}
         }
@@ -368,10 +417,33 @@ fn resolve_block(
 
             // Accumulative directives — always collect.
             if super::directives::is_accumulative(&key_lower) {
-                if key_lower == "identityfile"
-                    && !resolved.identity_files.iter().any(|f| f == value)
-                {
-                    resolved.identity_files.push(value.clone());
+                match key_lower.as_str() {
+                    "identityfile"
+                        if !resolved.identity_files.iter().any(|f| f == value) =>
+                    {
+                        resolved.identity_files.push(value.clone());
+                    }
+                    "certificatefile"
+                        if !resolved.certificate_files.iter().any(|f| f == value) =>
+                    {
+                        resolved.certificate_files.push(value.clone());
+                    }
+                    "localforward"
+                        if !resolved.local_forwards.iter().any(|f| f == value) =>
+                    {
+                        resolved.local_forwards.push(value.clone());
+                    }
+                    "remoteforward"
+                        if !resolved.remote_forwards.iter().any(|f| f == value) =>
+                    {
+                        resolved.remote_forwards.push(value.clone());
+                    }
+                    "dynamicforward"
+                        if !resolved.dynamic_forwards.iter().any(|f| f == value) =>
+                    {
+                        resolved.dynamic_forwards.push(value.clone());
+                    }
+                    _ => {}
                 }
                 resolved
                     .directives
@@ -392,6 +464,14 @@ fn resolve_block(
                     resolved.port = value.parse::<u16>().ok();
                 }
                 "proxyjump" => resolved.proxy_jump = Some(value.clone()),
+                "identityagent" => resolved.identity_agent = Some(value.clone()),
+                "forwardagent" => resolved.forward_agent = Some(value.clone()),
+                "addkeystoagent" => resolved.add_keys_to_agent = Some(value.clone()),
+                "usekeychain" => resolved.use_keychain = Some(value.clone()),
+                "controlmaster" => resolved.control_master = Some(value.clone()),
+                "controlpath" => resolved.control_path = Some(value.clone()),
+                "controlpersist" => resolved.control_persist = Some(value.clone()),
+                "userknownhostsfile" => resolved.user_known_hosts_file = Some(value.clone()),
                 _ => {}
             }
 
@@ -457,6 +537,12 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         *id_file = collapse_double_percent(id_file);
     }
 
+    for cert_file in &mut resolved.certificate_files {
+        *cert_file = expand_tilde_and_env(cert_file);
+        *cert_file = expand_tokens(cert_file, &ctx);
+        *cert_file = collapse_double_percent(cert_file);
+    }
+
     if let Some(ref mut hn) = resolved.host_name {
         *hn = expand_tilde_and_env(hn);
         *hn = expand_tokens(hn, &ctx);
@@ -466,6 +552,66 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     if let Some(ref mut pj) = resolved.proxy_jump {
         *pj = expand_tokens(pj, &ctx);
         *pj = collapse_double_percent(pj);
+    }
+
+    if let Some(ref mut ia) = resolved.identity_agent {
+        *ia = expand_tilde_and_env(ia);
+        *ia = expand_tokens(ia, &ctx);
+        *ia = collapse_double_percent(ia);
+    }
+
+    if let Some(ref mut cp) = resolved.control_path {
+        *cp = expand_tilde_and_env(cp);
+        *cp = expand_tokens(cp, &ctx);
+        *cp = collapse_double_percent(cp);
+    }
+
+    if let Some(ref mut fa) = resolved.forward_agent {
+        *fa = expand_tilde_and_env(fa);
+        *fa = expand_tokens(fa, &ctx);
+        *fa = collapse_double_percent(fa);
+    }
+
+    if let Some(ref mut ata) = resolved.add_keys_to_agent {
+        *ata = expand_tilde_and_env(ata);
+        *ata = expand_tokens(ata, &ctx);
+        *ata = collapse_double_percent(ata);
+    }
+
+    if let Some(ref mut uk) = resolved.use_keychain {
+        *uk = expand_tilde_and_env(uk);
+        *uk = expand_tokens(uk, &ctx);
+        *uk = collapse_double_percent(uk);
+    }
+
+    if let Some(ref mut cm) = resolved.control_master {
+        *cm = expand_tilde_and_env(cm);
+        *cm = expand_tokens(cm, &ctx);
+        *cm = collapse_double_percent(cm);
+    }
+
+    if let Some(ref mut cpers) = resolved.control_persist {
+        *cpers = expand_tilde_and_env(cpers);
+        *cpers = expand_tokens(cpers, &ctx);
+        *cpers = collapse_double_percent(cpers);
+    }
+
+    for lf in &mut resolved.local_forwards {
+        *lf = expand_tilde_and_env(lf);
+        *lf = expand_tokens(lf, &ctx);
+        *lf = collapse_double_percent(lf);
+    }
+
+    for rf in &mut resolved.remote_forwards {
+        *rf = expand_tilde_and_env(rf);
+        *rf = expand_tokens(rf, &ctx);
+        *rf = collapse_double_percent(rf);
+    }
+
+    for df in &mut resolved.dynamic_forwards {
+        *df = expand_tilde_and_env(df);
+        *df = expand_tokens(df, &ctx);
+        *df = collapse_double_percent(df);
     }
 
     // Expand all raw directive values that may contain tokens.
@@ -758,6 +904,23 @@ fn match_criteria_host(
         && (!has_user || user_matched);
 
     any_known && all_matched
+}
+
+/// Check whether a Match criteria string contains an `exec` keyword.
+///
+/// The `exec` criterion runs an arbitrary command to determine whether
+/// a Match block applies.  This is a security-sensitive operation that
+/// toride intentionally does not support.
+fn contains_exec_criteria(criteria: &str) -> bool {
+    let mut tokens = criteria.split_whitespace();
+    while let Some(keyword) = tokens.next() {
+        if keyword.eq_ignore_ascii_case("exec") {
+            return true;
+        }
+        // Each criterion keyword is followed by a value token.
+        tokens.next();
+    }
+    false
 }
 
 #[cfg(test)]

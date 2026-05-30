@@ -44,7 +44,9 @@ struct PrivateKeyPermissions<'a> {
 struct AgentAvailable;
 
 /// Check that `ssh-keygen` is available in `PATH`.
-struct KeygenAvailable;
+struct KeygenAvailable<'a> {
+    runner: &'a dyn crate::CliRunner,
+}
 
 /// Check that at least one default key pair exists.
 struct DefaultKeyExists<'a> {
@@ -430,7 +432,7 @@ impl Check for AgentAvailable {
     }
 }
 
-impl Check for KeygenAvailable {
+impl Check for KeygenAvailable<'_> {
     fn id(&self) -> &'static str {
         "keygen_available"
     }
@@ -442,7 +444,7 @@ impl Check for KeygenAvailable {
     ) -> CheckFuture<'_>
     {
         Box::pin(async move {
-            if crate::runner::tool_exists("ssh-keygen") {
+            if self.runner.tool_exists("ssh-keygen") {
                 Ok(vec![Diagnostic {
                     id: "keygen_available",
                     severity: Severity::Ok,
@@ -1054,6 +1056,126 @@ impl Check for PublicKeyPairsCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// CertificateFileExistsCheck
+// ---------------------------------------------------------------------------
+
+/// Check that `CertificateFile` paths referenced in config actually exist.
+struct CertificateFileExistsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for CertificateFileExistsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "certificate_file_exists"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "certificate_file_exists",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check CertificateFile directives: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut cert_files: Vec<String> = Vec::new();
+
+            // Collect CertificateFile directives from top-level and Host blocks.
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("CertificateFile") => {
+                        cert_files.push(value.clone());
+                    }
+                    ConfigNode::HostBlock { nodes, .. } => {
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("CertificateFile")
+                            {
+                                cert_files.push(value.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if cert_files.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "certificate_file_exists",
+                    severity: Severity::Info,
+                    message: "No CertificateFile directives found in config".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let mut diagnostics = Vec::new();
+            for raw_path in &cert_files {
+                // Expand ~ to home directory.
+                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if let Some(rest) = raw_path.strip_prefix('~') {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if std::path::Path::new(raw_path).is_relative() {
+                    ssh_dir.join(raw_path)
+                } else {
+                    std::path::PathBuf::from(raw_path)
+                };
+
+                if tokio::fs::metadata(&expanded).await.is_ok() {
+                    diagnostics.push(Diagnostic {
+                        id: "certificate_file_exists",
+                        severity: Severity::Ok,
+                        message: format!(
+                            "CertificateFile {raw_path} exists ({})",
+                            expanded.display()
+                        ),
+                        hint: None,
+                        module: "local",
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        id: "certificate_file_exists",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "CertificateFile {raw_path} does not exist ({})",
+                            expanded.display()
+                        ),
+                        hint: Some(format!(
+                            "Generate or copy the certificate file for {raw_path}",
+                        )),
+                        module: "local",
+                    });
+                }
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // IdentityFileExistsCheck
 // ---------------------------------------------------------------------------
 
@@ -1622,11 +1744,749 @@ impl Check for HomeDirPermissionsCheck {
 }
 
 // ---------------------------------------------------------------------------
+// MaxAuthTriesExhaustionCheck — count agent keys vs MaxAuthTries
+// ---------------------------------------------------------------------------
+
+/// Count keys loaded in the SSH agent and warn if the count is close to
+/// the default `MaxAuthTries` limit (6). When a client offers more keys
+/// than the server allows attempts, authentication silently fails after
+/// the server rejects the excess offers.
+struct MaxAuthTriesExhaustionCheck;
+
+impl Check for MaxAuthTriesExhaustionCheck {
+    fn id(&self) -> &'static str {
+        "max_auth_tries_exhaustion"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        Box::pin(async move {
+            // Default MaxAuthTries on most sshd installations.
+            const DEFAULT_MAX_AUTH_TRIES: usize = 6;
+
+            if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
+                return Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Info,
+                    message: "SSH agent is not running — cannot count loaded keys".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let output = tokio::task::spawn_blocking(|| {
+                duct::cmd("ssh-add", ["-l"])
+                    .stderr_null()
+                    .read()
+                    .ok()
+            })
+            .await
+            .ok()
+            .flatten();
+
+            let Some(output) = output else {
+                return Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Info,
+                    message: "Could not list agent keys via `ssh-add -l`".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            // `ssh-add -l` exits 1 with "The agent has no identities." when
+            // empty, and 2 on error. When successful it prints one key per line.
+            let key_count = output.lines().filter(|l| !l.is_empty()).count();
+
+            if key_count == 0 {
+                return Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Ok,
+                    message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            if key_count >= DEFAULT_MAX_AUTH_TRIES {
+                Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "SSH agent has {key_count} keys loaded (MaxAuthTries default is {DEFAULT_MAX_AUTH_TRIES}). \
+                         The server may reject authentication before offering the correct key"
+                    ),
+                    hint: Some(
+                        "Reduce agent keys with `ssh-add -D` and re-add only needed keys, \
+                         or increase MaxAuthTries on the server. Consider using IdentitiesOnly yes per-host"
+                            .to_string(),
+                    ),
+                    module: "local",
+                }])
+            } else if key_count >= DEFAULT_MAX_AUTH_TRIES - 1 {
+                Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Info,
+                    message: format!(
+                        "SSH agent has {key_count} keys loaded (approaching MaxAuthTries default of {DEFAULT_MAX_AUTH_TRIES})"
+                    ),
+                    hint: Some(
+                        "Consider using IdentitiesOnly yes in your SSH config for hosts that use specific keys".into(),
+                    ),
+                    module: "local",
+                }])
+            } else {
+                Ok(vec![Diagnostic {
+                    id: "max_auth_tries_exhaustion",
+                    severity: Severity::Ok,
+                    message: format!(
+                        "SSH agent has {key_count} keys loaded (within MaxAuthTries limit of {DEFAULT_MAX_AUTH_TRIES})"
+                    ),
+                    hint: None,
+                    module: "local",
+                }])
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PreferredAuthenticationsCheck — read PreferredAuthentications from config
+// ---------------------------------------------------------------------------
+
+/// Check for `PreferredAuthentications` directives in the SSH config and
+/// report the configured authentication order. This helps diagnose connection
+/// issues when specific auth methods are disabled on the server.
+struct PreferredAuthenticationsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for PreferredAuthenticationsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "preferred_authentications"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "preferred_authentications",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check PreferredAuthentications: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut preferred: Vec<(String, String)> = Vec::new(); // (context, value)
+
+            // Collect PreferredAuthentications from top-level and Host blocks.
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("PreferredAuthentications") => {
+                        preferred.push(("top-level".into(), value.clone()));
+                    }
+                    ConfigNode::HostBlock { patterns, nodes, .. } => {
+                        let ctx = format!("Host {}", patterns.join(", "));
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("PreferredAuthentications")
+                            {
+                                preferred.push((ctx.clone(), value.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if preferred.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "preferred_authentications",
+                    severity: Severity::Ok,
+                    message: "No PreferredAuthentications directive in config (uses client default)".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let mut diagnostics = Vec::new();
+            for (context, value) in &preferred {
+                let methods: Vec<&str> = value.split(',').map(str::trim).collect();
+                let has_pubkey = methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
+                let has_password = methods.iter().any(|m| m.eq_ignore_ascii_case("password"));
+
+                diagnostics.push(Diagnostic {
+                    id: "preferred_authentications",
+                    severity: if has_pubkey { Severity::Ok } else { Severity::Info },
+                    message: format!(
+                        "PreferredAuthentications in {context}: {value}"
+                    ),
+                    hint: if !has_pubkey && has_password {
+                        Some(
+                            "Consider adding 'publickey' before 'password' in PreferredAuthentications \
+                             for better security".into(),
+                        )
+                    } else {
+                        None
+                    },
+                    module: "local",
+                });
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ProxyJumpHostCheck — verify ProxyJump targets exist in config
+// ---------------------------------------------------------------------------
+
+/// For every `ProxyJump` directive in the SSH config, verify that the target
+/// host has a usable config entry (a `Host` block or is resolvable).
+struct ProxyJumpHostCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for ProxyJumpHostCheck<'_> {
+    fn id(&self) -> &'static str {
+        "proxy_jump_host"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    #[allow(clippy::too_many_lines)]
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "proxy_jump_host",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check ProxyJump targets: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+
+            // Collect all Host block patterns for lookup.
+            let mut host_patterns: Vec<String> = Vec::new();
+            for node in &ast.nodes {
+                if let ConfigNode::HostBlock { patterns, .. } = node {
+                    for pat in patterns {
+                        if pat != "*" {
+                            host_patterns.push(pat.to_lowercase());
+                        }
+                    }
+                }
+            }
+
+            // Collect all ProxyJump directive values (top-level and in blocks).
+            let mut proxy_jumps: Vec<(String, String)> = Vec::new(); // (value, context)
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("ProxyJump") => {
+                        proxy_jumps.push((value.clone(), "top-level".into()));
+                    }
+                    ConfigNode::HostBlock { patterns, nodes, .. } => {
+                        let ctx = format!("Host {}", patterns.join(", "));
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("ProxyJump")
+                            {
+                                proxy_jumps.push((value.clone(), ctx.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if proxy_jumps.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "proxy_jump_host",
+                    severity: Severity::Ok,
+                    message: "No ProxyJump directives found in config".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let mut diagnostics = Vec::new();
+            for (raw_value, context) in &proxy_jumps {
+                // ProxyJump values can be "none", a comma-separated list of
+                // [user@]host[:port] jump specs, or "direct".
+                if raw_value.eq_ignore_ascii_case("none")
+                    || raw_value.eq_ignore_ascii_case("direct")
+                {
+                    continue;
+                }
+
+                // Each comma-separated token is a jump host.
+                for token in raw_value.split(',') {
+                    let token = token.trim();
+                    if token.is_empty() {
+                        continue;
+                    }
+
+                    // Strip [user@] prefix and [:port] suffix to get the hostname.
+                    let host_part = token
+                        .rsplit_once(':')
+                        .map_or(token, |(h, _port)| h)
+                        .split('@')
+                        .next_back()
+                        .unwrap_or(token)
+                        .trim_matches(|c| c == '[' || c == ']');
+
+                    // Check if the jump target has a matching Host block.
+                    let lower = host_part.to_lowercase();
+                    let has_config = host_patterns.iter().any(|p| {
+                        if p.starts_with('!') {
+                            return false;
+                        }
+                        // Exact match or wildcard prefix pattern (e.g. *.example.com).
+                        p == &lower
+                            || (p.starts_with("*.") && lower.ends_with(&p[1..]))
+                    });
+
+                    if has_config {
+                        diagnostics.push(Diagnostic {
+                            id: "proxy_jump_host",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "ProxyJump target '{host_part}' has a config entry ({context})"
+                            ),
+                            hint: None,
+                            module: "local",
+                        });
+                    } else {
+                        diagnostics.push(Diagnostic {
+                            id: "proxy_jump_host",
+                            severity: Severity::Warning,
+                            message: format!(
+                                "ProxyJump target '{host_part}' has no matching Host block in config ({context})"
+                            ),
+                            hint: Some(format!(
+                                "Add a Host {host_part} block with HostName, User, and IdentityFile, \
+                                 or ensure the hostname is directly resolvable"
+                            )),
+                            module: "local",
+                        });
+                    }
+                }
+            }
+
+            if diagnostics.is_empty() {
+                Ok(vec![Diagnostic {
+                    id: "proxy_jump_host",
+                    severity: Severity::Ok,
+                    message: "All ProxyJump targets are set to 'none'".into(),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                Ok(diagnostics)
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AgentIdentityCheck — verify agent holds keys expected by config
+// ---------------------------------------------------------------------------
+
+/// Verify that the SSH agent holds keys matching the `IdentityFile` directives
+/// in the config. When a configured key is not loaded in the agent, SSH falls
+/// back to trying all agent keys (or fails if `IdentitiesOnly yes` is set).
+struct AgentIdentityCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for AgentIdentityCheck<'_> {
+    fn id(&self) -> &'static str {
+        "agent_identity"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    #[allow(clippy::too_many_lines)]
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            // First, get the agent's public key fingerprints.
+            if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
+                return Ok(vec![Diagnostic {
+                    id: "agent_identity",
+                    severity: Severity::Info,
+                    message: "SSH agent is not running — cannot verify agent holds expected keys".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let agent_output = tokio::task::spawn_blocking(|| {
+                duct::cmd("ssh-add", ["-l"])
+                    .stderr_null()
+                    .read()
+                    .ok()
+            })
+            .await
+            .ok()
+            .flatten();
+
+            let agent_fingerprints: Vec<String> = agent_output
+                .as_deref()
+                .map(|o| {
+                    o.lines()
+                        .filter_map(|line| {
+                            // Lines look like: "256 SHA256:abc... comment (ED25519)"
+                            line.split_whitespace()
+                                .nth(1)
+                                .map(std::borrow::ToOwned::to_owned)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            if agent_fingerprints.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "agent_identity",
+                    severity: Severity::Info,
+                    message: "No keys loaded in agent — cannot verify agent identity".into(),
+                    hint: Some("Load keys with `ssh-add ~/.ssh/id_ed25519`".into()),
+                    module: "local",
+                }]);
+            }
+
+            // Read config to find IdentityFile directives.
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "agent_identity",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check agent identities: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+            let mut identity_files: Vec<String> = Vec::new();
+
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive {
+                        keyword, value, ..
+                    } if keyword.eq_ignore_ascii_case("IdentityFile") => {
+                        identity_files.push(value.clone());
+                    }
+                    ConfigNode::HostBlock { nodes, .. } => {
+                        for child in nodes {
+                            if let ConfigNode::Directive {
+                                keyword, value, ..
+                            } = child
+                                && keyword.eq_ignore_ascii_case("IdentityFile")
+                            {
+                                identity_files.push(value.clone());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if identity_files.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "agent_identity",
+                    severity: Severity::Ok,
+                    message: "No IdentityFile directives in config — agent will offer all keys".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            // For each IdentityFile, check if the corresponding public key
+            // fingerprint is in the agent.
+            let mut diagnostics = Vec::new();
+            for raw_path in &identity_files {
+                let expanded = if let Some(rest) = raw_path.strip_prefix("~/") {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if let Some(rest) = raw_path.strip_prefix('~') {
+                    dirs::home_dir().map_or_else(
+                        || std::path::PathBuf::from(raw_path),
+                        |home| home.join(rest),
+                    )
+                } else if std::path::Path::new(raw_path).is_relative() {
+                    self.paths.ssh_dir().join(raw_path)
+                } else {
+                    std::path::PathBuf::from(raw_path)
+                };
+
+                // Get the fingerprint of the public key file.
+                let pub_path = expanded.with_file_name(format!(
+                    "{}.pub",
+                    expanded.file_name().unwrap_or_default().to_string_lossy()
+                ));
+
+                let fp_output = tokio::task::spawn_blocking({
+                    let pub_path = pub_path.clone();
+                    move || {
+                        duct::cmd("ssh-keygen", ["-lf", pub_path.to_str().unwrap_or("")])
+                            .stderr_null()
+                            .read()
+                            .ok()
+                    }
+                })
+                .await
+                .ok()
+                .flatten();
+
+                let Some(fp_output) = fp_output else {
+                    diagnostics.push(Diagnostic {
+                        id: "agent_identity",
+                        severity: Severity::Info,
+                        message: format!(
+                            "Cannot read public key for {raw_path} — \
+                             skipping agent identity check for this key"
+                        ),
+                        hint: None,
+                        module: "local",
+                    });
+                    continue;
+                };
+
+                let key_fp = fp_output
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_owned();
+
+                if key_fp.is_empty() {
+                    diagnostics.push(Diagnostic {
+                        id: "agent_identity",
+                        severity: Severity::Info,
+                        message: format!(
+                            "Could not parse fingerprint for {raw_path} — \
+                             skipping agent identity check"
+                        ),
+                        hint: None,
+                        module: "local",
+                    });
+                    continue;
+                }
+
+                if agent_fingerprints.iter().any(|af| af == &key_fp) {
+                    diagnostics.push(Diagnostic {
+                        id: "agent_identity",
+                        severity: Severity::Ok,
+                        message: format!(
+                            "Agent holds key for {raw_path} ({key_fp})"
+                        ),
+                        hint: None,
+                        module: "local",
+                    });
+                } else {
+                    diagnostics.push(Diagnostic {
+                        id: "agent_identity",
+                        severity: Severity::Warning,
+                        message: format!(
+                            "Agent does not hold key for {raw_path} ({key_fp}). \
+                             SSH will not be able to offer this key automatically"
+                        ),
+                        hint: Some(format!(
+                            "Load the key: `ssh-add {}`",
+                            expanded.display()
+                        )),
+                        module: "local",
+                    });
+                }
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RsaWeakKeyCheck — warn about RSA keys with fewer than 3072 bits
+// ---------------------------------------------------------------------------
+
+/// Check that all RSA keys on disk have at least 3072 bits.
+///
+/// RSA keys with fewer than 3072 bits are considered weak by modern standards.
+/// NIST recommends a minimum of 2048 bits through 2030, but 3072 bits is the
+/// widely accepted minimum for long-term security.  OpenSSH itself warns about
+/// RSA-2048 keys since version 9.x.
+struct RsaWeakKeyCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for RsaWeakKeyCheck<'_> {
+    fn id(&self) -> &'static str {
+        "rsa_weak_key"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    #[allow(clippy::too_many_lines)]
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            let Ok(mut read_dir) = tokio::fs::read_dir(&ssh_dir).await else {
+                return Ok(vec![Diagnostic {
+                    id: "rsa_weak_key",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot scan {}: directory does not exist",
+                        ssh_dir.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let mut diagnostics = Vec::new();
+
+            while let Some(entry) = read_dir.next_entry().await? {
+                let name = entry.file_name();
+                let name_lossy = name.to_string_lossy();
+
+                // Skip public keys, certificates, config files, and dotfiles.
+                if name_lossy.ends_with(".pub")
+                    || name_lossy.ends_with("-cert.pub")
+                    || name_lossy == "config"
+                    || name_lossy == "known_hosts"
+                    || name_lossy == "authorized_keys"
+                    || name_lossy.starts_with('.')
+                {
+                    continue;
+                }
+
+                let path = entry.path();
+                let Ok(meta) = tokio::fs::metadata(&path).await else {
+                    continue;
+                };
+                if !meta.is_file() {
+                    continue;
+                }
+
+                // Quick header check: only inspect files that look like private keys.
+                {
+                    use tokio::io::AsyncReadExt;
+                    let Ok(mut file) = tokio::fs::File::open(&path).await else {
+                        continue;
+                    };
+                    let mut buf = [0u8; 4096];
+                    let Ok(n) = file.read(&mut buf).await else {
+                        continue;
+                    };
+                    if n < 8 || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
+                        continue;
+                    }
+                }
+
+                // Try to parse the key and check RSA bit size.
+                let Ok(content) = tokio::fs::read_to_string(&path).await else {
+                    continue;
+                };
+                let Ok(pk) = ssh_key::PrivateKey::from_openssh(&content) else {
+                    continue;
+                };
+
+                if !matches!(pk.algorithm(), ssh_key::Algorithm::Rsa { .. }) {
+                    continue;
+                }
+
+                // Extract RSA bit size from the public key.
+                let public_key = pk.public_key();
+                if let Some(rsa_public) = public_key.key_data().rsa() {
+                    let bits = rsa_public.key_size();
+                    if bits < 3072 {
+                        diagnostics.push(Diagnostic {
+                            id: "rsa_weak_key",
+                            severity: Severity::Warning,
+                            message: format!(
+                                "{} is an RSA key with only {} bits (minimum recommended: 3072)",
+                                path.display(),
+                                bits,
+                            ),
+                            hint: Some(format!(
+                                "Replace with a stronger key: \
+                                 `ssh-keygen -t rsa -b 4096 -f {}` \
+                                 or switch to Ed25519: \
+                                 `ssh-keygen -t ed25519 -f {}`",
+                                path.display(),
+                                path.display(),
+                            )),
+                            module: "local",
+                        });
+                    } else {
+                        diagnostics.push(Diagnostic {
+                            id: "rsa_weak_key",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "{} is an RSA key with {} bits (adequate)",
+                                path.display(),
+                                bits,
+                            ),
+                            hint: None,
+                            module: "local",
+                        });
+                    }
+                }
+            }
+
+            if diagnostics.is_empty() {
+                diagnostics.push(Diagnostic {
+                    id: "rsa_weak_key",
+                    severity: Severity::Ok,
+                    message: "No RSA private keys found in ~/.ssh".into(),
+                    hint: None,
+                    module: "local",
+                });
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run_all — execute every local check
 // ---------------------------------------------------------------------------
 
 /// Run all local diagnostic checks.
-pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
+pub async fn run_all<'a>(
+    paths: &'a SshPaths,
+    runner: &'a dyn crate::CliRunner,
+) -> Result<Vec<Diagnostic>> {
     let mut checks: Vec<Box<dyn Check + 'a>> = vec![
         Box::new(SshDirExists { paths }),
     ];
@@ -1641,7 +2501,7 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
     checks.push(Box::new(OwnerCheck { paths }));
 
     checks.push(Box::new(AgentAvailable));
-    checks.push(Box::new(KeygenAvailable));
+    checks.push(Box::new(KeygenAvailable { runner }));
     checks.push(Box::new(DefaultKeyExists { paths }));
 
     checks.push(Box::new(ConfigPermissionsCheck { paths }));
@@ -1650,11 +2510,17 @@ pub async fn run_all<'a>(paths: &'a SshPaths) -> Result<Vec<Diagnostic>> {
 
     checks.push(Box::new(PublicKeyPairsCheck { paths }));
     checks.push(Box::new(IdentityFileExistsCheck { paths }));
+    checks.push(Box::new(CertificateFileExistsCheck { paths }));
     checks.push(Box::new(DuplicateHostCheck { paths }));
     checks.push(Box::new(HostStarPlacementCheck { paths }));
     checks.push(Box::new(SshV1KeyCheck { paths }));
     checks.push(Box::new(IdentityFilePubCheck { paths }));
     checks.push(Box::new(IdentitiesOnlyCheck { paths }));
+    checks.push(Box::new(MaxAuthTriesExhaustionCheck));
+    checks.push(Box::new(PreferredAuthenticationsCheck { paths }));
+    checks.push(Box::new(ProxyJumpHostCheck { paths }));
+    checks.push(Box::new(AgentIdentityCheck { paths }));
+    checks.push(Box::new(RsaWeakKeyCheck { paths }));
     #[cfg(unix)]
     checks.push(Box::new(HomeDirPermissionsCheck));
     checks.push(Box::new(PlatformCheck));

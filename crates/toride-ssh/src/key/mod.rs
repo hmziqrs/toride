@@ -1,6 +1,9 @@
 mod generate;
 mod inventory;
+pub mod install;
 mod repair;
+
+pub use install::InstallOutcome;
 
 use std::ffi::OsStr;
 
@@ -74,27 +77,53 @@ fn unique_backup_path(base: &std::path::Path) -> std::path::PathBuf {
 }
 
 /// Key management operations.
+///
+/// Obtained from [`SshManager::keys()`](crate::SshManager::keys).
 pub struct KeyService<'a> {
     paths: &'a SshPaths,
+    runner: &'a dyn crate::CliRunner,
 }
 
 impl<'a> KeyService<'a> {
-    pub(crate) fn new(paths: &'a SshPaths) -> Self {
-        Self { paths }
+    pub(crate) fn new(paths: &'a SshPaths, runner: &'a dyn crate::CliRunner) -> Self {
+        Self { paths, runner }
     }
 
     /// List all SSH keys found on disk and in the agent.
+    ///
+    /// Scans `~/.ssh/id_*` files and queries the SSH agent via `ssh-add -l`.
+    /// Keys that cannot be parsed are skipped with a warning.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::TaskFailed`] if the background scan task panics
+    /// or is cancelled.
     pub async fn list(&self) -> Result<Vec<SshKey>> {
-        inventory::scan_keys(self.paths).await
+        inventory::scan_keys(self.paths, Some(self.runner)).await
     }
 
     /// Generate a new SSH key pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyGenerationFailed`] if the key name is invalid
+    /// (empty, contains path separators or null bytes, or exceeds 255 bytes),
+    /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
+    /// [`Error::CommandFailed`] if key generation fails.
     pub async fn create(&self, params: KeyCreateParams) -> Result<SshKey> {
         validate_key_name(&params.name)?;
-        generate::generate_key(self.paths, params).await
+        generate::generate_key(self.paths, params, self.runner).await
     }
 
     /// Delete a key and optionally its public pair, certificate, agent entry, and config refs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key does not exist,
+    /// [`Error::KeyGenerationFailed`] if the key name is invalid,
+    /// [`Error::Io`] if file operations fail, [`Error::TaskFailed`] if
+    /// the background deletion task panics, or
+    /// [`Error::ConfigWriteFailed`] if config cleanup fails.
     pub async fn delete(&self, params: KeyDeleteParams) -> Result<()> {
         validate_key_name(&params.name)?;
         let private_path = self.paths.ssh_dir().join(&params.name);
@@ -157,7 +186,7 @@ impl<'a> KeyService<'a> {
 
         // Remove from agent if requested (non-fatal)
         if params.remove_from_agent {
-            remove_key_from_agent(&self.paths.ssh_dir().join(&params.name)).await;
+            remove_key_from_agent(&self.paths.ssh_dir().join(&params.name), self.runner).await;
         }
 
         // Remove from config if requested
@@ -169,6 +198,16 @@ impl<'a> KeyService<'a> {
     }
 
     /// Derive the `.pub` file from a private key.
+    ///
+    /// Runs `ssh-keygen -y -f <path>` to extract the public key and
+    /// writes it to the corresponding `.pub` file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the private key does not exist,
+    /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
+    /// [`Error::CommandFailed`] if public key extraction fails (e.g.
+    /// the key is encrypted and no passphrase was provided).
     pub async fn repair_public(&self, private_key_path: &std::path::Path) -> Result<()> {
         repair::repair_public_key(private_key_path).await
     }
@@ -184,6 +223,13 @@ impl<'a> KeyService<'a> {
     /// rename fails, the operation continues with a warning. This may leave
     /// the key pair in an inconsistent state where the private key has the
     /// new name but the public key retains the old name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the old key does not exist,
+    /// [`Error::KeyExists`] if a key with the new name already exists,
+    /// [`Error::KeyGenerationFailed`] if either name is invalid, or
+    /// [`Error::Io`] if the private key rename fails.
     pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
         validate_key_name(old_name)?;
         validate_key_name(new_name)?;
@@ -228,6 +274,12 @@ impl<'a> KeyService<'a> {
     }
 
     /// Fix permissions on key files (set private keys to 0o600, public to 0o644).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key does not exist,
+    /// [`Error::KeyGenerationFailed`] if the key name is invalid, or
+    /// [`Error::Io`] if `chmod` fails.
     pub async fn chmod_fix(&self, key_name: &str) -> Result<()> {
         validate_key_name(key_name)?;
 
@@ -277,6 +329,12 @@ impl<'a> KeyService<'a> {
     /// Passphrases are passed as command-line arguments to `ssh-keygen`, which
     /// makes them briefly visible to other processes via `/proc/<pid>/cmdline`
     /// or `ps`. This is an inherent limitation of the `ssh-keygen` interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key file does not exist, or
+    /// [`Error::CommandFailed`] if the passphrase change fails (e.g. wrong
+    /// old passphrase).
     pub async fn change_passphrase(
         &self,
         key_path: &std::path::Path,
@@ -295,29 +353,32 @@ impl<'a> KeyService<'a> {
         let old_pass = old_passphrase.unwrap_or("").to_owned();
         let new_pass = new_passphrase.unwrap_or("").to_owned();
 
-        tokio::task::spawn_blocking(move || {
-            let output = duct::cmd(
+        self.runner
+            .run(
                 "ssh-keygen",
-                [
-                    "-p",
-                    "-f", &path_str,
-                    "-P", &old_pass,
-                    "-N", &new_pass,
+                vec![
+                    "-p".to_owned(),
+                    "-f".to_owned(),
+                    path_str,
+                    "-P".to_owned(),
+                    old_pass,
+                    "-N".to_owned(),
+                    new_pass,
                 ],
             )
-            .read()
-            .map_err(|e| Error::CommandFailed(format!("ssh-keygen -p failed: {e}")))?;
+            .await?;
 
-            tracing::debug!("ssh-keygen -p output: {output}");
-            Ok(())
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(format!("passphrase change task failed: {e}")))?
+        Ok(())
     }
 
     /// Change the comment on an existing key (`ssh-keygen -c`).
     ///
     /// Updates both the private and public key files.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key file does not exist, or
+    /// [`Error::CommandFailed`] if the comment change fails.
     pub async fn change_comment(
         &self,
         key_path: &std::path::Path,
@@ -333,24 +394,21 @@ impl<'a> KeyService<'a> {
             .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
             .to_owned();
 
-        let comment = new_comment.to_owned();
         let pass = passphrase.unwrap_or("").to_owned();
 
-        tokio::task::spawn_blocking(move || {
-            let mut args = vec!["-c", "-f", &path_str, "-C", &comment];
-            if !pass.is_empty() {
-                args.extend(["-P", &pass]);
-            }
+        let mut args = vec![
+            "-c".to_owned(),
+            "-f".to_owned(),
+            path_str,
+            "-C".to_owned(),
+            new_comment.to_owned(),
+        ];
+        if !pass.is_empty() {
+            args.extend(["-P".to_owned(), pass]);
+        }
 
-            let output = duct::cmd("ssh-keygen", &args)
-                .read()
-                .map_err(|e| Error::CommandFailed(format!("ssh-keygen -c failed: {e}")))?;
-
-            tracing::debug!("ssh-keygen -c output: {output}");
-            Ok(())
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(format!("comment change task failed: {e}")))?
+        self.runner.run("ssh-keygen", args).await?;
+        Ok(())
     }
 
     /// Convert a key between OpenSSH and PEM formats.
@@ -359,6 +417,12 @@ impl<'a> KeyService<'a> {
     /// - [`KeyFormat::OpenSSH`]: imports a PEM-format key to OpenSSH format via `ssh-keygen -i -m PEM`.
     ///
     /// Returns the converted key content as a string.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key file does not exist,
+    /// [`Error::ToolNotFound`] if `ssh-keygen` is not available, or
+    /// [`Error::CommandFailed`] if the conversion command fails.
     pub async fn convert(
         &self,
         key_path: &std::path::Path,
@@ -368,7 +432,7 @@ impl<'a> KeyService<'a> {
             return Err(Error::KeyNotFound(key_path.display().to_string()));
         }
 
-        if !crate::runner::tool_exists("ssh-keygen") {
+        if !self.runner.tool_exists("ssh-keygen") {
             return Err(Error::ToolNotFound("ssh-keygen".to_owned()));
         }
 
@@ -377,25 +441,42 @@ impl<'a> KeyService<'a> {
             .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
             .to_owned();
 
-        tokio::task::spawn_blocking(move || {
-            let output = match target_format {
-                KeyFormat::Pem => {
-                    // Export: read an OpenSSH key and output PEM format.
-                    duct::cmd("ssh-keygen", ["-e", "-m", "PEM", "-f", path_str.as_str()])
-                        .read()
-                        .map_err(|e| Error::CommandFailed(format!("ssh-keygen export failed: {e}")))?
-                }
-                KeyFormat::OpenSSH => {
-                    // Import: read a PEM key and output OpenSSH format.
-                    duct::cmd("ssh-keygen", ["-i", "-m", "PEM", "-f", path_str.as_str()])
-                        .read()
-                        .map_err(|e| Error::CommandFailed(format!("ssh-keygen import failed: {e}")))?
-                }
-            };
-            Ok(output)
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(format!("key conversion task failed: {e}")))?
+        let args = match target_format {
+            KeyFormat::Pem => vec![
+                "-e".to_owned(),
+                "-m".to_owned(),
+                "PEM".to_owned(),
+                "-f".to_owned(),
+                path_str,
+            ],
+            KeyFormat::OpenSSH => vec![
+                "-i".to_owned(),
+                "-m".to_owned(),
+                "PEM".to_owned(),
+                "-f".to_owned(),
+                path_str,
+            ],
+        };
+
+        self.runner.run("ssh-keygen", args).await
+    }
+
+    /// Install a public key to a remote host's `authorized_keys`.
+    ///
+    /// Uses `ssh-copy-id` if available, otherwise falls back to manual SSH.
+    /// See [`install::install_key_to_remote`] for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ToolNotFound`] if neither `ssh-copy-id` nor `ssh`
+    /// is available, [`Error::CommandFailed`] if the installation command
+    /// fails, or [`Error::KeyNotFound`] if the key path does not exist.
+    pub async fn install_key_to_remote(
+        &self,
+        key_path: &std::path::Path,
+        dest: &str,
+    ) -> Result<install::InstallOutcome> {
+        install::install_key_to_remote(key_path, dest, self.runner).await
     }
 }
 
@@ -403,25 +484,17 @@ impl<'a> KeyService<'a> {
 ///
 /// This is intentionally non-fatal: the key may not be loaded in the agent,
 /// which is a perfectly normal state. Errors are logged but not propagated.
-async fn remove_key_from_agent(private_path: &std::path::Path) {
+async fn remove_key_from_agent(private_path: &std::path::Path, runner: &dyn crate::CliRunner) {
     let Some(path_str) = private_path.to_str().map(str::to_owned) else {
         tracing::warn!("invalid key path for ssh-add, skipping agent removal");
         return;
     };
 
-    let result = tokio::task::spawn_blocking(move || {
-        // ssh-add -d removes a key from the agent by path
-        duct::cmd("ssh-add", ["-d", path_str.as_str()])
-            .read()
-            .map_err(|e| {
-                tracing::warn!("ssh-add -d failed (key may not be in agent): {e}");
-                e
-            })
-    })
-    .await;
-
-    if let Err(e) = result {
-        tracing::warn!("ssh-add task failed: {e}");
+    if let Err(e) = runner
+        .run("ssh-add", vec!["-d".to_owned(), path_str])
+        .await
+    {
+        tracing::warn!("ssh-add -d failed (key may not be in agent): {e}");
     }
 }
 

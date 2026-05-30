@@ -18,6 +18,8 @@ pub use parse::AuthorizedKeyEntry as Entry;
 pub use options::AuthorizedKeyOptions as Options;
 
 /// `authorized_keys` file management.
+///
+/// Obtained from [`SshManager::authorized_keys()`](crate::SshManager::authorized_keys).
 pub struct AuthorizedKeysService<'a> {
     paths: &'a SshPaths,
 }

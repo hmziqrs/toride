@@ -63,8 +63,8 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<S
 ///
 /// Uses first-match-wins semantics for most directives but **accumulates**
 /// values for multi-valued directives (`IdentityFile`, `CertificateFile`,
-/// `ProxyJump`, `ForwardAgent`, `SendEnv`, `SetEnv`, `DynamicForward`,
-/// `LocalForward`, `RemoteForward`).
+/// `ProxyJump`, `SendEnv`, `SetEnv`, `DynamicForward`,
+/// `LocalForward`, `RemoteForward`, `PermitLocalCommand`).
 pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -83,6 +83,11 @@ pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> 
 ///
 /// If the directive already exists, it is updated in place.
 /// If not, a new directive is appended to the block.
+///
+/// # Errors
+///
+/// Returns [`Error::HostNotFound`] if no `Host` block matches the given
+/// host alias.
 pub fn set_directive(
     ast: &mut ConfigAst,
     host: &str,
@@ -166,15 +171,39 @@ fn collect_all_directives(
     }
 }
 
+/// Get the `PreferredAuthentications` value for a host.
+///
+/// Returns the comma-separated list of authentication methods in their
+/// configured order (e.g. `"publickey,keyboard-interactive,password"`),
+/// or `None` if the directive is not present for the given host.
+///
+/// When the directive is set in multiple matching blocks, the first
+/// match wins (standard SSH config semantics).
+///
+/// # Examples
+///
+/// ```text
+/// Host example.com
+///     PreferredAuthentications publickey,password
+/// ```
+///
+/// Calling `get_preferred_authentications(&ast, "example.com")` returns
+/// `Some("publickey,password".to_owned())`.
+pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<String> {
+    get_directive(ast, host, "PreferredAuthentications")
+}
+
 /// Directives that accumulate values across matching blocks (first-match-wins
 /// does NOT apply to these).
+///
+/// `ForwardAgent` is intentionally excluded -- it uses first-match-wins
+/// semantics per OpenSSH ssh_config(5).
 pub(crate) fn is_accumulative(key_lower: &str) -> bool {
     matches!(
         key_lower,
         "identityfile"
             | "certificatefile"
             | "proxyjump"
-            | "forwardagent"
             | "sendenv"
             | "setenv"
             | "dynamicforward"

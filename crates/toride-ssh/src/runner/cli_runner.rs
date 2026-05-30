@@ -209,4 +209,145 @@ mod tests {
         assert!(mock.tool_exists("ssh-keygen"));
         assert!(!mock.tool_exists("ssh-keyscan"));
     }
+
+    // -----------------------------------------------------------------------
+    // Agent key usability — ssh-add -T integration via mock
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn mock_ssh_add_t_key_usable() {
+        // ssh-add -T tests whether a key can be used by the agent.
+        // Exit code 0 means the key is usable.
+        let mock = MockCliRunner::new();
+        mock.push_run_response("ssh-add", Ok("".into()));
+        mock.set_tool_exists("ssh-add", true);
+
+        assert!(mock.tool_exists("ssh-add"));
+        let result = mock.run("ssh-add", vec!["-T".into(), "/path/to/key".into()]).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_add_t_key_not_usable() {
+        // ssh-add -T returns non-zero when the key is not usable.
+        let mock = MockCliRunner::new();
+        mock.push_run_response(
+            "ssh-add",
+            Err(crate::Error::CommandFailed("key not usable".into())),
+        );
+
+        let result = mock.run("ssh-add", vec!["-T".into(), "/path/to/key".into()]).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_add_l_lists_keys() {
+        let mock = MockCliRunner::new();
+        mock.push_run_response(
+            "ssh-add",
+            Ok("256 SHA256:AAAA user@host (ED25519)\n4096 SHA256:BBBB server (RSA)\n".into()),
+        );
+
+        let result = mock.run("ssh-add", vec!["-l".into()]).await.unwrap();
+        assert!(result.contains("SHA256:AAAA"));
+        assert!(result.contains("SHA256:BBBB"));
+        assert!(result.contains("ED25519"));
+        assert!(result.contains("RSA"));
+    }
+
+    #[tokio::test]
+    async fn mock_ssh_add_l_no_identities() {
+        let mock = MockCliRunner::new();
+        mock.push_run_response(
+            "ssh-add",
+            Ok("The agent has no identities\n".into()),
+        );
+
+        let result = mock.run("ssh-add", vec!["-l".into()]).await.unwrap();
+        assert!(result.contains("no identities"));
+    }
+
+    // -----------------------------------------------------------------------
+    // SshManager::with_cli_runner — mock injection through service layer
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn mock_cli_runner_as_trait_object() {
+        // MockCliRunner implements CliRunner and can be used wherever
+        // a CliRunner is expected (service layer injection).
+        let mock = MockCliRunner::new();
+        mock.set_tool_exists("ssh-keygen", true);
+        mock.set_tool_exists("ssh-keyscan", true);
+        mock.set_tool_exists("ssh-add", true);
+        mock.set_tool_exists("ssh-copy-id", true);
+
+        let runner: &dyn CliRunner = &mock;
+        assert!(runner.tool_exists("ssh-keygen"));
+        assert!(runner.tool_exists("ssh-keyscan"));
+        assert!(runner.tool_exists("ssh-add"));
+        assert!(runner.tool_exists("ssh-copy-id"));
+        assert!(!runner.tool_exists("nonexistent-tool"));
+    }
+
+    #[tokio::test]
+    async fn mock_runner_fifo_ordering() {
+        // Verify that responses are returned in FIFO order per command.
+        let mock = MockCliRunner::new();
+        mock.push_run_response("ssh", Ok("response-1".into()));
+        mock.push_run_response("ssh", Ok("response-2".into()));
+        mock.push_run_response("ssh", Ok("response-3".into()));
+
+        assert_eq!(mock.run("ssh", vec![]).await.unwrap(), "response-1");
+        assert_eq!(mock.run("ssh", vec![]).await.unwrap(), "response-2");
+        assert_eq!(mock.run("ssh", vec![]).await.unwrap(), "response-3");
+    }
+
+    #[tokio::test]
+    async fn mock_runner_independent_command_queues() {
+        // Different commands have independent response queues.
+        let mock = MockCliRunner::new();
+        mock.push_run_response("ssh-keygen", Ok("keygen-ok".into()));
+        mock.push_run_response("ssh-keyscan", Ok("keyscan-ok".into()));
+        mock.push_run_response("ssh-keygen", Ok("keygen-ok-2".into()));
+
+        assert_eq!(mock.run("ssh-keygen", vec![]).await.unwrap(), "keygen-ok");
+        assert_eq!(mock.run("ssh-keyscan", vec![]).await.unwrap(), "keyscan-ok");
+        assert_eq!(mock.run("ssh-keygen", vec![]).await.unwrap(), "keygen-ok-2");
+    }
+
+    #[test]
+    fn mock_runner_multiple_tool_exists() {
+        // Set multiple tools and verify each returns the configured value.
+        let mock = MockCliRunner::new();
+        mock.set_tool_exists("ssh", true);
+        mock.set_tool_exists("ssh-keygen", true);
+        mock.set_tool_exists("ssh-keyscan", true);
+        mock.set_tool_exists("ssh-add", true);
+        mock.set_tool_exists("ssh-copy-id", false);
+        mock.set_tool_exists("scp", true);
+
+        assert!(mock.tool_exists("ssh"));
+        assert!(mock.tool_exists("ssh-keygen"));
+        assert!(mock.tool_exists("ssh-keyscan"));
+        assert!(mock.tool_exists("ssh-add"));
+        assert!(!mock.tool_exists("ssh-copy-id"));
+        assert!(mock.tool_exists("scp"));
+        assert!(!mock.tool_exists("rsync")); // not configured
+    }
+
+    #[tokio::test]
+    async fn mock_runner_error_propagation() {
+        // Errors from the mock should propagate correctly through the runner.
+        let mock = MockCliRunner::new();
+        mock.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::CommandFailed("permission denied".into())),
+        );
+
+        let err = mock.run("ssh-keygen", vec!["-t".into(), "ed25519".into()]).await.unwrap_err();
+        match err {
+            crate::Error::CommandFailed(msg) => assert!(msg.contains("permission denied")),
+            other => panic!("expected CommandFailed, got: {other:?}"),
+        }
+    }
 }

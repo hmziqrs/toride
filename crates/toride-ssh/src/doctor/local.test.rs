@@ -5,7 +5,8 @@ use crate::types::Severity;
 /// Set up a temporary SSH directory with the given layout and run `run_all`.
 async fn run_checks_with_dir(ssh_dir: &std::path::Path) -> Vec<crate::types::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
-    run_all(&paths).await.unwrap()
+    let runner = crate::MockCliRunner::new();
+    run_all(&paths, &runner).await.unwrap()
 }
 
 fn find<'a>(
@@ -576,4 +577,237 @@ async fn identities_only_single_key_ok() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identities_only");
     assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}
+
+// ---------------------------------------------------------------------------
+// Doctor MaxAuthTries check — warning when agent has many keys
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn identities_only_warns_when_many_keys() {
+    // Simulate a host with many IdentityFile entries (agent has many keys).
+    // The IdentitiesOnly check warns when a host has multiple IdentityFile
+    // entries without IdentitiesOnly yes, which relates to MaxAuthTries issues.
+    let dir = tempfile::tempdir().unwrap();
+    let config = "\
+Host busy-host
+    IdentityFile ~/.ssh/id1
+    IdentityFile ~/.ssh/id2
+    IdentityFile ~/.ssh/id3
+    IdentityFile ~/.ssh/id4
+    IdentityFile ~/.ssh/id5
+    IdentityFile ~/.ssh/id6
+    IdentityFile ~/.ssh/id7
+";
+    std::fs::write(dir.path().join("config"), config).unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identities_only");
+    // With 7 IdentityFile entries and no IdentitiesOnly yes, a warning is expected.
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Warning),
+        "should warn about {} IdentityFile entries without IdentitiesOnly",
+        7
+    );
+    let warning = matches.iter().find(|d| d.severity == Severity::Warning).unwrap();
+    assert!(warning.message.contains("7"), "warning should mention key count");
+    assert!(warning.message.contains("IdentitiesOnly"), "warning should mention IdentitiesOnly");
+}
+
+#[tokio::test]
+async fn identities_only_ok_when_set_with_many_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = "\
+Host busy-host
+    IdentityFile ~/.ssh/id1
+    IdentityFile ~/.ssh/id2
+    IdentityFile ~/.ssh/id3
+    IdentitiesOnly yes
+";
+    std::fs::write(dir.path().join("config"), config).unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identities_only");
+    assert!(
+        matches.iter().all(|d| d.severity == Severity::Ok),
+        "should not warn when IdentitiesOnly yes is set"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CertificateFileExistsCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn certificate_file_exists_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let cert_path = dir.path().join("id_ed25519-cert.pub");
+    std::fs::write(&cert_path, "fake-cert").unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        format!("Host test\n    CertificateFile {}\n", cert_path.display()),
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "certificate_file_exists");
+    assert!(matches.iter().any(|d| d.severity == Severity::Ok));
+}
+
+#[tokio::test]
+async fn certificate_file_exists_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    CertificateFile ~/.ssh/nonexistent-cert.pub\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "certificate_file_exists");
+    assert!(matches.iter().any(|d| d.severity == Severity::Warning));
+}
+
+#[tokio::test]
+async fn certificate_file_exists_no_config() {
+    let dir = tempfile::tempdir().unwrap();
+    // No config file.
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "certificate_file_exists");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().all(|d| d.severity == Severity::Info));
+}
+
+#[tokio::test]
+async fn certificate_file_exists_no_directives() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    HostName example.com\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "certificate_file_exists");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().all(|d| d.severity == Severity::Info));
+}
+
+// ---------------------------------------------------------------------------
+// PreferredAuthenticationsCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn preferred_authentications_not_set() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    HostName example.com\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "preferred_authentications");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}
+
+#[tokio::test]
+async fn preferred_authentications_with_pubkey() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    PreferredAuthentications publickey,password\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "preferred_authentications");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().all(|d| d.severity == Severity::Ok));
+}
+
+#[tokio::test]
+async fn preferred_authentications_password_only() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host test\n    PreferredAuthentications password\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "preferred_authentications");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().any(|d| d.severity == Severity::Info));
+}
+
+// ---------------------------------------------------------------------------
+// Doctor ProxyJump host check — unconfigured ProxyJump targets warned
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn identity_file_exists_warns_for_missing_proxy_jump_key() {
+    // ProxyJump itself doesn't need an IdentityFile check, but if the
+    // jump host's IdentityFile is referenced and doesn't exist, we warn.
+    let dir = tempfile::tempdir().unwrap();
+    let config = "\
+Host target
+    ProxyJump jumphost
+    IdentityFile ~/.ssh/jump_key
+";
+    std::fs::write(dir.path().join("config"), config).unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "identity_file_exists");
+    // The jump_key doesn't exist, so we should get a warning.
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Warning),
+        "should warn about missing IdentityFile for ProxyJump host"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_host_detected_for_proxy_jump_target() {
+    // If a ProxyJump target has a duplicate Host block, we should warn.
+    let dir = tempfile::tempdir().unwrap();
+    let config = "\
+Host jumphost
+    HostName jump.example.com
+
+Host jumphost
+    HostName jump2.example.com
+
+Host target
+    ProxyJump jumphost
+";
+    std::fs::write(dir.path().join("config"), config).unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "duplicate_host");
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Warning),
+        "should warn about duplicate Host block for ProxyJump target"
+    );
+}
+
+#[tokio::test]
+async fn host_star_placement_affects_proxy_jump_defaults() {
+    // Host * before specific blocks means ProxyJump defaults can't be overridden.
+    let dir = tempfile::tempdir().unwrap();
+    let config = "\
+Host *
+    ProxyJump default-jump
+
+Host target
+    HostName target.example.com
+";
+    std::fs::write(dir.path().join("config"), config).unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "host_star_placement");
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Warning),
+        "should warn when Host * precedes specific blocks (affects ProxyJump)"
+    );
 }

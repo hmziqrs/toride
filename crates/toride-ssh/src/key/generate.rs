@@ -2,8 +2,7 @@
 
 use crate::key::get_permissions;
 use crate::paths::SshPaths;
-use crate::runner;
-use crate::{Error, Fingerprint, KeyCreateParams, KeySource, KeyType, Result, SshKey};
+use crate::{CliRunner, Error, Fingerprint, KeyCreateParams, KeySource, KeyType, Result, SshKey};
 
 /// Convert our [`KeyType`] to the ssh-keygen `-t` argument value.
 fn key_type_to_cli_arg(kt: KeyType) -> &'static str {
@@ -64,7 +63,11 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
 }
 
 /// Generate a new SSH key pair.
-pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<SshKey> {
+pub async fn generate_key(
+    paths: &SshPaths,
+    params: KeyCreateParams,
+    runner: &dyn CliRunner,
+) -> Result<SshKey> {
     let private_path = paths.ssh_dir().join(&params.name);
     let public_path = private_path.with_extension("pub");
 
@@ -72,7 +75,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
         return Err(Error::KeyExists(params.name.clone()));
     }
 
-    if !runner::tool_exists("ssh-keygen") {
+    if !runner.tool_exists("ssh-keygen") {
         return Err(Error::ToolNotFound("ssh-keygen".to_owned()));
     }
 
@@ -96,8 +99,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
         .ok_or_else(|| Error::KeyGenerationFailed("invalid key path".to_owned()))?;
 
     let args = build_keygen_args(&params, private_path_str);
-    let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
-    runner::ssh_keygen(&args_ref).await?;
+    runner.run("ssh-keygen", args).await?;
 
     // Set file permissions and read the generated key in a blocking context
     // to avoid blocking the async runtime with synchronous filesystem ops.

@@ -87,6 +87,11 @@ async fn check_alive(control_path: &Path) -> bool {
 ///
 /// Sends `ssh -O list -S <control_path>` and parses the output to extract
 /// individual forward entries.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the `ssh -O list` command fails.
 pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
     let output = ssh_control_cmd(control_path, "list").await?;
     Ok(parse_forward_output(&output))
@@ -208,6 +213,11 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
 /// cancel command: the forward may vanish between the two calls.  The caller
 /// should be prepared to handle [`Error::ForwardNotFound`] or a cancel
 /// command that fails due to a stale forward.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardNotFound`] if no forward exists on the given
+/// local port, or [`Error::CommandFailed`] if the cancel command fails.
 pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> {
     let forwards = list_forwards(control_path).await?;
 
@@ -233,6 +243,11 @@ pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> 
 /// - **Dynamic**: `[bind_addr]:lport`
 ///
 /// When `GatewayPorts` is enabled the bind address may be `*` or `0.0.0.0`.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the cancel command fails.
 pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) -> Result<()> {
     let path_str = control_path
         .to_str()
@@ -290,6 +305,12 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
 /// After this call the control socket file may still exist on disk (it is
 /// cleaned up asynchronously by the master process).  Callers that need to
 /// verify cleanup should check for socket file removal separately.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the `ssh -O exit` command fails for a
+/// reason other than a stale socket.
 pub async fn exit_session(control_path: &Path) -> Result<()> {
     let path = control_path.to_path_buf();
 
@@ -343,6 +364,11 @@ fn is_stale_socket(path: &Path) -> bool {
 /// 3. Any socket file in `~/.ssh/` that looks like a control socket
 ///
 /// Each candidate is verified with `ssh -O check` to confirm it is alive.
+///
+/// # Errors
+///
+/// Returns [`Error::TaskFailed`] if the background scan task panics or is
+/// cancelled.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     let ssh_dir = ssh_dir.to_path_buf();
     let tmp_dir = std::path::PathBuf::from("/tmp");

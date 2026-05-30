@@ -4,7 +4,22 @@ mod krl;
 pub use ca::CertificateInfo;
 pub use krl::KrlInfo;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+/// Status of a local TrustedUserCAKeys file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustedUserCAKeysStatus {
+    /// Path to the file.
+    pub path: PathBuf,
+    /// Whether the file exists.
+    pub exists: bool,
+    /// Whether the file is readable.
+    pub readable: bool,
+    /// Number of non-empty, non-comment lines (CA keys).
+    pub key_count: usize,
+}
 
 use crate::Result;
 
@@ -65,6 +80,49 @@ impl CertificateService {
         let now = u64::try_from(chrono::Utc::now().timestamp().max(0)).unwrap_or(0);
         // OpenSSH validity check: valid_after <= now < valid_before
         Ok(info.valid_after <= now && now < info.valid_before)
+    }
+
+    /// Check whether a local TrustedUserCAKeys file exists and is readable.
+    ///
+    /// `TrustedUserCAKeys` is an sshd_config directive that lists the public
+    /// keys of CAs trusted to sign user certificates. This method reads the
+    /// file and returns whether it exists, is readable, and how many CA keys
+    /// it contains.
+    pub async fn check_trusted_user_ca_keys(&self, path: &Path) -> Result<TrustedUserCAKeysStatus> {
+        match tokio::fs::read_to_string(path).await {
+            Ok(content) => {
+                let key_count = content
+                    .lines()
+                    .filter(|line| {
+                        let trimmed = line.trim();
+                        !trimmed.is_empty() && !trimmed.starts_with('#')
+                    })
+                    .count();
+
+                Ok(TrustedUserCAKeysStatus {
+                    path: path.to_path_buf(),
+                    exists: true,
+                    readable: true,
+                    key_count,
+                })
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Ok(TrustedUserCAKeysStatus {
+                    path: path.to_path_buf(),
+                    exists: false,
+                    readable: false,
+                    key_count: 0,
+                })
+            }
+            Err(_) => {
+                Ok(TrustedUserCAKeysStatus {
+                    path: path.to_path_buf(),
+                    exists: true,
+                    readable: false,
+                    key_count: 0,
+                })
+            }
+        }
     }
 
     /// Revoke a key by adding it to a KRL file.
@@ -141,5 +199,85 @@ mod tests {
         let ts1 = parse_ssh_datetime("2024-01-01").unwrap();
         let ts2 = parse_ssh_datetime("2024-06-15").unwrap();
         assert!(ts2 > ts1);
+    }
+
+    // -----------------------------------------------------------------------
+    // TrustedUserCAKeys local checking
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn trusted_user_ca_keys_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("trusted-user-ca-keys.pem");
+        std::fs::write(&ca_path, "ssh-ed25519 AAAAC3Nza... ca-key\n").unwrap();
+
+        let svc = CertificateService::new();
+        let status = svc.check_trusted_user_ca_keys(&ca_path).await.unwrap();
+        assert!(status.exists);
+        assert!(status.readable);
+        assert_eq!(status.key_count, 1);
+    }
+
+    #[tokio::test]
+    async fn trusted_user_ca_keys_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("nonexistent.pem");
+
+        let svc = CertificateService::new();
+        let status = svc.check_trusted_user_ca_keys(&ca_path).await.unwrap();
+        assert!(!status.exists);
+        assert!(!status.readable);
+        assert_eq!(status.key_count, 0);
+    }
+
+    #[tokio::test]
+    async fn trusted_user_ca_keys_multiple_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("ca-keys.pem");
+        std::fs::write(
+            &ca_path,
+            "# CA keys for user authentication\n\
+             ssh-ed25519 AAAAC3Nza... ca-key-1\n\
+             ssh-rsa AAAAB3Nza... ca-key-2\n\
+             # staging CA\n\
+             ssh-ed25519 AAAAC3Nza... ca-key-3\n",
+        )
+        .unwrap();
+
+        let svc = CertificateService::new();
+        let status = svc.check_trusted_user_ca_keys(&ca_path).await.unwrap();
+        assert!(status.exists);
+        assert!(status.readable);
+        assert_eq!(status.key_count, 3);
+    }
+
+    #[tokio::test]
+    async fn trusted_user_ca_keys_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("empty.pem");
+        std::fs::write(&ca_path, "").unwrap();
+
+        let svc = CertificateService::new();
+        let status = svc.check_trusted_user_ca_keys(&ca_path).await.unwrap();
+        assert!(status.exists);
+        assert!(status.readable);
+        assert_eq!(status.key_count, 0);
+    }
+
+    #[tokio::test]
+    async fn trusted_user_ca_keys_comments_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca_path = dir.path().join("comments.pem");
+        std::fs::write(
+            &ca_path,
+            "# This file contains CA keys\n# Managed by ansible\n",
+        )
+        .unwrap();
+
+        let svc = CertificateService::new();
+        let status = svc.check_trusted_user_ca_keys(&ca_path).await.unwrap();
+        assert!(status.exists);
+        assert!(status.readable);
+        assert_eq!(status.key_count, 0);
     }
 }

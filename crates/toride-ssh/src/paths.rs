@@ -13,6 +13,7 @@ pub struct SshPaths {
     config_path: PathBuf,
     known_hosts_path: PathBuf,
     authorized_keys_path: PathBuf,
+    global_known_hosts_path: PathBuf,
 }
 
 impl Default for SshPaths {
@@ -24,6 +25,7 @@ impl Default for SshPaths {
             config_path: ssh_dir.join("config"),
             known_hosts_path: ssh_dir.join("known_hosts"),
             authorized_keys_path: ssh_dir.join("authorized_keys"),
+            global_known_hosts_path: PathBuf::from("/etc/ssh/ssh_known_hosts"),
             ssh_dir,
         }
     }
@@ -38,21 +40,29 @@ impl SshPaths {
             config_path: dir.join("config"),
             known_hosts_path: dir.join("known_hosts"),
             authorized_keys_path: dir.join("authorized_keys"),
+            global_known_hosts_path: dir.join("ssh_known_hosts"),
         }
     }
 
     /// Resolve paths from the user's home directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HomeNotFound`] if the home directory cannot be
+    /// determined.
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().ok_or(crate::Error::HomeNotFound)?;
         let ssh_dir = home.join(".ssh");
         let config_path = ssh_dir.join("config");
         let known_hosts_path = ssh_dir.join("known_hosts");
         let authorized_keys_path = ssh_dir.join("authorized_keys");
+        let global_known_hosts_path = PathBuf::from("/etc/ssh/ssh_known_hosts");
         Ok(Self {
             ssh_dir,
             config_path,
             known_hosts_path,
             authorized_keys_path,
+            global_known_hosts_path,
         })
     }
 
@@ -74,6 +84,11 @@ impl SshPaths {
     /// Path to `~/.ssh/authorized_keys`.
     pub fn authorized_keys_path(&self) -> &Path {
         &self.authorized_keys_path
+    }
+
+    /// Path to `/etc/ssh/ssh_known_hosts` (system-wide known hosts).
+    pub fn global_known_hosts_path(&self) -> &Path {
+        &self.global_known_hosts_path
     }
 
     /// Default key file name patterns to scan (without extension).

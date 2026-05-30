@@ -801,8 +801,20 @@ fn is_canonicalize_enabled_yes() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "yes".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     assert!(is_canonicalize_enabled(&resolved));
@@ -816,8 +828,20 @@ fn is_canonicalize_enabled_always() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "always".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     assert!(is_canonicalize_enabled(&resolved));
@@ -831,8 +855,20 @@ fn is_canonicalize_enabled_no() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "no".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     assert!(!is_canonicalize_enabled(&resolved));
@@ -846,8 +882,20 @@ fn is_canonicalize_enabled_missing() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     assert!(!is_canonicalize_enabled(&resolved));
@@ -861,8 +909,20 @@ fn is_canonicalize_enabled_case_insensitive() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("canonicalizehostname".into(), "YES".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     assert!(is_canonicalize_enabled(&resolved));
@@ -880,16 +940,28 @@ fn expand_resolved_certificate_file() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec!["%d/.ssh/%h-cert.pub".into()],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("CertificateFile".into(), "%d/.ssh/%h-cert.pub".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
-    let val = &resolved.directives[0].1;
-    // %d and %h should have been expanded.
-    assert!(!val.contains("%d"));
-    assert!(!val.contains("%h"));
-    assert!(val.contains("example-cert.pub"));
+    // Certificate files should be expanded.
+    let cert = &resolved.certificate_files[0];
+    assert!(!cert.contains("%d"));
+    assert!(!cert.contains("%h"));
+    assert!(cert.contains("example-cert.pub"));
 }
 
 #[test]
@@ -900,14 +972,27 @@ fn expand_resolved_control_path() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: Some("/tmp/ssh-%h-%p".into()),
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![("ControlPath".into(), "/tmp/ssh-%h-%p".into())],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
-    let val = &resolved.directives[0].1;
-    assert!(!val.contains("%h"));
-    assert!(val.contains("example"));
+    // ControlPath should be expanded.
+    let cp = resolved.control_path.as_deref().unwrap();
+    assert!(!cp.contains("%h"));
+    assert!(cp.contains("example"));
 }
 
 #[test]
@@ -918,11 +1003,23 @@ fn expand_resolved_user_known_hosts_file() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![(
             "UserKnownHostsFile".into(),
             "%d/.ssh/known_hosts_%h".into(),
         )],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     expand_resolved(&mut resolved, "myhost", Path::new("/tmp"));
@@ -940,18 +1037,29 @@ fn expand_resolved_identity_agent() {
         user: None,
         port: None,
         identity_files: vec![],
+        certificate_files: vec![],
         proxy_jump: None,
+        identity_agent: Some("${SSH_AUTH_SOCK}".into()),
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
         directives: vec![(
             "IdentityAgent".into(),
             "${SSH_AUTH_SOCK}".into(),
         )],
+        user_known_hosts_file: None,
         canonicalized: false,
     };
     expand_resolved(&mut resolved, "h", Path::new("/tmp"));
-    // The env var should have been expanded (or empty if not set).
-    // The important thing is it doesn't contain the literal ${...}.
-    let val = &resolved.directives[0].1;
-    assert!(!val.contains("${SSH_AUTH_SOCK}"));
+    // IdentityAgent should be expanded.
+    let ia = resolved.identity_agent.as_deref().unwrap();
+    assert!(!ia.contains("${SSH_AUTH_SOCK}"));
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,4 +1187,486 @@ async fn resolve_include_nonexistent_file() {
     let resolved = resolve(ssh_dir, "test", None).await;
     assert!(resolved.is_ok(), "missing include file should be silently skipped");
     assert_eq!(resolved.unwrap().user.as_deref(), Some("alice"));
+}
+
+// ---------------------------------------------------------------------------
+// ResolvedHost with certificate_files, identity_agent, etc.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_host_certificate_files_in_directives() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    HostName example.com
+    CertificateFile ~/.ssh/id_ed25519-cert.pub
+    CertificateFile ~/.ssh/id_rsa-cert.pub
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    let cert_files: Vec<&str> = resolved
+        .directives
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("CertificateFile"))
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(cert_files.len(), 2);
+    assert!(cert_files[0].contains("id_ed25519-cert.pub"));
+    assert!(cert_files[1].contains("id_rsa-cert.pub"));
+}
+
+#[tokio::test]
+async fn resolve_host_identity_agent_in_directives() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    HostName example.com
+    IdentityAgent /run/user/1000/ssh-agent.sock
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    let agent = resolved
+        .directives
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("IdentityAgent"));
+    assert!(agent.is_some(), "IdentityAgent should be in directives");
+    assert!(agent.unwrap().1.contains("ssh-agent.sock"));
+}
+
+#[tokio::test]
+async fn resolve_host_proxy_jump() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path().join(".ssh");
+    std::fs::create_dir_all(&ssh_dir).unwrap();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host target
+    HostName target.example.com
+    ProxyJump jumphost
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(&ssh_dir, "target", None).await.unwrap();
+    // ProxyJump is an accumulative directive, so it appears in the directives list.
+    let pj = resolved
+        .directives
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("ProxyJump"));
+    assert!(pj.is_some(), "ProxyJump should be in directives list");
+    assert_eq!(pj.unwrap().1, "jumphost");
+}
+
+#[tokio::test]
+async fn resolve_host_identity_files_accumulated() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host multi
+    IdentityFile ~/.ssh/id_work
+
+Host *
+    IdentityFile ~/.ssh/id_personal
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "multi", None).await.unwrap();
+    assert_eq!(resolved.identity_files.len(), 2);
+    assert!(resolved.identity_files[0].contains("id_work"));
+    assert!(resolved.identity_files[1].contains("id_personal"));
+}
+
+#[tokio::test]
+async fn resolve_host_first_match_wins_for_user() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    User first_user
+
+Host *
+    User second_user
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.user.as_deref(), Some("first_user"));
+}
+
+#[tokio::test]
+async fn resolve_host_port_and_hostname() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    HostName custom.example.com
+    Port 2222
+    User admin
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.host_name.as_deref(), Some("custom.example.com"));
+    assert_eq!(resolved.port, Some(2222));
+    assert_eq!(resolved.user.as_deref(), Some("admin"));
+}
+
+#[tokio::test]
+async fn resolve_host_wildcard_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host *
+    User default_user
+    Port 22
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "anything", None).await.unwrap();
+    assert_eq!(resolved.user.as_deref(), Some("default_user"));
+    assert_eq!(resolved.port, Some(22));
+}
+
+#[tokio::test]
+async fn resolve_host_empty_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(ssh_dir.join("config"), "").unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert!(resolved.user.is_none());
+    assert!(resolved.host_name.is_none());
+    assert!(resolved.port.is_none());
+    assert!(resolved.identity_files.is_empty());
+}
+
+#[tokio::test]
+async fn resolve_host_no_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    // No config file at all.
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert!(resolved.user.is_none());
+    assert!(resolved.directives.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Tests for ForwardAgent first-match-wins (was accumulative, now fixed)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_host_forward_agent_populated() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    ForwardAgent yes
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(
+        resolved.forward_agent.as_deref(),
+        Some("yes"),
+        "ForwardAgent must be populated in resolved.forward_agent"
+    );
+}
+
+#[tokio::test]
+async fn resolve_host_forward_agent_first_match_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    ForwardAgent yes
+
+Host *
+    ForwardAgent no
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(
+        resolved.forward_agent.as_deref(),
+        Some("yes"),
+        "ForwardAgent uses first-match-wins semantics"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Tests for AddKeysToAgent, UseKeychain, ControlMaster, ControlPersist
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_host_add_keys_to_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    AddKeysToAgent confirm
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.add_keys_to_agent.as_deref(), Some("confirm"));
+}
+
+#[tokio::test]
+async fn resolve_host_use_keychain() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    UseKeychain yes
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.use_keychain.as_deref(), Some("yes"));
+}
+
+#[tokio::test]
+async fn resolve_host_control_master_and_path_and_persist() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    ControlMaster auto
+    ControlPath /tmp/ssh-%h-%p
+    ControlPersist 10m
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.control_master.as_deref(), Some("auto"));
+    assert!(
+        resolved.control_path.as_deref().unwrap().contains("myhost"),
+        "ControlPath should have %h expanded"
+    );
+    assert!(!resolved.control_path.as_deref().unwrap().contains("%h"));
+    assert_eq!(resolved.control_persist.as_deref(), Some("10m"));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for accumulative forwarding directives
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_host_local_forwards_accumulated() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    LocalForward 8080 localhost:80
+    LocalForward 9090 localhost:90
+
+Host *
+    LocalForward 3000 localhost:3000
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.local_forwards.len(), 3);
+    assert_eq!(resolved.local_forwards[0], "8080 localhost:80");
+    assert_eq!(resolved.local_forwards[1], "9090 localhost:90");
+    assert_eq!(resolved.local_forwards[2], "3000 localhost:3000");
+}
+
+#[tokio::test]
+async fn resolve_host_remote_forwards_accumulated() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    RemoteForward 8080 localhost:80
+    RemoteForward 9090 localhost:90
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.remote_forwards.len(), 2);
+    assert_eq!(resolved.remote_forwards[0], "8080 localhost:80");
+    assert_eq!(resolved.remote_forwards[1], "9090 localhost:90");
+}
+
+#[tokio::test]
+async fn resolve_host_dynamic_forwards_accumulated() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    DynamicForward 1080
+    DynamicForward 1081
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.dynamic_forwards.len(), 2);
+    assert_eq!(resolved.dynamic_forwards[0], "1080");
+    assert_eq!(resolved.dynamic_forwards[1], "1081");
+}
+
+// ---------------------------------------------------------------------------
+// Token expansion for dedicated forwarding fields
+// ---------------------------------------------------------------------------
+
+#[test]
+fn expand_resolved_local_forwards_with_tokens() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        certificate_files: vec![],
+        proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec!["8080 %h:80".into()],
+        remote_forwards: vec![],
+        dynamic_forwards: vec![],
+        directives: vec![],
+        user_known_hosts_file: None,
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
+    let lf = &resolved.local_forwards[0];
+    assert!(!lf.contains("%h"), "LocalForward tokens should be expanded");
+    assert!(lf.contains("example.com"));
+}
+
+#[test]
+fn expand_resolved_remote_forwards_with_tokens() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        certificate_files: vec![],
+        proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec!["8080 %h:80".into()],
+        dynamic_forwards: vec![],
+        directives: vec![],
+        user_known_hosts_file: None,
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
+    let rf = &resolved.remote_forwards[0];
+    assert!(!rf.contains("%h"), "RemoteForward tokens should be expanded");
+    assert!(rf.contains("example.com"));
+}
+
+#[test]
+fn expand_resolved_dynamic_forwards_with_tokens() {
+    let mut resolved = ResolvedHost {
+        alias: "h".into(),
+        host_name: None,
+        user: None,
+        port: None,
+        identity_files: vec![],
+        certificate_files: vec![],
+        proxy_jump: None,
+        identity_agent: None,
+        forward_agent: None,
+        add_keys_to_agent: None,
+        use_keychain: None,
+        control_master: None,
+        control_path: None,
+        control_persist: None,
+        local_forwards: vec![],
+        remote_forwards: vec![],
+        dynamic_forwards: vec!["%p".into()],
+        directives: vec![],
+        user_known_hosts_file: None,
+        canonicalized: false,
+    };
+    expand_resolved(&mut resolved, "h", Path::new("/tmp"));
+    let df = &resolved.dynamic_forwards[0];
+    assert!(!df.contains("%p"), "DynamicForward tokens should be expanded");
+}
+
+// ---------------------------------------------------------------------------
+// Dedup for accumulative forwarding directives
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_host_local_forwards_dedup() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    LocalForward 8080 localhost:80
+
+Host *
+    LocalForward 8080 localhost:80
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(resolved.local_forwards.len(), 1, "duplicate forwards should be deduped");
 }
