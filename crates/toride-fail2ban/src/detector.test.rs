@@ -63,7 +63,6 @@ fn match_line_returns_detail_on_match() {
     assert!(detail.is_some());
     let detail = detail.unwrap();
     assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
-    assert_eq!(detail.line, "Failed password from 10.0.0.1");
     assert_eq!(detail.line_number, 42);
 }
 
@@ -86,9 +85,10 @@ fn match_line_preserves_line_number() {
 
 #[test]
 fn match_line_trims_trailing_whitespace() {
+    // line field was removed to avoid wasteful allocation; just verify match succeeds
     let (detector, _tmp) = detector_with_content("match\n", "match");
     let detail = detector.match_line("match\r\n", 5).unwrap();
-    assert_eq!(detail.line, "match");
+    assert_eq!(detail.line_number, 5);
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn match_line_with_no_capture_groups_still_matches() {
     let (detector, _tmp) = detector_with_content("error occurred\n", "error occurred");
     let detail = detector.match_line("error occurred", 1).unwrap();
     assert!(detail.ip.is_none());
-    assert_eq!(detail.line, "error occurred");
+    assert_eq!(detail.line_number, 1);
 }
 
 // ===========================================================================
@@ -166,14 +166,13 @@ fn extract_ip_with_ipv6_via_named_group() {
 }
 
 #[test]
-fn extract_ip_fallback_does_not_match_ipv6() {
-    // Fallback IP regex is IPv4-only; IPv6 should yield None through fallback.
+fn extract_ip_fallback_matches_ipv6() {
+    // Fallback now includes an IPv6 regex; compressed :: forms should match.
     let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
     let detail = detector
         .match_line("blocked 2001:0db8::1 request", 1)
         .unwrap();
-    // The fallback regex only looks for IPv4 patterns, so no match expected.
-    assert!(detail.ip.is_none());
+    assert_eq!(detail.ip, Some("2001:db8::1".parse().unwrap()));
 }
 
 // ===========================================================================
@@ -606,16 +605,16 @@ fn scan_non_utf8_content() {
 }
 
 #[test]
-fn set_position_beyond_eof() {
-    // Setting the read offset past the end of the file should cause the
-    // scanner to read zero lines without error.
+fn set_position_beyond_eof_resets_on_rotation() {
+    // Setting the read offset past the end of the file triggers the log
+    // rotation detection: the offset is reset to 0 and the file is re-read.
     let content = "short\n";
     let (mut detector, _tmp) = detector_with_content(content, r"\w+");
     detector.set_position(999_999, 100);
     let result = detector.scan().expect("scan should succeed");
-    assert_eq!(result.lines_scanned, 0);
-    assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    // Rotation detected: offset reset to 0, file re-read from start.
+    assert_eq!(result.lines_scanned, 1);
+    assert_eq!(result.matches_found, 1);
 }
 
 #[test]
@@ -630,7 +629,7 @@ fn match_line_with_host_group_containing_hostname() {
         .match_line("example.com auth failure", 1)
         .expect("should match");
     assert!(detail.ip.is_none(), "hostname is not an IP address");
-    assert_eq!(detail.line, "example.com auth failure");
+    assert_eq!(detail.line_number, 1);
 }
 
 // ===========================================================================
@@ -741,4 +740,92 @@ fn set_position_to_middle_of_line() {
     // Should read partial "line one\n" and then "bbb line two\n".
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
+}
+
+// ===========================================================================
+// Log rotation detection
+// ===========================================================================
+
+#[test]
+fn scan_resets_offset_on_log_rotation() {
+    // Write a longer initial file, scan it, then replace with a shorter file
+    // simulating log rotation.
+    let tmp = NamedTempFile::new().unwrap();
+    let mut file = tmp.reopen().unwrap();
+    write!(file, "line one\nline two\nline three\n").unwrap();
+    file.flush().unwrap();
+
+    let mut detector = LogDetector::new("test-jail", tmp.path(), r"\w+").unwrap();
+    let first = detector.scan().unwrap();
+    assert_eq!(first.lines_scanned, 3);
+    // Offset is now past the content of a shorter replacement file.
+
+    // Replace file content with shorter data (simulating rotation).
+    let mut file = tmp.reopen().unwrap();
+    file.set_len(0).unwrap();
+    file.seek(std::io::SeekFrom::Start(0)).unwrap();
+    write!(file, "new line\n").unwrap();
+    file.flush().unwrap();
+
+    let second = detector.scan().unwrap();
+    // Should have reset to start and read the new file.
+    assert_eq!(second.lines_scanned, 1);
+    assert_eq!(second.matches_found, 1);
+}
+
+// ===========================================================================
+// Max line length guard
+// ===========================================================================
+
+#[test]
+fn scan_errors_on_oversized_line() {
+    // Write a single line that exceeds MAX_LINE_BYTES (1 MiB).
+    let tmp = NamedTempFile::new().unwrap();
+    let mut file = tmp.reopen().unwrap();
+    let oversized = "x".repeat(1_048_577); // 1 MiB + 1 byte
+    file.write_all(oversized.as_bytes()).unwrap();
+    file.write_all(b"\n").unwrap();
+    file.flush().unwrap();
+
+    let mut detector = LogDetector::new("test-jail", tmp.path(), r".*").unwrap();
+    let result = detector.scan();
+    assert!(result.is_err(), "should error on oversized line");
+    match result.unwrap_err() {
+        crate::Error::LogFileError(msg) => {
+            assert!(msg.contains("exceeds"), "error should mention exceeding limit");
+        }
+        other => panic!("expected LogFileError, got {:?}", other),
+    }
+}
+
+// ===========================================================================
+// IPv6 fallback
+// ===========================================================================
+
+#[test]
+fn extract_ip_fallback_matches_full_ipv6() {
+    let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
+    let detail = detector
+        .match_line("blocked 2001:0db8:85a3:0000:0000:8a2e:0370:7334 request", 1)
+        .unwrap();
+    assert_eq!(detail.ip, Some("2001:db8:85a3::8a2e:370:7334".parse().unwrap()));
+}
+
+#[test]
+fn extract_ip_fallback_matches_ipv6_double_colon() {
+    let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
+    let detail = detector
+        .match_line("blocked ::1 request", 1)
+        .unwrap();
+    assert_eq!(detail.ip, Some("::1".parse().unwrap()));
+}
+
+#[test]
+fn extract_ip_fallback_prefers_ipv4_over_ipv6() {
+    // When both IPv4 and IPv6 are present, IPv4 should be tried first.
+    let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
+    let detail = detector
+        .match_line("blocked 10.0.0.1 and 2001:db8::1 request", 1)
+        .unwrap();
+    assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
 }

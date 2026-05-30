@@ -42,7 +42,7 @@ fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
 
     while i < bytes.len() {
         match bytes[i] {
-            b''' if !in_double_quote => {
+            b'\'' if !in_double_quote => {
                 in_single_quote = !in_single_quote;
                 i += 1;
             }
@@ -82,14 +82,14 @@ fn expand_template(template: &str, replacements: &[(&str, &str)]) -> String {
     let bytes = template.as_bytes();
 
     while pos < bytes.len() {
-        if bytes[pos] == b'<' {
-            if let Some(close) = template[pos..].find('>') {
-                let placeholder = &template[pos..pos + close + 1];
-                if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
-                    result.push_str(value);
-                    pos += placeholder.len();
-                    continue;
-                }
+        if bytes[pos] == b'<'
+            && let Some(close) = template[pos..].find('>')
+        {
+            let placeholder = &template[pos..=(pos + close)];
+            if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
+                result.push_str(value);
+                pos += placeholder.len();
+                continue;
             }
         }
         let ch = template[pos..]
@@ -139,20 +139,20 @@ impl ActionVars {
     /// Create new action variables.
     #[must_use]
     pub fn new(
-        ip: String,
+        ip: impl Into<String>,
         prefix: u8,
-        jail_name: String,
+        jail_name: impl Into<String>,
         ban_time: u64,
         fail_count: u32,
-        log_path: String,
+        log_path: impl Into<String>,
     ) -> Self {
         Self {
-            ip,
+            ip: ip.into(),
             prefix,
-            jail_name,
+            jail_name: jail_name.into(),
             ban_time,
             fail_count,
-            log_path,
+            log_path: log_path.into(),
         }
     }
 }

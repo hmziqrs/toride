@@ -104,42 +104,42 @@ fn action_exec_new_with_empty_name() {
 #[test]
 fn expand_command_replaces_ip() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("iptables -A INPUT -s <ip> -j DROP", &vars);
+    let result = ActionExec::expand_command("iptables -A INPUT -s <ip> -j DROP", &vars).unwrap();
     assert_eq!(result, "iptables -A INPUT -s 192.168.1.100 -j DROP");
 }
 
 #[test]
 fn expand_command_replaces_prefix() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("block <prefix>", &vars);
+    let result = ActionExec::expand_command("block <prefix>", &vars).unwrap();
     assert_eq!(result, "block 32");
 }
 
 #[test]
 fn expand_command_replaces_jail() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("fail2ban-client set <jail> banip <ip>", &vars);
+    let result = ActionExec::expand_command("fail2ban-client set <jail> banip <ip>", &vars).unwrap();
     assert_eq!(result, "fail2ban-client set sshd banip 192.168.1.100");
 }
 
 #[test]
 fn expand_command_replaces_ban_time() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("sleep <ban-time>", &vars);
+    let result = ActionExec::expand_command("sleep <ban-time>", &vars).unwrap();
     assert_eq!(result, "sleep 3600");
 }
 
 #[test]
 fn expand_command_replaces_fail_count() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("echo <fail-count> failures", &vars);
+    let result = ActionExec::expand_command("echo <fail-count> failures", &vars).unwrap();
     assert_eq!(result, "echo 5 failures");
 }
 
 #[test]
 fn expand_command_replaces_log_path() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("tail -f <log-path>", &vars);
+    let result = ActionExec::expand_command("tail -f <log-path>", &vars).unwrap();
     assert_eq!(result, "tail -f /var/log/auth.log");
 }
 
@@ -147,7 +147,7 @@ fn expand_command_replaces_log_path() {
 fn expand_command_replaces_multiple_vars() {
     let vars = ActionVars::new("10.0.0.1", 24, "nginx", 600, 3, "/var/log/nginx.log");
     let template = "action jail=<jail> ip=<ip>/<prefix> ban=<ban-time> fails=<fail-count> log=<log-path>";
-    let result = ActionExec::expand_command(template, &vars);
+    let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(
         result,
         "action jail=nginx ip=10.0.0.1/24 ban=600 fails=3 log=/var/log/nginx.log"
@@ -158,21 +158,21 @@ fn expand_command_replaces_multiple_vars() {
 fn expand_command_replaces_all_six_vars_in_one_template() {
     let vars = default_vars();
     let template = "<ip> <prefix> <jail> <ban-time> <fail-count> <log-path>";
-    let result = ActionExec::expand_command(template, &vars);
+    let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(result, "192.168.1.100 32 sshd 3600 5 /var/log/auth.log");
 }
 
 #[test]
 fn expand_command_no_vars_returns_same_string() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("echo hello world", &vars);
+    let result = ActionExec::expand_command("echo hello world", &vars).unwrap();
     assert_eq!(result, "echo hello world");
 }
 
 #[test]
 fn expand_command_empty_template_returns_empty() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("", &vars);
+    let result = ActionExec::expand_command("", &vars).unwrap();
     assert!(result.is_empty());
 }
 
@@ -181,7 +181,7 @@ fn expand_command_missing_vars_left_as_is() {
     let vars = ActionVars::new("10.0.0.1", 32, "test", 100, 1, "/dev/null");
     // Only <ip> and <jail> are valid placeholders; <unknown> is not.
     let template = "cmd <ip> <unknown> <jail>";
-    let result = ActionExec::expand_command(template, &vars);
+    let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(result, "cmd 10.0.0.1 <unknown> test");
 }
 
@@ -189,21 +189,21 @@ fn expand_command_missing_vars_left_as_is() {
 fn expand_command_repeated_var() {
     let vars = default_vars();
     let template = "<ip> and <ip> again";
-    let result = ActionExec::expand_command(template, &vars);
+    let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(result, "192.168.1.100 and 192.168.1.100 again");
 }
 
 #[test]
 fn expand_command_special_chars_in_ip() {
     let vars = ActionVars::new("::1", 128, "sshd", 60, 1, "/var/log/auth.log");
-    let result = ActionExec::expand_command("ip6tables -A INPUT -s <ip> -j DROP", &vars);
+    let result = ActionExec::expand_command("ip6tables -A INPUT -s <ip> -j DROP", &vars).unwrap();
     assert_eq!(result, "ip6tables -A INPUT -s ::1 -j DROP");
 }
 
 #[test]
 fn expand_command_ipv6_full_address() {
     let vars = ActionVars::new("2001:db8::1", 64, "ssh", 300, 2, "/var/log/secure");
-    let result = ActionExec::expand_command("block <ip>/<prefix>", &vars);
+    let result = ActionExec::expand_command("block <ip>/<prefix>", &vars).unwrap();
     assert_eq!(result, "block 2001:db8::1/64");
 }
 
@@ -211,7 +211,7 @@ fn expand_command_ipv6_full_address() {
 fn expand_command_adjacent_vars() {
     let vars = default_vars();
     let template = "<ip>/<prefix>";
-    let result = ActionExec::expand_command(template, &vars);
+    let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(result, "192.168.1.100/32");
 }
 
@@ -537,7 +537,7 @@ fn validate_expands_log_path_dummy_to_dev_null() {
 fn expand_command_long_template_string() {
     let vars = default_vars();
     let long_template = format!("{}<ip>{}", "a".repeat(1000), "b".repeat(1000));
-    let result = ActionExec::expand_command(&long_template, &vars);
+    let result = ActionExec::expand_command(&long_template, &vars).unwrap();
     assert!(result.starts_with(&"a".repeat(1000)));
     assert!(result.contains("192.168.1.100"));
     assert!(result.ends_with(&"b".repeat(1000)));
@@ -625,7 +625,7 @@ fn action_exec_clone() {
 #[test]
 fn expand_command_template_with_no_angle_brackets() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("simple command with no placeholders", &vars);
+    let result = ActionExec::expand_command("simple command with no placeholders", &vars).unwrap();
     assert_eq!(result, "simple command with no placeholders");
 }
 
@@ -633,7 +633,7 @@ fn expand_command_template_with_no_angle_brackets() {
 fn expand_command_partial_placeholder_not_replaced() {
     // <ip is not a valid placeholder (missing closing >).
     let vars = default_vars();
-    let result = ActionExec::expand_command("echo <ip and <ip>", &vars);
+    let result = ActionExec::expand_command("echo <ip and <ip>", &vars).unwrap();
     assert_eq!(result, "echo <ip and 192.168.1.100");
 }
 
@@ -664,14 +664,14 @@ fn exec_empty_platform_commands_succeeds() {
 #[test]
 fn shell_escape_empty_string() {
     let vars = ActionVars::new("", 32, "test", 1, 1, "/dev/null");
-    let result = ActionExec::expand_command("block <ip>", &vars);
+    let result = ActionExec::expand_command("block <ip>", &vars).unwrap();
     assert_eq!(result, "block ''");
 }
 
 #[test]
 fn shell_escape_with_single_quotes() {
     let vars = ActionVars::new("1.2.3.4'test", 32, "test", 1, 1, "/dev/null");
-    let result = ActionExec::expand_command("block <ip>", &vars);
+    let result = ActionExec::expand_command("block <ip>", &vars).unwrap();
     assert_eq!(result, "block '1.2.3.4'\\''test'");
 }
 
@@ -679,7 +679,7 @@ fn shell_escape_with_single_quotes() {
 fn shell_escape_with_dollar_sign() {
     // $HOME in jail_name should be shell-escaped to prevent expansion.
     let vars = ActionVars::new("10.0.0.1", 32, "$HOME", 1, 1, "/dev/null");
-    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars);
+    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars).unwrap();
     assert_eq!(result, "set '$HOME' banip 10.0.0.1");
 }
 
@@ -687,7 +687,7 @@ fn shell_escape_with_dollar_sign() {
 fn shell_escape_with_semicolon() {
     // Semicolons in log_path should be shell-escaped to prevent injection.
     let vars = ActionVars::new("10.0.0.1", 32, "test", 1, 1, "; rm -rf /");
-    let result = ActionExec::expand_command("tail -f <log-path>", &vars);
+    let result = ActionExec::expand_command("tail -f <log-path>", &vars).unwrap();
     assert_eq!(result, "tail -f '; rm -rf /'");
 }
 
@@ -696,7 +696,7 @@ fn expand_command_placeholder_in_middle_of_word() {
     // str::replace does substring matching, so <ip> inside a larger token
     // IS replaced. This verifies the actual behavior.
     let vars = ActionVars::new("10.0.0.1", 32, "test", 1, 1, "/dev/null");
-    let result = ActionExec::expand_command("block<ip>more", &vars);
+    let result = ActionExec::expand_command("block<ip>more", &vars).unwrap();
     assert_eq!(result, "block10.0.0.1more");
 }
 
@@ -726,7 +726,7 @@ fn validate_with_all_dummy_values() {
 #[test]
 fn expand_command_unicode_in_jail_name() {
     let vars = ActionVars::new("10.0.0.1", 32, "\u{6d4b}\u{8bd5}-jail", 1, 1, "/dev/null");
-    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars);
+    let result = ActionExec::expand_command("set <jail> banip <ip>", &vars).unwrap();
     // Unicode characters trigger shell escaping (single-quote wrapping).
     assert_eq!(result, "set '\u{6d4b}\u{8bd5}-jail' banip 10.0.0.1");
 }

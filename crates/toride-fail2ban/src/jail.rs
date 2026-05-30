@@ -131,12 +131,12 @@ impl Jail {
     /// Create action variables for the given IP.
     fn make_action_vars(&self, ip: &IpAddr, prefix: u8, fail_count: u32) -> ActionVars {
         ActionVars::new(
-            &ip.to_string(),
+            ip.to_string(),
             prefix,
-            &self.config.name,
+            self.config.name.clone(),
             self.config.ban_time,
             fail_count,
-            &self.config.log_path.display().to_string(),
+            self.config.log_path.display().to_string(),
         )
     }
 

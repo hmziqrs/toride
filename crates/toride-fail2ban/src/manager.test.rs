@@ -714,8 +714,8 @@ fn test_manager_many_jails() {
     assert_eq!(status.jails.len(), 10);
     let mut names: Vec<&str> = status.jails.iter().map(|j| j.name.as_str()).collect();
     names.sort_unstable();
-    for i in 0..10 {
-        assert_eq!(names[i], format!("jail_{i}"));
+    for (i, name) in names.iter().enumerate().take(10) {
+        assert_eq!(*name, format!("jail_{i}"));
     }
 }
 
@@ -964,7 +964,7 @@ fn test_purge_expired_with_mixed_bans() {
     write_sample_log(&log_path);
     let config = make_config(&log_path);
     let paths = make_paths(&dir);
-    let _manager = Fail2BanManager::new(config, paths).unwrap();
+    let manager = Fail2BanManager::new(config, paths).unwrap();
 
     use chrono::{Duration, Utc};
 
@@ -1015,7 +1015,7 @@ fn test_purge_expired_with_mixed_bans() {
     let store_json = serde_json::to_string_pretty(&store_data).unwrap();
     std::fs::write(dir.path().join("data").join("bans.json"), store_json).unwrap();
 
-    let purged = _manager.purge_expired().unwrap();
+    let purged = manager.purge_expired().unwrap();
     // Only the 2 expired entries should be purged.
     assert_eq!(purged.len(), 2);
     let purged_ips: Vec<std::net::IpAddr> = purged.iter().map(|e| e.ip).collect();
@@ -1023,7 +1023,7 @@ fn test_purge_expired_with_mixed_bans() {
     assert!(purged_ips.contains(&"10.0.0.3".parse::<std::net::IpAddr>().unwrap()));
 
     // The non-expired ban should still be active.
-    let js = _manager.jail_status("sshd").unwrap();
+    let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
     assert_eq!(js.banned_ips[0].ip, active_entry.ip);
 }
@@ -1094,7 +1094,7 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
 
     // Step 3: Verify both the scan-triggered and manual bans appear in status.
     let js = manager.jail_status("sshd").unwrap();
-    assert!(js.banned_ips.len() >= 1, "Expected at least 1 banned IP");
+    assert!(!js.banned_ips.is_empty(), "Expected at least 1 banned IP");
     let has_manual = js.banned_ips.iter().any(|b| b.ip == ban_ip);
     assert!(has_manual, "Manual ban IP should be in banned_ips");
 
