@@ -10,7 +10,8 @@ Audit status:
 
 * Lima is not installed in the current development workspace, so local command execution could not be validated here.
 * Commands, flags, template names, mounts, VZ behavior, `copy`, `validate`, and snapshot syntax in this document were cross-checked against Lima's current public docs on 2026-05-14.
-* Lima snapshots are documented but marked experimental by Lima. Scripts must support a delete-and-recreate fallback.
+* Network/firewall realism requirements were incorporated on 2026-05-30 from a follow-up Lima sandbox review.
+* Lima snapshots are documented. Scripts must still support a delete-and-recreate fallback because snapshot behavior can vary by Lima version, guest image, and VM driver.
 * The sandbox flow is workable for the current repo state, but Toride itself is not implemented yet beyond `src/main.rs`. The destructive apply examples describe the intended CLI once Toride has apply/dry-run commands.
 * The biggest project-specific risk is SSH/firewall testing: Lima uses SSH for `limactl shell` and `limactl copy`, so a Toride run that breaks guest SSH may also break artifact collection.
 
@@ -83,6 +84,88 @@ Use containers only for command rendering, package detection, and dry-run checks
 
 ---
 
+# Network Test Modes
+
+Lima is a real Linux VM layer, but its networking is not one universal model. Firewall tests must state which network mode they are validating, otherwise Toride can get false confidence from tests that only exercise localhost, forwarded ports, or traffic originating inside the same guest.
+
+## Mode A: Default Lima Networking
+
+Use default Lima networking for:
+
+* package installation
+* SSH daemon configuration syntax checks
+* user, group, and sudo checks
+* service enablement
+* Docker installation
+* non-firewall dry-run and apply smoke tests
+
+This mode is enough to prove that Toride can mutate real Linux state. It is not enough to prove that ports are blocked from another machine.
+
+## Mode B: Host-To-Guest SSH Validation
+
+Use Lima's generated SSH config for direct reconnect tests from the host:
+
+```bash
+ssh -F ~/.lima/toride-u2404/ssh.config lima-toride-u2404 true
+```
+
+Run this before and after modules that touch users, sudo, SSH daemon configuration, UFW, nftables, Fail2Ban, or reboot behavior.
+
+This mode proves that the control path still works and that key-based login survives. It does not model public internet traffic.
+
+## Mode C: Host-To-Guest VM IP Checks
+
+Use this when a test needs to address a guest IP rather than a Lima port forward. The script must make the network mode explicit through the Lima template or `limactl start --network ...`, then record the target IP in the artifacts.
+
+Use this mode for:
+
+* checking services bound to the guest address
+* distinguishing localhost-only services from guest-reachable services
+* validating host-originated access to an explicitly opened port
+
+Do not treat this as a replacement for an attacker VM. The traffic source is still the host-side Lima network path.
+
+## Mode D: Guest-To-Guest Attacker VM
+
+Use a second Lima VM on the same named network when testing firewall allow/block behavior. The attacker VM should not run Toride and should stay disposable.
+
+Recommended names:
+
+```text
+toride-netprobe
+toride-u2404-attacker
+```
+
+The probe VM should run checks such as:
+
+```bash
+limactl shell toride-netprobe -- nc -vz <target-ip> 22
+limactl shell toride-netprobe -- nc -vz -w 3 <target-ip> 8080
+limactl shell toride-netprobe -- curl -fsS http://<target-ip>:8080/health
+```
+
+Use this mode for:
+
+* proving SSH is allowed from outside the target guest
+* proving a closed test port is blocked
+* proving explicitly opened application ports are reachable
+* checking IPv4 and IPv6 separately when the shared network provides both
+
+## Mode E: Real VPS Canary
+
+Use a disposable real VPS before release for behavior Lima cannot faithfully reproduce:
+
+* public IPv4 and IPv6 exposure
+* provider firewall interaction
+* provider base images and metadata services
+* Cloudflare-only allowlists
+* reboot persistence on actual cloud boot paths
+* rescue console and recovery expectations
+
+The Lima lane remains the default local destructive loop. The VPS lane is the final canary, not the primary development loop.
+
+---
+
 # Host Requirements
 
 Assumed host:
@@ -127,7 +210,7 @@ limactl start --tty=false ...
 limactl create --tty=false ...
 ```
 
-`--tty=false` disables Lima's TUI/editor prompts. Some Lima docs still show `-y` / `--yes`, but Lima's deprecation notes mark `--yes` as deprecated in the 2.x line, so scripts should use `--tty=false`.
+`--tty=false` disables Lima's TUI/editor prompts. Prefer it in scripts because it is explicit. Current Lima command references also expose `-y` as an alias for `--tty=false`; avoid relying on shorthand in long-lived automation.
 
 ---
 
@@ -158,6 +241,7 @@ dev/
             |-- create.sh
             |-- reset.sh
             |-- run.sh
+            |-- netprobe.sh
             |-- destroy.sh
             `-- matrix.sh
 ```
@@ -237,6 +321,14 @@ toride-d12
 toride-d13
 toride-r9
 toride-r10
+```
+
+For attacker/probe VMs, keep names distinct from target VMs:
+
+```text
+toride-netprobe
+toride-u2404-attacker
+toride-d13-attacker
 ```
 
 Do not use random instance names in scripts. Stable names make cleanup and agent recovery simpler.
@@ -416,7 +508,7 @@ limactl shell toride-u2404 systemctl is-system-running || true
 
 The agent should treat failed snapshot restore as a reason to destroy and recreate the instance.
 
-Because Lima snapshots are experimental, every script must support this slower fallback:
+Even when snapshots are available, every script must support this slower fallback:
 
 ```bash
 limactl stop toride-u2404 || true
@@ -534,6 +626,104 @@ Fallback build path: if host cross-compilation is blocked, build inside a separa
 
 ---
 
+# Required Destructive Test Cases
+
+The sandbox lifecycle is only useful if it proves concrete Toride behavior. Each primary distro should eventually run this case matrix from a clean snapshot.
+
+Required cases:
+
+* Dry-run makes no filesystem, package, service, user, sudo, SSH, or firewall changes.
+* Apply is idempotent: the first run may change state; the second run should report no required changes.
+* SSH password login is disabled while key login still works.
+* Root SSH login is disabled.
+* A newly created sudo user can reconnect and run `sudo -n true` when configured for passwordless sudo, or can run sudo with the expected password flow when passwordless sudo is not configured.
+* UFW or nftables allows SSH before the firewall is enabled.
+* Firewall rules block a known closed test port from the attacker VM.
+* Firewall rules allow explicitly opened ports from the attacker VM.
+* Fail2Ban installs, starts, and creates the expected jail state when that module is enabled.
+* Docker installs, starts, is enabled, and survives reboot when that module is enabled.
+* Reboot after apply preserves SSH access.
+* Toride prints a rollback or recovery message before risky SSH and firewall steps.
+
+Each case should collect enough evidence to debug a failure without manually logging into the VM later: Toride output, journal, service status, relevant config files, firewall state, and SSH reconnect output.
+
+---
+
+# Syntax Validation Gates
+
+Toride should validate dangerous configuration before activating it. A sandbox test should fail if Toride writes invalid config or skips a required validation gate.
+
+Recommended gates:
+
+```bash
+sudo sshd -t
+sudo visudo -cf /etc/sudoers
+sudo visudo -cf /etc/sudoers.d/<toride-file>
+sudo nft -c -f <ruleset-file>
+sudo ufw --dry-run enable
+```
+
+Notes:
+
+* `sshd -t` may require the absolute path `/usr/sbin/sshd` on some distros.
+* `ufw --dry-run enable` is useful where available, but nftables syntax checks are still needed when Toride writes nftables rules directly.
+* Syntax validation is not a substitute for reconnect tests. A syntactically valid SSH or firewall config can still lock out the intended user.
+
+---
+
+# Reboot Persistence Checks
+
+Every destructive apply lane that changes services, SSH, firewall, Docker, Fail2Ban, hostname, or sudoers must include a reboot phase.
+
+Use the independent SSH path for reconnect:
+
+```bash
+INSTANCE=toride-u2404
+SSH_CONFIG="$HOME/.lima/$INSTANCE/ssh.config"
+SSH_ALIAS="lima-$INSTANCE"
+
+limactl shell "$INSTANCE" sudo reboot || true
+
+for _ in $(seq 1 60); do
+  if ssh -F "$SSH_CONFIG" "$SSH_ALIAS" true; then
+    break
+  fi
+  sleep 2
+done
+
+ssh -F "$SSH_CONFIG" "$SSH_ALIAS" 'systemctl is-system-running || true'
+ssh -F "$SSH_CONFIG" "$SSH_ALIAS" 'systemctl is-enabled docker 2>/dev/null || true'
+ssh -F "$SSH_CONFIG" "$SSH_ALIAS" 'systemctl is-active fail2ban 2>/dev/null || true'
+```
+
+The reboot pass condition is not just that Lima restarts the VM. The pass condition is that the future supported login method still works after boot and that enabled services remain enabled.
+
+---
+
+# IPv6 Firewall Checks
+
+Firewall validation must include IPv6 whenever the guest has IPv6 configured. IPv4-only success is not enough for VPS hardening.
+
+Collect:
+
+```bash
+limactl shell <instance> ip -6 addr
+limactl shell <instance> ss -tulpn
+limactl shell <instance> sudo nft list ruleset
+limactl shell <instance> sudo ufw status verbose
+limactl shell <instance> sudo ufw status numbered
+limactl shell <instance> -- bash -lc 'test -f /etc/default/ufw && grep "^IPV6=" /etc/default/ufw || true'
+```
+
+Expected checks:
+
+* If UFW is used on Debian/Ubuntu, `/etc/default/ufw` should have `IPV6=yes` unless Toride explicitly documents an IPv4-only profile.
+* `nft list ruleset` should show equivalent intent for IPv4 and IPv6, or a clearly documented reason for asymmetry.
+* Attacker VM probes should test IPv4 and IPv6 separately when both addresses are present.
+* Open listeners from `ss -tulpn` must be compared against firewall allow rules; a service bound to `::` may expose IPv6 even when IPv4 looks correct.
+
+---
+
 # SSH And Firewall Risk
 
 Lima controls Linux guests through SSH. That means these commands depend on a working guest SSH path:
@@ -552,21 +742,22 @@ The test flow must therefore split destructive runs into phases:
 3. **SSH-hardening phase**: disable root/password login only after an independent reconnect command succeeds.
 4. **Recovery phase**: if Lima SSH is broken, stop using `limactl shell` for diagnosis and reset from snapshot or delete-and-recreate.
 
-For SSH-hardening tests, Toride must print and verify a reconnect command before applying irreversible changes:
+For SSH-hardening tests, Toride must print and verify a reconnect command before applying irreversible changes. This is a hard pass/fail gate: if the future login method cannot be proven before the risky change, Toride should refuse to continue.
 
 ```bash
-SSH_CONFIG="$(limactl list --format '{{.SSHConfigFile}}' toride-u2404)"
+SSH_CONFIG="$HOME/.lima/toride-u2404/ssh.config"
 ssh -F "$SSH_CONFIG" lima-toride-u2404 true
 ```
 
-Lima's documented SSH host alias is `lima-<instance>`, for example `lima-default` for the `default` instance. If that exact alias is not available in the installed Lima version, get the connection details from Lima and generate the equivalent command:
+Lima's documented SSH host alias is `lima-<instance>`, for example `lima-default` for the `default` instance. New scripts should prefer `ssh -F ~/.lima/<instance>/ssh.config lima-<instance>` for reconnect checks.
+
+If that exact alias is not available in the installed Lima version, inspect the instance metadata and generate the equivalent command:
 
 ```bash
 limactl list toride-u2404
-limactl show-ssh toride-u2404
 ```
 
-`limactl show-ssh` is deprecated in current Lima docs, but it remains useful as a fallback when building a reconnect command. Prefer SSH config files under `~/.lima/<instance>/` when available.
+`limactl show-ssh` is officially deprecated in current Lima docs. Do not use it in normal automation; keep it only as a manual diagnostic fallback if the generated SSH config is unavailable.
 
 Any test profile that includes SSH or firewall modules must be allowed to break the VM. The reset mechanism is the recovery path.
 
@@ -587,6 +778,9 @@ limactl shell toride-u2404 journalctl -b --no-pager > .sandbox-artifacts/toride-
 limactl shell toride-u2404 systemctl --failed --no-pager > .sandbox-artifacts/toride-u2404/systemd-failed.txt
 limactl shell toride-u2404 cat /etc/os-release > .sandbox-artifacts/toride-u2404/os-release.txt
 limactl shell toride-u2404 ss -tulpn > .sandbox-artifacts/toride-u2404/ports.txt
+limactl shell toride-u2404 ip -6 addr > .sandbox-artifacts/toride-u2404/ipv6-addresses.txt
+limactl shell toride-u2404 sudo nft list ruleset > .sandbox-artifacts/toride-u2404/nft-ruleset.txt || true
+limactl shell toride-u2404 sudo ufw status verbose > .sandbox-artifacts/toride-u2404/ufw-status.txt || true
 ```
 
 For Debian/Ubuntu:
@@ -686,7 +880,30 @@ Expected behavior:
 * verifies `/tmp/toride` executes before running tests
 * runs dry-run
 * optionally runs apply
+* runs syntax validation gates before activating dangerous config
+* records direct SSH reconnect checks before and after SSH/firewall modules
+* runs the reboot persistence phase after successful apply when the profile changes persistent services
+* optionally calls `netprobe.sh` for firewall profiles
 * collects artifacts
+
+## netprobe.sh
+
+Run network probes from a separate attacker VM.
+
+```bash
+dev/sandbox/lima/scripts/netprobe.sh toride-u2404 --from toride-netprobe
+```
+
+Expected behavior:
+
+* verifies the probe VM is not the target VM
+* discovers or accepts the target VM IP
+* records whether the target has IPv4, IPv6, or both
+* checks that SSH is reachable when SSH should be allowed
+* checks that a known closed test port is blocked
+* checks that explicitly opened ports are reachable
+* stores probe output under the target artifact directory
+* exits non-zero when observed network behavior differs from the expected profile
 
 ## matrix.sh
 
@@ -731,9 +948,11 @@ An AI agent operating these sandboxes must follow these rules:
 * Never assume `systemd` works; check it.
 * Never assume `apt` or `dnf` locks are free immediately after boot.
 * Never assume Lima SSH will survive SSH-hardening or firewall tests.
+* Never treat same-VM firewall probes as proof that another host is blocked.
 * Never run a macOS-built Toride binary in the Linux guest.
 * Never repair a broken sandbox manually unless debugging that exact failure.
 * Never commit downloaded VM images or generated VM disks.
+* Always prove the future SSH login path before applying SSH-hardening.
 * Always collect logs before destroying a failed VM when possible.
 
 ---
@@ -784,6 +1003,33 @@ limactl copy ./target/<linux-target>/release/toride <instance>:/tmp/toride
 limactl shell <instance> chmod +x /tmp/toride
 limactl shell <instance> /tmp/toride
 ```
+
+SSH reconnect validation:
+
+```bash
+ssh -F ~/.lima/<instance>/ssh.config lima-<instance> true
+```
+
+Firewall validation requires an explicit network mode. For allow/block assertions, prefer attacker VM probes over checks originating inside the target guest.
+
+---
+
+# Real VPS Canary Lane
+
+Before trusting a release, run one disposable real VPS canary after the Lima matrix passes. This should be a small, paid instance that can be destroyed immediately after validation.
+
+The VPS canary should verify:
+
+* provider image differences from Lima cloud images
+* public IPv4 exposure
+* public IPv6 exposure
+* provider firewall behavior
+* Cloudflare-only allowlists when those profiles exist
+* SSH hardening with a real public address
+* reboot persistence through the provider boot path
+* recovery instructions before risky operations
+
+Do not use the canary as a development loop. If it fails, capture artifacts, destroy the instance if needed, and reproduce the issue locally in Lima or a focused VPS repro.
 
 ---
 
