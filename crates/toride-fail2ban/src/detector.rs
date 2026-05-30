@@ -151,7 +151,7 @@ impl LogDetector {
     }
 
     /// Match a single line against the pattern.
-    pub fn match_line(&self, line: &str, line_number: u64) -> Option<MatchDetail> {
+    pub(crate) fn match_line(&self, line: &str, line_number: u64) -> Option<MatchDetail> {
         let caps = self.regex.captures(line)?;
         let ip = Self::extract_ip_from_caps(&caps);
         Some(MatchDetail {

@@ -198,6 +198,14 @@ impl Store {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Count historical bans for a specific jail.
+    pub fn history_count_for_jail(&self, jail_name: &str) -> u64 {
+        match self.load() {
+            Ok(data) => data.history.iter().filter(|b| b.jail_name == jail_name).count() as u64,
+            Err(_) => 0,
+        }
+    }
 }
 
 #[cfg(test)]

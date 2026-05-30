@@ -85,7 +85,7 @@ fn setup() -> (tempfile::TempDir, Fail2BanManager) {
 
 #[test]
 fn new_creates_manager_successfully() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
     // The manager was created without error and the sshd jail is loaded.
     let status = manager.status().unwrap();
     assert!(status.running);
@@ -399,7 +399,7 @@ fn unban_ip_not_banned_returns_not_banned() {
 
 #[test]
 fn status_returns_correct_jail_count() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
 
     let status = manager.status().unwrap();
     assert!(status.running);
@@ -460,7 +460,7 @@ fn status_config_path_matches_paths() {
 
 #[test]
 fn jail_status_returns_status_for_existing_jail() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
 
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.name, "sshd");
@@ -482,7 +482,7 @@ fn jail_status_shows_banned_ips() {
 
 #[test]
 fn jail_status_nonexistent_returns_not_found() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
 
     let result = manager.jail_status("nonexistent");
     assert!(result.is_err());
@@ -496,7 +496,7 @@ fn jail_status_nonexistent_returns_not_found() {
 
 #[test]
 fn purge_expired_returns_empty_when_no_expired_bans() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
 
     let expired = manager.purge_expired().unwrap();
     assert!(expired.is_empty());
@@ -564,7 +564,7 @@ fn purge_expired_removes_expired_bans() {
 
 #[test]
 fn firewall_returns_detected_firewall() {
-    let (_dir, mut manager) = setup();
+    let (_dir, manager) = setup();
 
     // On macOS this will be Pf, on Linux it will be Iptables or Nftables.
     let fw = manager.firewall();

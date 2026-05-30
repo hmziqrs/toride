@@ -4,22 +4,14 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use chrono::{DateTime, Duration, Utc};
-use ipnet::IpNet;
 
 use crate::action::{ActionExec, ActionVars};
-use crate::ban::BanManager;
+use crate::ban::{BanManager, CidrBlock, CidrSet};
 use crate::config::ResolvedJail;
 use crate::detector::LogDetector;
 use crate::store::Store;
 use crate::support;
 use crate::types::{BanEntry, ExecutionMode, ScanResult};
-
-/// Pre-parsed ignore entry to avoid re-parsing on every check.
-#[derive(Debug, Clone)]
-enum IgnoreEntry {
-    Single(IpAddr),
-    Cidr(IpNet),
-}
 
 /// A jail monitors a log file and bans IPs that match its pattern.
 pub struct Jail {
@@ -33,8 +25,8 @@ pub struct Jail {
     ban_action: ActionExec,
     /// Action to execute on unban.
     unban_action: ActionExec,
-    /// IPs that should never be banned.
-    ignore_ips: Vec<IgnoreEntry>,
+    /// IPs/CIDRs that should never be banned.
+    ignore_set: CidrSet,
     /// Tracks failure timestamps per IP for find_time/max_retry logic.
     failure_tracker: HashMap<IpAddr, Vec<DateTime<Utc>>>,
 }
@@ -65,16 +57,7 @@ impl Jail {
             support::default_unban_commands(firewall),
         );
 
-        let ignore_ips = config.ignore_ips.iter().filter_map(|s| {
-            if let Ok(cidr) = s.parse::<IpNet>() {
-                Some(IgnoreEntry::Cidr(cidr))
-            } else if let Ok(ip) = s.parse::<IpAddr>() {
-                Some(IgnoreEntry::Single(ip))
-            } else {
-                tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
-                None
-            }
-        }).collect();
+        let ignore_set = parse_ignore_list(&config.ignore_ips);
 
         Ok(Self {
             config,
@@ -82,7 +65,7 @@ impl Jail {
             ban_manager,
             ban_action,
             unban_action,
-            ignore_ips,
+            ignore_set,
             failure_tracker: HashMap::new(),
         })
     }
@@ -91,16 +74,7 @@ impl Jail {
     #[must_use]
     #[expect(clippy::needless_pass_by_value, reason = "builder pattern takes ownership")]
     pub fn with_ignore_ips(mut self, ips: Vec<String>) -> Self {
-        self.ignore_ips = ips.iter().filter_map(|s| {
-            if let Ok(cidr) = s.parse::<IpNet>() {
-                Some(IgnoreEntry::Cidr(cidr))
-            } else if let Ok(ip) = s.parse::<IpAddr>() {
-                Some(IgnoreEntry::Single(ip))
-            } else {
-                tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
-                None
-            }
-        }).collect();
+        self.ignore_set = parse_ignore_list(&ips);
         self
     }
 
@@ -273,11 +247,36 @@ impl Jail {
 
     /// Check if an IP is ignored.
     fn is_ignored(&self, ip: IpAddr) -> bool {
-        self.ignore_ips.iter().any(|entry| match entry {
-            IgnoreEntry::Single(ignored) => *ignored == ip,
-            IgnoreEntry::Cidr(cidr) => cidr.contains(&ip),
-        })
+        self.ignore_set.contains(ip)
     }
+}
+
+/// Parse a list of IP/CIDR strings into a `CidrSet`.
+/// Logs a warning for invalid entries and skips them.
+fn parse_ignore_list(entries: &[String]) -> CidrSet {
+    let mut set = CidrSet::new();
+    for s in entries {
+        if let Ok(ip) = s.parse::<IpAddr>() {
+            let prefix = match ip {
+                IpAddr::V4(_) => 32,
+                IpAddr::V6(_) => 128,
+            };
+            if let Ok(block) = CidrBlock::new(ip, prefix) {
+                set.insert(block);
+            }
+        } else if let Some((addr_str, prefix_str)) = s.split_once('/') {
+            if let (Ok(addr), Ok(prefix)) = (addr_str.parse::<IpAddr>(), prefix_str.parse::<u8>()) {
+                if let Ok(block) = CidrBlock::new(addr, prefix) {
+                    set.insert(block);
+                }
+            } else {
+                tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
+            }
+        } else {
+            tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
+        }
+    }
+    set
 }
 
 #[cfg(test)]

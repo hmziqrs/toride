@@ -127,11 +127,12 @@ impl Fail2BanManager {
             crate::Error::JailNotFound(name.to_string())
         })?;
         let bans = jail.list_bans()?;
+        let total_bans = self.store.history_count_for_jail(name);
         Ok(JailStatus {
             name: name.to_string(),
             active: true,
             banned_ips: bans,
-            total_bans: 0, // TODO: track total bans across history
+            total_bans,
             log_path: jail.log_path().to_path_buf(),
             pattern: jail.pattern().to_string(),
         })
@@ -142,11 +143,12 @@ impl Fail2BanManager {
         let mut statuses = Vec::new();
         for (name, jail) in &self.jails {
             let bans = jail.list_bans()?;
+            let total_bans = self.store.history_count_for_jail(name);
             statuses.push(JailStatus {
                 name: name.clone(),
                 active: true,
                 banned_ips: bans,
-                total_bans: 0, // TODO: track total bans across history
+                total_bans,
                 log_path: jail.log_path().to_path_buf(),
                 pattern: jail.pattern().to_string(),
             });
