@@ -81,7 +81,7 @@ limactl create --tty=false ...
 limactl start --tty=false ...
 ```
 
-`-y` is currently an alias for `--tty=false`, but scripts should prefer the long form.
+The command reference still lists `-y, --yes` as an alias for `--tty=false`, but the deprecated-features page marks `limactl --yes` deprecated in Lima 2.0.0. Use `--tty=false` in scripts.
 
 ---
 
@@ -138,6 +138,7 @@ Important Lima networking facts:
 
 * The default guest IP is not reachable from the host or other guests.
 * `user-v2` supports VM-to-VM communication and `lima-<name>.internal` names from inside guests.
+* Enabling `user-v2` disables the default user-mode network; do not mix default-network assumptions into user-v2 tests.
 * Host access to `user-v2` VM names needs `limactl tunnel`, which is experimental.
 * `vzNAT` gives a VZ VM an IP reachable from the host, not from other guests.
 * `socket_vmnet` can give a guest IP reachable from the host and other guests, but it needs secure root-owned installation and sudoers setup.
@@ -599,9 +600,12 @@ The VPS canary is not the development loop. If it fails, capture artifacts, dest
 * Lima deprecated features: https://lima-vm.io/docs/releases/deprecated/
 * Lima experimental features: https://lima-vm.io/docs/releases/experimental/
 * Lima networking: https://lima-vm.io/docs/config/network/
+* Lima default user-mode networking: https://lima-vm.io/docs/config/network/user/
 * Lima user-v2 networking: https://lima-vm.io/docs/config/network/user-v2/
 * Lima VMNet networking: https://lima-vm.io/docs/config/network/vmnet/
 * Lima snapshots: https://lima-vm.io/docs/reference/limactl_snapshot/
+* Lima snapshot command source audited at `06fb9e3945a1c103677d8fe488dfa87bc5ffd3f1`: https://github.com/lima-vm/lima/blob/06fb9e3945a1c103677d8fe488dfa87bc5ffd3f1/cmd/limactl/snapshot.go
+* Lima VZ driver source audited at `06fb9e3945a1c103677d8fe488dfa87bc5ffd3f1`: https://github.com/lima-vm/lima/blob/06fb9e3945a1c103677d8fe488dfa87bc5ffd3f1/pkg/driver/vz/vz_driver_darwin.go
 * Lima copy: https://lima-vm.io/docs/reference/limactl_copy/
 * Lima validate: https://lima-vm.io/docs/reference/limactl_validate/
 * Ubuntu 26.04 release notes: https://documentation.ubuntu.com/release-notes/26.04/
