@@ -26,6 +26,83 @@ fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Reject templates that place shell-escaped placeholders inside double quotes.
+///
+/// When a placeholder like `<ip>` or `<jail>` appears inside double quotes in a
+/// command template (e.g. `echo "<jail>"`), the single-quote wrapping produced by
+/// [`shell_escape`] becomes literal characters and no longer protects against
+/// shell expansion (`$`, backtick, etc.). This function scans the template for
+/// that pattern and returns an error if found.
+fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
+    const PLACEHOLDERS: &[&str] = &["<ip>", "<jail>", "<log-path>"];
+    let bytes = template.as_bytes();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b''' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+                i += 1;
+            }
+            b'"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+                i += 1;
+            }
+            b'\\' if !in_single_quote => {
+                i += if i + 1 < bytes.len() { 2 } else { 1 };
+            }
+            _ if in_double_quote => {
+                let remaining = &template[i..];
+                for &ph in PLACEHOLDERS {
+                    if remaining.starts_with(ph) {
+                        return Err(crate::Error::InvalidConfig(format!(
+                            "template contains {ph} inside double quotes which bypasses                              shell escaping; use single quotes or no quotes around placeholders"
+                        )));
+                    }
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+
+    Ok(())
+}
+
+/// Perform single-pass template expansion.
+///
+/// Scans the template left-to-right, replacing each `<placeholder>` exactly once.
+/// Already-substituted values are never re-scanned, preventing corruption when a
+/// substituted value contains placeholder-like text (e.g. a jail name containing `<ip>`).
+fn expand_template(template: &str, replacements: &[(&str, &str)]) -> String {
+    let mut result = String::with_capacity(template.len() * 2);
+    let mut pos = 0;
+    let bytes = template.as_bytes();
+
+    while pos < bytes.len() {
+        if bytes[pos] == b'<' {
+            if let Some(close) = template[pos..].find('>') {
+                let placeholder = &template[pos..pos + close + 1];
+                if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
+                    result.push_str(value);
+                    pos += placeholder.len();
+                    continue;
+                }
+            }
+        }
+        let ch = template[pos..]
+            .chars()
+            .next()
+            .expect("valid UTF-8 position");
+        result.push(ch);
+        pos += ch.len_utf8();
+    }
+
+    result
+}
+
 /// An action executor that runs platform-specific commands.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionExec {
@@ -62,20 +139,20 @@ impl ActionVars {
     /// Create new action variables.
     #[must_use]
     pub fn new(
-        ip: &str,
+        ip: String,
         prefix: u8,
-        jail_name: &str,
+        jail_name: String,
         ban_time: u64,
         fail_count: u32,
-        log_path: &str,
+        log_path: String,
     ) -> Self {
         Self {
-            ip: ip.to_string(),
+            ip,
             prefix,
-            jail_name: jail_name.to_string(),
+            jail_name,
             ban_time,
             fail_count,
-            log_path: log_path.to_string(),
+            log_path,
         }
     }
 }
@@ -96,14 +173,31 @@ impl ActionExec {
     /// All string values are shell-escaped to prevent command injection.
     /// Numeric values (`<prefix>`, `<ban-time>`, `<fail-count>`) are not escaped
     /// since they are guaranteed to be numeric.
-    pub fn expand_command(template: &str, vars: &ActionVars) -> String {
-        template
-            .replace("<ip>", &shell_escape(&vars.ip))
-            .replace("<prefix>", &vars.prefix.to_string())
-            .replace("<jail>", &shell_escape(&vars.jail_name))
-            .replace("<ban-time>", &vars.ban_time.to_string())
-            .replace("<fail-count>", &vars.fail_count.to_string())
-            .replace("<log-path>", &shell_escape(&vars.log_path))
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` if a shell-escaped placeholder (`<ip>`, `<jail>`,
+    /// `<log-path>`) appears inside double quotes in the template, which would
+    /// bypass single-quote shell escaping.
+    pub fn expand_command(template: &str, vars: &ActionVars) -> crate::Result<String> {
+        check_dq_placeholders(template)?;
+
+        let ip_escaped = shell_escape(&vars.ip);
+        let prefix_str = vars.prefix.to_string();
+        let jail_escaped = shell_escape(&vars.jail_name);
+        let bantime_str = vars.ban_time.to_string();
+        let failcount_str = vars.fail_count.to_string();
+        let logpath_escaped = shell_escape(&vars.log_path);
+
+        let replacements: [(&str, &str); 6] = [
+            ("<ip>", &ip_escaped),
+            ("<prefix>", &prefix_str),
+            ("<jail>", &jail_escaped),
+            ("<ban-time>", &bantime_str),
+            ("<fail-count>", &failcount_str),
+            ("<log-path>", &logpath_escaped),
+        ];
+
+        Ok(expand_template(template, &replacements))
     }
 
     /// Execute the action for the current platform.
@@ -111,7 +205,7 @@ impl ActionExec {
         let commands = self.commands.for_current_platform();
 
         for template in commands {
-            let cmd_str = Self::expand_command(template, vars);
+            let cmd_str = Self::expand_command(template, vars)?;
             Self::run_command(&cmd_str, &self.env)?;
         }
         Ok(())
@@ -123,7 +217,7 @@ impl ActionExec {
         let mut expanded = Vec::new();
 
         for template in commands {
-            let cmd_str = Self::expand_command(template, vars);
+            let cmd_str = Self::expand_command(template, vars)?;
             tracing::info!(action = %self.name, command = %cmd_str, "dry-run: would execute");
             expanded.push(cmd_str);
         }
@@ -133,13 +227,15 @@ impl ActionExec {
     /// Validate that the action can be executed.
     pub fn validate(&self) -> crate::Result<()> {
         for template in &self.validation_commands {
-            let cmd_str = template
-                .replace("<ip>", "127.0.0.1")
-                .replace("<prefix>", "32")
-                .replace("<jail>", "test")
-                .replace("<ban-time>", "1")
-                .replace("<fail-count>", "1")
-                .replace("<log-path>", "/dev/null");
+            let replacements: [(&str, &str); 6] = [
+                ("<ip>", "127.0.0.1"),
+                ("<prefix>", "32"),
+                ("<jail>", "test"),
+                ("<ban-time>", "1"),
+                ("<fail-count>", "1"),
+                ("<log-path>", "/dev/null"),
+            ];
+            let cmd_str = expand_template(template, &replacements);
 
             let status = Command::new("sh")
                 .args(["-c", &cmd_str])

@@ -195,7 +195,7 @@ impl Jail {
                 Ok(persisted) => {
                     // Execute ban action (skip in dry-run).
                     if !mode.is_dry_run() {
-                        let vars = self.make_action_vars(ip, prefix, fail_count);
+                        let vars = self.make_action_vars(&ip, prefix, fail_count);
                         if let Err(e) = self.ban_action.exec(&vars) {
                             tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
                             // Rollback: remove from store since firewall command failed.
@@ -250,7 +250,7 @@ impl Jail {
 
         // Execute ban action (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = self.make_action_vars(ip, prefix, 1);
+            let vars = self.make_action_vars(&ip, prefix, 1);
             if let Err(e) = self.ban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
                 // Rollback: remove from store since firewall command failed.
@@ -279,7 +279,7 @@ impl Jail {
 
         // Execute unban action (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = self.make_action_vars(ip, entry.prefix, entry.fail_count);
+            let vars = self.make_action_vars(&ip, entry.prefix, entry.fail_count);
             if let Err(e) = self.unban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "unban action failed");
                 return Err(e);
