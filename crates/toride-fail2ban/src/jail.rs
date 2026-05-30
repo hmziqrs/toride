@@ -182,24 +182,25 @@ impl Jail {
         result.new_bans = Vec::with_capacity(to_ban.len());
 
         for entry in to_ban {
+            let BanEntry { ip, prefix, fail_count, reason, .. } = entry;
             // Persist the ban to the store.
             match self.ban_manager.ban(
-                entry.ip,
-                entry.prefix,
+                ip,
+                prefix,
                 &self.config.name,
-                entry.fail_count,
+                fail_count,
                 self.config.ban_time,
-                entry.reason.clone(),
+                reason,
             ) {
                 Ok(persisted) => {
                     // Execute ban action (skip in dry-run).
                     if !mode.is_dry_run() {
-                        let vars = self.make_action_vars(&entry.ip, entry.prefix, entry.fail_count);
+                        let vars = self.make_action_vars(ip, prefix, fail_count);
                         if let Err(e) = self.ban_action.exec(&vars) {
-                            tracing::error!(jail = %self.config.name, ip = %entry.ip, error = %e, "ban action failed");
+                            tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
                             // Rollback: remove from store since firewall command failed.
-                            if let Err(e) = self.ban_manager.unban(entry.ip, &self.config.name) {
-                                tracing::error!(jail = %self.config.name, ip = %entry.ip, error = %e,
+                            if let Err(e) = self.ban_manager.unban(ip, &self.config.name) {
+                                tracing::error!(jail = %self.config.name, ip = %ip, error = %e,
                                     "rollback unban failed after ban action error");
                             }
                             return Err(e);
@@ -227,7 +228,8 @@ impl Jail {
 
     /// Ban a specific IP address.
     ///
-    /// Executes the firewall command first, then persists to store only on success.
+    /// Persists to the store first, then executes the firewall command.
+    /// If the firewall command fails, the store entry is rolled back.
     ///
     /// # Errors
     ///
@@ -243,17 +245,24 @@ impl Jail {
 
         let prefix = crate::types::default_prefix(ip);
 
-        // Execute ban action FIRST (skip in dry-run).
+        // Persist to store first.
+        let entry = self.ban_manager.ban(ip, prefix, &self.config.name, 1, self.config.ban_time, None)?;
+
+        // Execute ban action (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = self.make_action_vars(&ip, prefix, 1);
+            let vars = self.make_action_vars(ip, prefix, 1);
             if let Err(e) = self.ban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
+                // Rollback: remove from store since firewall command failed.
+                if let Err(rb_err) = self.ban_manager.unban(ip, &self.config.name) {
+                    tracing::error!(jail = %self.config.name, ip = %ip, error = %rb_err,
+                        "rollback unban failed after ban action error");
+                }
                 return Err(e);
             }
         }
 
-        // Persist to store only if action succeeded.
-        self.ban_manager.ban(ip, prefix, &self.config.name, 1, self.config.ban_time, None)
+        Ok(entry)
     }
 
     /// Unban a specific IP address.
@@ -270,7 +279,7 @@ impl Jail {
 
         // Execute unban action (skip in dry-run).
         if !mode.is_dry_run() {
-            let vars = self.make_action_vars(&ip, entry.prefix, entry.fail_count);
+            let vars = self.make_action_vars(ip, entry.prefix, entry.fail_count);
             if let Err(e) = self.unban_action.exec(&vars) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "unban action failed");
                 return Err(e);

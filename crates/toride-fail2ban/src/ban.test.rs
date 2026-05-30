@@ -513,7 +513,7 @@ fn ban_manager_purge_expired_moves_expired_bans() {
         last_fail_at: past - Duration::seconds(3600),
         reason: None,
     };
-    manager.store.add_ban(entry).unwrap();
+    manager.store.add_ban(&entry).unwrap();
 
     // Add a non-expired ban.
     manager
@@ -851,7 +851,7 @@ fn ban_manager_list_bans_after_purge() {
         last_fail_at: past - Duration::seconds(3600),
         reason: None,
     };
-    manager.store.add_ban(expired_entry).unwrap();
+    manager.store.add_ban(&expired_entry).unwrap();
 
     // Before purge: 3 bans visible.
     let all_before = manager.list_bans(None).unwrap();
@@ -868,4 +868,114 @@ fn ban_manager_list_bans_after_purge() {
     let remaining_ips: Vec<IpAddr> = all_after.iter().map(|b| b.ip).collect();
     assert!(remaining_ips.contains(&"10.0.0.1".parse::<IpAddr>().unwrap()));
     assert!(remaining_ips.contains(&"10.0.0.2".parse::<IpAddr>().unwrap()));
+}
+
+// ---------------------------------------------------------------------------
+// CIDR normalization: host bits are zeroed in constructor
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_block_normalizes_host_bits_ipv4() {
+    // Two blocks with different host bits but same network should be equal.
+    let a = CidrBlock::new("192.168.1.5".parse().unwrap(), 24).unwrap();
+    let b = CidrBlock::new("192.168.1.0".parse().unwrap(), 24).unwrap();
+    assert_eq!(a, b, "blocks with same /24 network should be equal regardless of host bits");
+    assert_eq!(a.addr().to_string(), "192.168.1.0");
+}
+
+#[test]
+fn cidr_block_normalizes_host_bits_ipv6() {
+    let a = CidrBlock::new("2001:db8::abcd".parse().unwrap(), 32).unwrap();
+    let b = CidrBlock::new("2001:db8::".parse().unwrap(), 32).unwrap();
+    assert_eq!(a, b, "blocks with same /32 network should be equal regardless of host bits");
+}
+
+#[test]
+fn cidr_block_prefix_32_no_normalization() {
+    // /32 is exact match, host bits are the point.
+    let a = CidrBlock::new("192.168.1.5".parse().unwrap(), 32).unwrap();
+    let b = CidrBlock::new("192.168.1.0".parse().unwrap(), 32).unwrap();
+    assert_ne!(a, b, "/32 blocks with different IPs should NOT be equal");
+    assert_eq!(a.addr().to_string(), "192.168.1.5");
+}
+
+#[test]
+fn cidr_block_prefix_0_normalizes_to_unspecified() {
+    let a = CidrBlock::new("192.168.1.5".parse().unwrap(), 0).unwrap();
+    assert_eq!(a.addr().to_string(), "0.0.0.0", "/0 should normalize to unspecified");
+
+    let b = CidrBlock::new("2001:db8::abcd".parse().unwrap(), 0).unwrap();
+    assert_eq!(b.addr().to_string(), "::", "/0 IPv6 should normalize to unspecified");
+}
+
+// ---------------------------------------------------------------------------
+// BanManager::is_banned() CIDR-aware matching
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ban_manager_is_banned_cidr_subnet() {
+    let (manager, _dir) = setup_manager();
+
+    // Ban a /24 subnet.
+    manager
+        .ban("10.0.0.0".parse().unwrap(), 24, "sshd", 1, 3600, None)
+        .unwrap();
+
+    // IPs within the subnet should be banned.
+    assert!(manager.is_banned("10.0.0.1".parse().unwrap()).unwrap());
+    assert!(manager.is_banned("10.0.0.254".parse().unwrap()).unwrap());
+
+    // IPs outside the subnet should NOT be banned.
+    assert!(!manager.is_banned("10.0.1.1".parse().unwrap()).unwrap());
+    assert!(!manager.is_banned("192.168.1.1".parse().unwrap()).unwrap());
+}
+
+#[test]
+fn ban_manager_is_banned_cidr_slash_8() {
+    let (manager, _dir) = setup_manager();
+
+    // Ban a /8 subnet.
+    manager
+        .ban("10.0.0.0".parse().unwrap(), 8, "sshd", 1, 3600, None)
+        .unwrap();
+
+    // Any 10.x.x.x should be banned.
+    assert!(manager.is_banned("10.1.2.3".parse().unwrap()).unwrap());
+    assert!(manager.is_banned("10.255.255.255".parse().unwrap()).unwrap());
+
+    // Other ranges should not.
+    assert!(!manager.is_banned("11.0.0.1".parse().unwrap()).unwrap());
+}
+
+#[test]
+fn ban_manager_is_banned_exact_ip_still_works() {
+    let (manager, _dir) = setup_manager();
+
+    // Ban a single IP (/32).
+    manager
+        .ban("192.168.1.100".parse().unwrap(), 32, "sshd", 1, 3600, None)
+        .unwrap();
+
+    assert!(manager.is_banned("192.168.1.100".parse().unwrap()).unwrap());
+    assert!(!manager.is_banned("192.168.1.101".parse().unwrap()).unwrap());
+}
+
+#[test]
+fn ban_manager_is_banned_ipv6_cidr() {
+    let (manager, _dir) = setup_manager();
+
+    // Ban a /64 IPv6 subnet.
+    manager
+        .ban("2001:db8::".parse().unwrap(), 64, "sshd", 1, 3600, None)
+        .unwrap();
+
+    assert!(manager.is_banned("2001:db8::1".parse().unwrap()).unwrap());
+    assert!(manager.is_banned("2001:db8::abcd".parse().unwrap()).unwrap());
+    assert!(!manager.is_banned("2001:db9::1".parse().unwrap()).unwrap());
+}
+
+#[test]
+fn ban_manager_is_banned_empty_store() {
+    let (manager, _dir) = setup_manager();
+    assert!(!manager.is_banned("10.0.0.1".parse().unwrap()).unwrap());
 }

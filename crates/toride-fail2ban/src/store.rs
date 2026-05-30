@@ -12,6 +12,17 @@
 //! profiling reveals this becomes a bottleneck, interior mutability via
 //! `RefCell<Option<StoreData>>` can be added behind the existing `&self` API
 //! without changing callers.
+//!
+//! # Concurrency Warning
+//!
+//! `Store` is **not safe for concurrent access from multiple processes or
+//! threads**. Every mutation follows a load-modify-save pattern with no file
+//! locking. If two processes mutate the store simultaneously, the last writer
+//! wins and the first writer's changes are silently lost. The PID file
+//! singleton enforcement in [`crate::manager::Fail2BanManager`] prevents
+//! multiple daemon instances from running at the same time, which is
+//! sufficient for the intended single-daemon usage. For multi-process
+//! scenarios, an `fd-lock` or `Mutex`-based wrapper would be required.
 
 use std::fs;
 use std::net::IpAddr;
@@ -23,6 +34,10 @@ use serde::{Deserialize, Serialize};
 use crate::types::BanEntry;
 
 /// Persistent store for ban entries.
+///
+/// **Not safe for concurrent access.** Each operation is a standalone
+/// load-modify-save cycle with no file locking. The PID file singleton in
+/// [`crate::manager::Fail2BanManager`] prevents multiple daemon instances.
 #[derive(Debug, Clone)]
 pub struct Store {
     /// Path to the ban database file.
@@ -98,19 +113,14 @@ impl Store {
     /// # Errors
     ///
     /// Returns `AlreadyBanned` if the IP is already banned in this jail.
-    pub fn add_ban(&self, entry: BanEntry) -> crate::Result<()> {
+    pub fn add_ban(&self, entry: &BanEntry) -> crate::Result<()> {
         let mut data = self.load()?;
 
-        // Extract the fields used for the duplicate check so the lookup borrows
-        // only what it needs, leaving `entry` free to be moved into the Vec on
-        // the happy path without any implicit re-borrow.
-        let ip = entry.ip;
-        let jail_name = &entry.jail_name;
-        if data.active_bans.iter().any(|b| b.ip == ip && b.jail_name == *jail_name) {
-            return Err(crate::Error::AlreadyBanned(ip.to_string()));
+        if data.active_bans.iter().any(|b| b.ip == entry.ip && b.jail_name == entry.jail_name) {
+            return Err(crate::Error::AlreadyBanned(entry.ip.to_string()));
         }
 
-        data.active_bans.push(entry);
+        data.active_bans.push(entry.clone());
         self.save(&data)
     }
 

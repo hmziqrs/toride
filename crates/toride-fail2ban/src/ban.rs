@@ -23,6 +23,10 @@ pub struct CidrBlock {
 
 impl CidrBlock {
     /// Create a new CIDR block.
+    ///
+    /// Host bits are normalized (zeroed) so that `PartialEq` and `Hash`
+    /// behave correctly: `CidrBlock::new("192.168.1.5", 24)` equals
+    /// `CidrBlock::new("192.168.1.0", 24)`.
     pub fn new(addr: IpAddr, prefix: u8) -> crate::Result<Self> {
         let max_prefix = crate::types::default_prefix(addr);
         if prefix > max_prefix {
@@ -30,7 +34,30 @@ impl CidrBlock {
                 "Prefix /{prefix} exceeds maximum /{max_prefix} for {addr}"
             )));
         }
-        Ok(Self { addr, prefix })
+        // Normalize host bits to zero so that equality and hashing are correct.
+        let normalized = match addr {
+            IpAddr::V4(v4) => {
+                if prefix == 0 {
+                    IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)
+                } else if prefix == 32 {
+                    addr
+                } else {
+                    let mask = !((1u32 << (32 - prefix)) - 1);
+                    IpAddr::V4(std::net::Ipv4Addr::from(u32::from(v4) & mask))
+                }
+            }
+            IpAddr::V6(v6) => {
+                if prefix == 0 {
+                    IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED)
+                } else if prefix == 128 {
+                    addr
+                } else {
+                    let mask = !((1u128 << (128 - prefix)) - 1);
+                    IpAddr::V6(std::net::Ipv6Addr::from(u128::from(v6) & mask))
+                }
+            }
+        };
+        Ok(Self { addr: normalized, prefix })
     }
 
     /// Get the network address.
@@ -256,23 +283,60 @@ impl BanManager {
             last_fail_at: now,
             reason,
         };
-        self.store.add_ban(entry.clone())?;
+        self.store.add_ban(&entry)?;
         Ok(entry)
     }
 
     /// Unban an IP address.
     ///
+    /// First attempts an exact IP match. If that fails, searches for a
+    /// CIDR ban whose block contains the given IP (e.g., unbanning
+    /// `10.1.2.3` will find and remove a `10.0.0.0/8` ban).
+    ///
     /// # Errors
     ///
     /// Returns `NotBanned` if the IP is not currently banned.
     pub fn unban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
-        self.store.remove_ban(ip, jail_name)
+        // Try exact IP match first.
+        match self.store.remove_ban(ip, jail_name) {
+            Ok(entry) => return Ok(entry),
+            Err(crate::Error::NotBanned(_)) => {}
+            Err(e) => return Err(e),
+        }
+
+        // Search for a CIDR ban that contains this IP.
+        let bans = self.store.get_bans(Some(jail_name))?;
+        for ban in &bans {
+            if ban.prefix < crate::types::default_prefix(ban.ip)
+                && let Ok(block) = CidrBlock::new(ban.ip, ban.prefix)
+                && block.contains(ip)
+            {
+                return self.store.remove_ban(ban.ip, jail_name);
+            }
+        }
+
+        Err(crate::Error::NotBanned(ip.to_string()))
     }
 
     /// Check if an IP is currently banned.
+    ///
+    /// Uses CIDR-aware matching: an IP is considered banned if it falls
+    /// within any banned CIDR block (e.g., `10.1.2.3` matches a `10.0.0.0/8` ban).
     pub fn is_banned(&self, ip: IpAddr) -> crate::Result<bool> {
         let bans = self.store.get_bans(None)?;
-        Ok(bans.iter().any(|b| b.ip == ip))
+        for ban in &bans {
+            if ban.ip == ip {
+                return Ok(true);
+            }
+            // Check CIDR containment for subnet bans.
+            if ban.prefix < crate::types::default_prefix(ban.ip)
+                && let Ok(block) = CidrBlock::new(ban.ip, ban.prefix)
+                && block.contains(ip)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// List all active bans, optionally filtered by jail.

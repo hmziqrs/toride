@@ -995,9 +995,8 @@ fn test_ban_ip_dry_run_then_execute() {
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.prefix, 32);
 
-    // Ban the same IP in execute mode -- fails because ban_ip runs the
-    // firewall command first (CommandFailed) before reaching the store's
-    // AlreadyBanned check.
+    // Ban the same IP in execute mode -- fails with AlreadyBanned because
+    // ban_ip now persists to the store first.
     let result = jail.ban_ip(ip, ExecutionMode::Execute);
     assert!(result.is_err());
 

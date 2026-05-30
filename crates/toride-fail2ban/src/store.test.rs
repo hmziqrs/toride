@@ -134,7 +134,7 @@ fn save_overwrites_existing() {
 #[test]
 fn add_ban_success() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 1);
@@ -145,9 +145,9 @@ fn add_ban_success() {
 #[test]
 fn add_ban_duplicate_same_jail_returns_already_banned() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
 
-    let result = store.add_ban(make_ban("192.168.1.1", "sshd"));
+    let result = store.add_ban(&make_ban("192.168.1.1", "sshd"));
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::AlreadyBanned(ip) => assert_eq!(ip, "192.168.1.1"),
@@ -158,8 +158,8 @@ fn add_ban_duplicate_same_jail_returns_already_banned() {
 #[test]
 fn add_ban_same_ip_different_jails_allowed() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
-    store.add_ban(make_ban("192.168.1.1", "nginx")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "nginx")).unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 2);
@@ -168,8 +168,8 @@ fn add_ban_same_ip_different_jails_allowed() {
 #[test]
 fn add_ban_different_ips_same_jail_allowed() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("10.0.0.1", "sshd")).unwrap();
-    store.add_ban(make_ban("10.0.0.2", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.2", "sshd")).unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 2);
@@ -178,7 +178,7 @@ fn add_ban_different_ips_same_jail_allowed() {
 #[test]
 fn add_ban_with_ipv6() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("::1", "sshd")).unwrap();
+    store.add_ban(&make_ban("::1", "sshd")).unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 1);
@@ -192,7 +192,7 @@ fn add_ban_with_ipv6() {
 #[test]
 fn remove_ban_success() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
 
     let removed = store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
     assert_eq!(removed.ip, "192.168.1.1".parse::<IpAddr>().unwrap());
@@ -222,7 +222,7 @@ fn remove_ban_not_found_returns_not_banned() {
 #[test]
 fn remove_ban_wrong_jail_returns_not_banned() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
 
     let result = store.remove_ban("192.168.1.1".parse().unwrap(), "nginx");
     assert!(result.is_err());
@@ -239,8 +239,8 @@ fn remove_ban_wrong_jail_returns_not_banned() {
 #[test]
 fn remove_ban_same_ip_different_jail_only_removes_target() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
-    store.add_ban(make_ban("192.168.1.1", "nginx")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "nginx")).unwrap();
 
     store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
 
@@ -256,9 +256,9 @@ fn remove_ban_same_ip_different_jail_only_removes_target() {
 #[test]
 fn get_bans_no_filter_returns_all() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("10.0.0.1", "sshd")).unwrap();
-    store.add_ban(make_ban("10.0.0.2", "nginx")).unwrap();
-    store.add_ban(make_ban("10.0.0.3", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.2", "nginx")).unwrap();
+    store.add_ban(&make_ban("10.0.0.3", "sshd")).unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 3);
@@ -267,9 +267,9 @@ fn get_bans_no_filter_returns_all() {
 #[test]
 fn get_bans_filter_by_jail() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("10.0.0.1", "sshd")).unwrap();
-    store.add_ban(make_ban("10.0.0.2", "nginx")).unwrap();
-    store.add_ban(make_ban("10.0.0.3", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.2", "nginx")).unwrap();
+    store.add_ban(&make_ban("10.0.0.3", "sshd")).unwrap();
 
     let sshd_bans = store.get_bans(Some("sshd")).unwrap();
     assert_eq!(sshd_bans.len(), 2);
@@ -285,7 +285,7 @@ fn get_bans_filter_by_jail() {
 #[test]
 fn get_bans_filter_nonexistent_jail_returns_empty() {
     let (_dir, store) = tmp_store();
-    store.add_ban(make_ban("10.0.0.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("10.0.0.1", "sshd")).unwrap();
 
     let bans = store.get_bans(Some("dovecot")).unwrap();
     assert!(bans.is_empty());
@@ -311,14 +311,14 @@ fn clear_expired_moves_to_history() {
 
     // Already expired.
     let past = Utc::now() - Duration::hours(1);
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
 
     // Not expired (future).
     let future = Utc::now() + Duration::hours(1);
-    store.add_ban(make_ban_expiring("10.0.0.2", "sshd", Some(future))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.2", "sshd", Some(future))).unwrap();
 
     // No expiry at all -- should NOT be cleared.
-    store.add_ban(make_ban_expiring("10.0.0.3", "sshd", None)).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.3", "sshd", None)).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -337,7 +337,7 @@ fn clear_expired_moves_to_history() {
 fn clear_expired_no_expired_bans() {
     let (_dir, store) = tmp_store();
     let future = Utc::now() + Duration::hours(1);
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(future))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(future))).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert!(cleared.is_empty());
@@ -350,8 +350,8 @@ fn clear_expired_no_expired_bans() {
 fn clear_expired_all_expired() {
     let (_dir, store) = tmp_store();
     let past = Utc::now() - Duration::minutes(30);
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
-    store.add_ban(make_ban_expiring("10.0.0.2", "nginx", Some(past))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.2", "nginx", Some(past))).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 2);
@@ -712,9 +712,9 @@ fn empty_store_get_journal_returns_none() {
 fn multiple_jails_same_ip_independent_ban_lifecycle() {
     let (_dir, store) = tmp_store();
 
-    store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
-    store.add_ban(make_ban("192.168.1.1", "nginx")).unwrap();
-    store.add_ban(make_ban("192.168.1.1", "dovecot")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "nginx")).unwrap();
+    store.add_ban(&make_ban("192.168.1.1", "dovecot")).unwrap();
 
     // Remove from one jail.
     store.remove_ban("192.168.1.1".parse().unwrap(), "nginx").unwrap();
@@ -745,8 +745,8 @@ fn multiple_jails_same_ip_clear_expired_only_clears_expired() {
     let past = Utc::now() - Duration::hours(1);
     let future = Utc::now() + Duration::hours(1);
 
-    store.add_ban(make_ban_expiring("192.168.1.1", "sshd", Some(past))).unwrap();
-    store.add_ban(make_ban_expiring("192.168.1.1", "nginx", Some(future))).unwrap();
+    store.add_ban(&make_ban_expiring("192.168.1.1", "sshd", Some(past))).unwrap();
+    store.add_ban(&make_ban_expiring("192.168.1.1", "nginx", Some(future))).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -767,7 +767,7 @@ fn clear_expired_ban_expiring_exactly_now_is_cleared() {
 
     // Use a timestamp slightly in the past to avoid clock skew issues.
     let exactly_now = Utc::now() - Duration::milliseconds(1);
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(exactly_now))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(exactly_now))).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -777,7 +777,7 @@ fn clear_expired_ban_expiring_exactly_now_is_cleared() {
 fn clear_expired_ban_without_expiry_never_cleared() {
     let (_dir, store) = tmp_store();
 
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", None)).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", None)).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert!(cleared.is_empty());
@@ -837,7 +837,7 @@ fn full_lifecycle_ban_remove_clear_trim() {
     // 1. Ban several IPs.
     for i in 0..10 {
         store
-            .add_ban(make_ban(&format!("10.0.0.{i}"), "sshd"))
+            .add_ban(&make_ban(&format!("10.0.0.{i}"), "sshd"))
             .unwrap();
     }
     assert_eq!(store.get_bans(None).unwrap().len(), 10);
@@ -949,7 +949,7 @@ fn add_ban_with_very_long_jail_name() {
         last_fail_at: Utc::now(),
         reason: None,
     };
-    store.add_ban(entry).unwrap();
+    store.add_ban(&entry).unwrap();
 
     let bans = store.get_bans(Some(&long_name)).unwrap();
     assert_eq!(bans.len(), 1);
@@ -975,7 +975,7 @@ fn add_ban_with_unicode_jail_name() {
         last_fail_at: Utc::now(),
         reason: None,
     };
-    store.add_ban(entry).unwrap();
+    store.add_ban(&entry).unwrap();
 
     let bans = store.get_bans(Some("测试监狱")).unwrap();
     assert_eq!(bans.len(), 1);
@@ -992,7 +992,7 @@ fn get_bans_large_dataset() {
 
     for i in 0..500 {
         let ip = format!("10.{}.{}.{}", (i >> 16) & 0xFF, (i >> 8) & 0xFF, i & 0xFF);
-        store.add_ban(make_ban(&ip, "sshd")).unwrap();
+        store.add_ban(&make_ban(&ip, "sshd")).unwrap();
     }
 
     let bans = store.get_bans(None).unwrap();
@@ -1009,7 +1009,7 @@ fn clear_expired_boundary_exactly_now() {
 
     // An entry whose expires_at is set to Utc::now() should be cleared
     // because the check is exp <= now.
-    store.add_ban(make_ban_expiring("10.0.0.1", "sshd", Some(Utc::now()))).unwrap();
+    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(Utc::now()))).unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1, "ban expiring exactly now should be cleared");
