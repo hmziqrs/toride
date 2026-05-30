@@ -16,14 +16,19 @@ SANDBOX_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMPLATE_DIR="$SANDBOX_DIR/templates"
 REPO_ROOT="$(cd "$SANDBOX_DIR/../.." && pwd)"
 
-declare -A DISTRO_INSTANCE=(
-  [ubuntu-24.04]=toride-u2404
-  [ubuntu-26.04]=toride-u2604
-  [debian-12]=toride-d12
-  [debian-13]=toride-d13
-  [rocky-9]=toride-r9
-  [rocky-10]=toride-r10
-)
+ALL_DISTROS="ubuntu-24.04 ubuntu-26.04 debian-12 debian-13 rocky-9 rocky-10"
+
+distro_to_instance() {
+  case "$1" in
+    ubuntu-24.04) echo "toride-u2404" ;;
+    ubuntu-26.04) echo "toride-u2604" ;;
+    debian-12)    echo "toride-d12" ;;
+    debian-13)    echo "toride-d13" ;;
+    rocky-9)      echo "toride-r9" ;;
+    rocky-10)     echo "toride-r10" ;;
+    *)            return 1 ;;
+  esac
+}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -38,15 +43,15 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help)
       echo "Usage: $0 <distro>"
-      echo "Distros: ${!DISTRO_INSTANCE[*]}"
+      echo "Distros: $ALL_DISTROS"
       exit 0
       ;;
     *) DISTRO="$1"; shift ;;
   esac
 done
 
-[[ -z "$DISTRO" ]] && error "Usage: $0 <distro>  (distros: ${!DISTRO_INSTANCE[*]})"
-INSTANCE="${DISTRO_INSTANCE[$DISTRO]:?Unknown distro: $DISTRO}"
+[[ -z "$DISTRO" ]] && error "Usage: $0 <distro>  (distros: $ALL_DISTROS)"
+INSTANCE="$(distro_to_instance "$DISTRO")" || error "Unknown distro: $DISTRO"
 TEMPLATE="$TEMPLATE_DIR/${DISTRO}.yaml"
 
 # ── Verify instance exists ────────────────────────────────────────────────────

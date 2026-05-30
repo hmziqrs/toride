@@ -19,15 +19,19 @@ ARTIFACTS_DIR="$REPO_ROOT/.sandbox-artifacts"
 
 MINIMUM_LIMA_VERSION="2.0.0"
 
-# Distro → instance name mapping
-declare -A DISTRO_INSTANCE=(
-  [ubuntu-24.04]=toride-u2404
-  [ubuntu-26.04]=toride-u2604
-  [debian-12]=toride-d12
-  [debian-13]=toride-d13
-  [rocky-9]=toride-r9
-  [rocky-10]=toride-r10
-)
+ALL_DISTROS="ubuntu-24.04 ubuntu-26.04 debian-12 debian-13 rocky-9 rocky-10"
+
+distro_to_instance() {
+  case "$1" in
+    ubuntu-24.04) echo "toride-u2404" ;;
+    ubuntu-26.04) echo "toride-u2604" ;;
+    debian-12)    echo "toride-d12" ;;
+    debian-13)    echo "toride-d13" ;;
+    rocky-9)      echo "toride-r9" ;;
+    rocky-10)     echo "toride-r10" ;;
+    *)            return 1 ;;
+  esac
+}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -46,7 +50,7 @@ while [[ $# -gt 0 ]]; do
     -h|--help)
       echo "Usage: $0 <distro> [--recreate]"
       echo ""
-      echo "Distros: ${!DISTRO_INSTANCE[*]}"
+      echo "Distros: $ALL_DISTROS"
       exit 0
       ;;
     *)
@@ -60,9 +64,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ -z "$DISTRO" ]] && error "Usage: $0 <distro> [--recreate]  (distros: ${!DISTRO_INSTANCE[*]})"
+[[ -z "$DISTRO" ]] && error "Usage: $0 <distro> [--recreate]  (distros: $ALL_DISTROS)"
 
-INSTANCE="${DISTRO_INSTANCE[$DISTRO]:?Unknown distro: $DISTRO}"
+INSTANCE="$(distro_to_instance "$DISTRO")" || error "Unknown distro: $DISTRO"
 TEMPLATE="$TEMPLATE_DIR/${DISTRO}.yaml"
 
 # ── Validate Lima installation ────────────────────────────────────────────────
@@ -220,9 +224,13 @@ if limactl snapshot --help &>/dev/null; then
   limactl snapshot delete "$INSTANCE" --tag clean 2>/dev/null || true
 
   info "Creating 'clean' snapshot..."
-  limactl snapshot create "$INSTANCE" --tag clean
-  info "Snapshot 'clean' created."
-  limactl snapshot list "$INSTANCE" 2>/dev/null || true
+  if limactl snapshot create "$INSTANCE" --tag clean 2>&1; then
+    info "Snapshot 'clean' created."
+    limactl snapshot list "$INSTANCE" 2>/dev/null || true
+  else
+    warn "Snapshot creation failed (VZ driver does not support snapshots in this Lima version)."
+    warn "Delete-and-recreate will be the only reset path."
+  fi
 else
   warn "Snapshot support not available. Delete-and-recreate will be the only reset path."
 fi
