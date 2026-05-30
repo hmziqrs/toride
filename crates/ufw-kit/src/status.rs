@@ -1,0 +1,320 @@
+//! UFW status parsing.
+//!
+//! Parses the output of `ufw status`, `ufw status verbose`, and
+//! `ufw status numbered` into structured types.
+
+use crate::error::Result;
+use crate::spec::{
+    Action, AppDefaultPolicy, Direction, LoggingLevel, ParsedRule, Policy, UfwStatus,
+};
+
+/// Parse `ufw status verbose` output.
+pub fn parse_status_verbose(output: &str) -> Result<UfwStatus> {
+    let mut status = UfwStatus {
+        active: false,
+        default_incoming: None,
+        default_outgoing: None,
+        default_routed: None,
+        logging_level: None,
+        new_app_profiles: None,
+        rules: Vec::new(),
+    };
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        // Check active/inactive
+        if trimmed.starts_with("Status:") {
+            status.active = trimmed.contains("active") && !trimmed.contains("inactive");
+            continue;
+        }
+
+        // Check default policies
+        if let Some(rest) = trimmed.strip_prefix("Default:") {
+            // Format: "Default: deny (incoming), allow (outgoing), disabled (routed)"
+            for part in rest.split(',') {
+                let part = part.trim();
+                if let Some(policy_str) = extract_policy_before_label(part, "incoming") {
+                    status.default_incoming = parse_policy(policy_str);
+                } else if let Some(policy_str) = extract_policy_before_label(part, "outgoing") {
+                    status.default_outgoing = parse_policy(policy_str);
+                } else if let Some(policy_str) = extract_policy_before_label(part, "routed") {
+                    status.default_routed = parse_policy(policy_str);
+                }
+            }
+            continue;
+        }
+
+        // Check logging level
+        if trimmed.starts_with("Logging:") {
+            let rest = trimmed.strip_prefix("Logging:").unwrap().trim();
+            status.logging_level = parse_logging_level(rest);
+            continue;
+        }
+
+        // Check new app profiles
+        if trimmed.starts_with("New profiles:") {
+            let rest = trimmed.strip_prefix("New profiles:").unwrap().trim();
+            status.new_app_profiles = parse_app_default_policy(rest);
+            continue;
+        }
+
+        // Parse rule lines
+        if !trimmed.is_empty()
+            && !is_separator_line(trimmed)
+            && !trimmed.starts_with("To")
+            && !trimmed.starts_with("Action")
+        {
+            if let Some(rule) = parse_rule_line(trimmed, false) {
+                status.rules.push(rule);
+            }
+        }
+    }
+
+    Ok(status)
+}
+
+/// Parse `ufw status` (non-verbose) output.
+pub fn parse_status(output: &str) -> Result<UfwStatus> {
+    let mut status = UfwStatus {
+        active: false,
+        default_incoming: None,
+        default_outgoing: None,
+        default_routed: None,
+        logging_level: None,
+        new_app_profiles: None,
+        rules: Vec::new(),
+    };
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("Status:") {
+            status.active = trimmed.contains("active") && !trimmed.contains("inactive");
+            continue;
+        }
+
+        if !trimmed.is_empty()
+            && !is_separator_line(trimmed)
+            && !trimmed.starts_with("To")
+            && !trimmed.starts_with("Action")
+        {
+            if let Some(rule) = parse_rule_line(trimmed, false) {
+                status.rules.push(rule);
+            }
+        }
+    }
+
+    Ok(status)
+}
+
+/// Check if a line is a table separator (e.g., "---  ------  ----").
+fn is_separator_line(line: &str) -> bool {
+    // A separator line is one where most non-space characters are dashes
+    let non_space: usize = line.chars().filter(|c| !c.is_whitespace()).count();
+    if non_space == 0 {
+        return false;
+    }
+    let dashes: usize = line.chars().filter(|c| *c == '-').count();
+    // If at least 80% of non-space chars are dashes, it's a separator
+    dashes * 100 / non_space >= 80
+}
+
+/// Parse `ufw status numbered` output.
+pub fn parse_status_numbered(output: &str) -> Result<UfwStatus> {
+    let mut status = UfwStatus {
+        active: false,
+        default_incoming: None,
+        default_outgoing: None,
+        default_routed: None,
+        logging_level: None,
+        new_app_profiles: None,
+        rules: Vec::new(),
+    };
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.starts_with("Status:") {
+            status.active = trimmed.contains("active") && !trimmed.contains("inactive");
+            continue;
+        }
+
+        if !trimmed.is_empty()
+            && !is_separator_line(trimmed)
+            && !trimmed.starts_with("To")
+            && !trimmed.starts_with("Action")
+        {
+            if let Some(rule) = parse_numbered_rule_line(trimmed) {
+                status.rules.push(rule);
+            }
+        }
+    }
+
+    Ok(status)
+}
+
+/// Parse a single rule line from non-numbered status.
+fn parse_rule_line(line: &str, _is_numbered: bool) -> Option<ParsedRule> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Determine if this is an IPv6 rule (UFW marks them with "(v6)" on some systems)
+    let ipv6 = trimmed.contains("(v6)") || trimmed.contains("v6");
+
+    // Determine if this is a route rule
+    let is_route = trimmed.contains("ROUTE") || trimmed.contains("route");
+
+    // Try to parse action
+    let (action, rest) = if trimmed.starts_with("ALLOW") {
+        (Some(Action::Allow), trimmed.strip_prefix("ALLOW").unwrap().trim())
+    } else if trimmed.starts_with("DENY") {
+        (Some(Action::Deny), trimmed.strip_prefix("DENY").unwrap().trim())
+    } else if trimmed.starts_with("REJECT") {
+        (
+            Some(Action::Reject),
+            trimmed.strip_prefix("REJECT").unwrap().trim(),
+        )
+    } else if trimmed.starts_with("LIMIT") {
+        (
+            Some(Action::Limit),
+            trimmed.strip_prefix("LIMIT").unwrap().trim(),
+        )
+    } else {
+        (None, trimmed)
+    };
+
+    // Try to parse direction from remainder
+    let (direction, rest) = if rest.starts_with("IN") {
+        (Some(Direction::In), rest.strip_prefix("IN").unwrap().trim())
+    } else if rest.starts_with("OUT") {
+        (
+            Some(Direction::Out),
+            rest.strip_prefix("OUT").unwrap().trim(),
+        )
+    } else {
+        (None, rest)
+    };
+
+    // Extract comment if present
+    let (_main_part, comment) = if let Some(idx) = rest.find("comment") {
+        let main = rest[..idx].trim();
+        let comment_text = rest[idx + "comment".len()..].trim();
+        (main, Some(comment_text.to_string()))
+    } else {
+        (rest, None)
+    };
+
+    Some(ParsedRule {
+        number: None,
+        raw: trimmed.to_string(),
+        action,
+        direction,
+        protocol: None,
+        from: None,
+        to: None,
+        comment,
+        ipv6,
+        is_route,
+    })
+}
+
+/// Parse a numbered rule line.
+fn parse_numbered_rule_line(line: &str) -> Option<ParsedRule> {
+    let trimmed = line.trim();
+
+    // Numbered format: "[ 1] ALLOW IN    Anywhere       ..."
+    // or with brackets: "[ 1] 22/tcp ALLOW IN Anywhere"
+    if !trimmed.starts_with('[') {
+        return parse_rule_line(trimmed, true);
+    }
+
+    let bracket_end = trimmed.find(']')?;
+    let number_str = trimmed[1..bracket_end].trim();
+    let number: u32 = number_str.parse().ok()?;
+    let rest = trimmed[bracket_end + 1..].trim();
+
+    let mut rule = parse_rule_line(rest, true)?;
+    rule.number = Some(number);
+    Some(rule)
+}
+
+/// Extract the policy value before a label in parentheses.
+///
+/// For "deny (incoming)" with label "incoming", returns "deny".
+fn extract_policy_before_label<'a>(text: &'a str, label: &str) -> Option<&'a str> {
+    // Look for "(label)" pattern
+    let paren_label = format!("({label})");
+    let idx = text.find(&paren_label)?;
+    let before = text[..idx].trim();
+    if before.is_empty() {
+        return None;
+    }
+    Some(before)
+}
+
+/// Parse a policy string.
+fn parse_policy(s: &str) -> Option<Policy> {
+    match s.trim().to_lowercase().as_str() {
+        "allow" | "accept" => Some(Policy::Allow),
+        "deny" | "drop" => Some(Policy::Deny),
+        "reject" => Some(Policy::Reject),
+        "disabled" => None,
+        _ => None,
+    }
+}
+
+/// Parse a logging level string.
+///
+/// Handles formats like "on (low)", "on", "off", "low", "medium", "high", "full".
+fn parse_logging_level(s: &str) -> Option<LoggingLevel> {
+    let lower = s.trim().to_lowercase();
+
+    // Handle "on (level)" format first — extract the parenthesized level
+    if let Some(start) = lower.find('(') {
+        if let Some(end) = lower.find(')') {
+            let level_str = lower[start + 1..end].trim();
+            return match level_str {
+                "full" => Some(LoggingLevel::Full),
+                "high" => Some(LoggingLevel::High),
+                "medium" => Some(LoggingLevel::Medium),
+                "low" => Some(LoggingLevel::Low),
+                "on" => Some(LoggingLevel::On),
+                "off" => Some(LoggingLevel::Off),
+                _ => Some(LoggingLevel::On),
+            };
+        }
+    }
+
+    // Plain values
+    let level = if lower.contains("full") {
+        LoggingLevel::Full
+    } else if lower.contains("high") {
+        LoggingLevel::High
+    } else if lower.contains("medium") {
+        LoggingLevel::Medium
+    } else if lower.contains("low") {
+        LoggingLevel::Low
+    } else if lower.contains("on") || lower.contains("yes") {
+        LoggingLevel::On
+    } else {
+        LoggingLevel::Off
+    };
+    Some(level)
+}
+
+/// Parse app default policy string.
+fn parse_app_default_policy(s: &str) -> Option<AppDefaultPolicy> {
+    match s.trim().to_lowercase().as_str() {
+        "skip" => Some(AppDefaultPolicy::Skip),
+        "allow" => Some(AppDefaultPolicy::Allow),
+        "deny" => Some(AppDefaultPolicy::Deny),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+#[path = "status.test.rs"]
+mod tests;

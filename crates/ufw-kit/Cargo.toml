@@ -1,0 +1,31 @@
+[package]
+name = "ufw-kit"
+version = "0.1.0"
+edition = "2024"
+description = "Safely manage, inspect, validate, and diagnose UFW firewall installations"
+
+[features]
+default = ["client", "doctor", "app-profile"]
+client = []
+doctor = []
+app-profile = []
+framework = []
+service = []
+serde = ["dep:serde"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+serde = { workspace = true, optional = true }
+duct = "1"
+ipnet = "2"
+tempfile = "3"
+similar = "2"
+
+[dev-dependencies]
+tempfile = "3"
+insta = { version = "1", features = ["serde"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,228 @@
+//! Command execution layer.
+//!
+//! Provides a trait-based runner for executing system commands, with a real
+//! implementation using `duct` and a fake implementation for testing.
+
+use std::collections::HashMap;
+use std::time::Duration;
+
+use crate::error::{Error, Result};
+use crate::spec::{CommandResult, CommandSpec};
+
+/// Trait for executing commands.
+///
+/// Implementations must be `Send + Sync` so they can be shared across threads.
+pub trait CommandRunner: Send + Sync {
+    /// Execute a command and return its output.
+    fn run(&self, spec: &CommandSpec) -> Result<CommandResult>;
+
+    /// Check if a binary exists on the system.
+    fn binary_exists(&self, name: &str) -> bool;
+}
+
+/// Real command runner using `duct`.
+pub struct DuctRunner;
+
+impl DuctRunner {
+    /// Create a new `DuctRunner`.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DuctRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommandRunner for DuctRunner {
+    fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
+        let mut cmd = duct::cmd(&spec.program, &spec.args);
+
+        if spec.force_c_locale {
+            cmd = cmd.env("LC_ALL", "C").env("LANG", "C");
+        }
+
+        let _timeout = spec.timeout.unwrap_or(Duration::from_secs(30));
+
+        let output = cmd
+            .stdout_capture()
+            .stderr_capture()
+            .unchecked()
+            .run()
+            .map_err(|e| Error::CommandSpawnFailed(format!("{}: {e}", spec.program)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let exit_code = output.status.code();
+
+        Ok(CommandResult {
+            stdout,
+            stderr,
+            exit_code,
+        })
+    }
+
+    fn binary_exists(&self, name: &str) -> bool {
+        which::which(name).is_ok()
+    }
+}
+
+// ============================================================================
+// Fake runner for tests
+// ============================================================================
+
+/// A fake command runner for testing.
+///
+/// Responders map `(program, args_string)` to predefined results.
+/// If no exact match, falls back to a program-name-only key if registered.
+pub struct FakeRunner {
+    responses: HashMap<String, FakeResponse>,
+    /// Log of all commands executed (for assertions).
+    log: std::sync::Mutex<Vec<CommandLog>>,
+}
+
+#[derive(Debug, Clone)]
+struct FakeResponse {
+    result: Result<CommandResult>,
+}
+
+/// A log entry for a command that was executed.
+#[derive(Debug, Clone)]
+pub struct CommandLog {
+    /// Program name.
+    pub program: String,
+    /// Arguments.
+    pub args: Vec<String>,
+}
+
+impl FakeRunner {
+    /// Create a new empty fake runner.
+    pub fn new() -> Self {
+        Self {
+            responses: HashMap::new(),
+            log: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a response for a given program + args combination.
+    ///
+    /// The key is formatted as `"program arg1 arg2 ..."`.
+    pub fn respond(
+        mut self,
+        program: &str,
+        args: &[&str],
+        result: Result<CommandResult>,
+    ) -> Self {
+        let key = format_key(program, args);
+        self.responses.insert(key, FakeResponse { result });
+        self
+    }
+
+    /// Register a one-shot response (consumed after first match).
+    pub fn respond_once(
+        mut self,
+        program: &str,
+        args: &[&str],
+        result: Result<CommandResult>,
+    ) -> Self {
+        let key = format_key(program, args);
+        self.responses.insert(key, FakeResponse { result });
+        self
+    }
+
+    /// Register a success response with stdout.
+    pub fn respond_ok(self, program: &str, args: &[&str], stdout: &str) -> Self {
+        self.respond(
+            program,
+            args,
+            Ok(CommandResult {
+                stdout: stdout.into(),
+                stderr: String::new(),
+                exit_code: Some(0),
+            }),
+        )
+    }
+
+    /// Register a failure response.
+    pub fn respond_err(self, program: &str, args: &[&str], stderr: &str, exit_code: i32) -> Self {
+        self.respond(
+            program,
+            args,
+            Ok(CommandResult {
+                stdout: String::new(),
+                stderr: stderr.into(),
+                exit_code: Some(exit_code),
+            }),
+        )
+    }
+
+    /// Get the log of all commands that were executed.
+    pub fn command_log(&self) -> Vec<CommandLog> {
+        self.log.lock().unwrap().clone()
+    }
+
+    /// Clear the command log.
+    pub fn clear_log(&self) {
+        self.log.lock().unwrap().clear();
+    }
+
+    /// Number of commands executed.
+    pub fn command_count(&self) -> usize {
+        self.log.lock().unwrap().len()
+    }
+}
+
+impl Default for FakeRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommandRunner for FakeRunner {
+    fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
+        // Log the command
+        self.log.lock().unwrap().push(CommandLog {
+            program: spec.program.clone(),
+            args: spec.args.clone(),
+        });
+
+        let key = format_key(&spec.program, &spec.args.iter().map(String::as_str).collect::<Vec<_>>());
+
+        // Try to find an exact response
+        if let Some(response) = self.responses.get(&key) {
+            return response.result.clone();
+        }
+
+        // Fall back to program-name-only key if registered
+        if let Some(response) = self.responses.get(&spec.program) {
+            return response.result.clone();
+        }
+
+        Err(Error::CommandSpawnFailed(format!(
+            "no fake response registered for: {} {}",
+            spec.program,
+            spec.args.join(" ")
+        )))
+    }
+
+    fn binary_exists(&self, name: &str) -> bool {
+        // By default, pretend ufw and common tools exist
+        matches!(name, "ufw" | "iptables" | "ip6tables" | "systemctl" | "nft")
+    }
+}
+
+fn format_key(program: &str, args: &[&str]) -> String {
+    let mut parts = vec![program.to_string()];
+    parts.extend(args.iter().map(|s| (*s).to_string()));
+    parts.join(" ")
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+#[path = "command.test.rs"]
+mod tests;
