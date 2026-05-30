@@ -110,7 +110,9 @@ fn read_pid_file(path: &Path) -> Option<u32> {
     }
     let pid = trimmed.parse::<u32>().ok()?;
     // PID 0 targets the process group via kill(0, 0), not a specific process.
-    if pid == 0 {
+    // PIDs > i32::MAX wrap to negative when cast, causing kill(-1, 0) which
+    // signals all processes and always returns success.
+    if pid == 0 || pid > i32::MAX as u32 {
         return None;
     }
     Some(pid)
@@ -514,11 +516,21 @@ mod tests {
     }
 
     #[test]
-    fn read_pid_file_parses_max_pid() {
+    fn read_pid_file_rejects_pid_above_i32_max() {
+        // PIDs > i32::MAX would wrap to negative when cast, causing kill(-1, 0).
         let dir = setup_test_dir(Some("4294967295"), None);
         assert_eq!(
             read_pid_file(&dir.path().join("toride.pid")),
-            Some(4294967295)
+            None
+        );
+    }
+
+    #[test]
+    fn read_pid_file_accepts_max_i32_pid() {
+        let dir = setup_test_dir(Some("2147483647"), None);
+        assert_eq!(
+            read_pid_file(&dir.path().join("toride.pid")),
+            Some(2147483647)
         );
     }
 

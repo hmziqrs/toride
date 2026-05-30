@@ -34,3 +34,25 @@ SSH:
   Config: ok
   Agent: running
   Keys: 3
+=== Capabilities ===
+System:
+  CPU usage: yes
+  Per-core CPU: yes
+  Memory: yes
+  Swap: yes
+  Disk: yes
+  Network: yes
+  Load average: yes
+  Uptime: yes
+  Hostname: yes
+  OS info: yes
+  Sensors: yes
+Daemon:
+  PID check: yes
+  Uptime for PID: yes
+  Stale socket: yes
+SSH:
+  Mux check: yes
+  Config validation: yes
+  Agent check: yes
+  Key counting: yes

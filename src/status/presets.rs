@@ -3,6 +3,8 @@
 //! Presets control which metrics are collected, allowing callers to
 //! optimize for their specific needs (minimal overhead vs full diagnostics).
 
+use std::fmt;
+
 use serde::Serialize;
 
 /// Collection preset.
@@ -68,8 +70,6 @@ impl Preset {
         }
     }
 }
-
-use std::fmt;
 
 impl fmt::Display for Preset {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

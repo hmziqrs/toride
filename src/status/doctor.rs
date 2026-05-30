@@ -63,8 +63,8 @@ impl DoctorReport {
     pub fn check_with(system: &SystemStatus, daemon: &DaemonStatus, ssh: &SshStatus) -> Self {
         let mut checks = Vec::new();
         checks.extend(check_system(system));
-        checks.extend(check_daemon(daemon));
-        checks.extend(check_ssh(ssh));
+        checks.extend(check_daemon(*daemon));
+        checks.extend(check_ssh(*ssh));
         Self { checks }
     }
 
@@ -178,7 +178,7 @@ fn check_system(system: &SystemStatus) -> Vec<DoctorCheck> {
     checks
 }
 
-fn check_daemon(daemon: &DaemonStatus) -> Vec<DoctorCheck> {
+fn check_daemon(daemon: DaemonStatus) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(DoctorCheck {
         name: "daemon.alive".to_string(),
@@ -188,7 +188,7 @@ fn check_daemon(daemon: &DaemonStatus) -> Vec<DoctorCheck> {
             CheckStatus::Warn
         },
         message: if daemon.alive {
-            format!("daemon alive (PID {:?})", daemon.pid)
+            format!("daemon alive (PID {})", daemon.pid.unwrap_or(0))
         } else {
             "daemon not running".to_string()
         },
@@ -209,7 +209,7 @@ fn check_daemon(daemon: &DaemonStatus) -> Vec<DoctorCheck> {
     checks
 }
 
-fn check_ssh(ssh: &SshStatus) -> Vec<DoctorCheck> {
+fn check_ssh(ssh: SshStatus) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     // ssh binary
     let ssh_available = which("ssh").is_ok();

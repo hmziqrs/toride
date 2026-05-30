@@ -8,7 +8,7 @@ expression: "format!(\"{}\", report)"
   ✓ system.memory: memory: 8000000000 used / 16000000000 total
   ⚠ system.disks: 0 disk(s) found
   ✓ system.os_info: OS: macOS 15.0
-  ✓ daemon.alive: daemon alive (PID Some(54321))
+  ✓ daemon.alive: daemon alive (PID 54321)
   ✓ daemon.socket: socket ok
   ✓ ssh.binary: ssh found
   ✓ ssh.agent_binary: ssh-add found

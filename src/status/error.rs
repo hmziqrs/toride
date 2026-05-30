@@ -73,6 +73,14 @@ pub enum StatusError {
     /// macOS).
     #[error("unsupported platform: {0}")]
     Unsupported(String),
+
+    /// Expected data was not available from the OS or a subsystem.
+    ///
+    /// Raised when a collector runs successfully but the underlying data
+    /// source returned empty or unavailable results (e.g., hostname could
+    /// not be determined, memory info returned zero).
+    #[error("data unavailable: {0}")]
+    DataUnavailable(String),
 }
 
 impl Clone for StatusError {
@@ -89,6 +97,7 @@ impl Clone for StatusError {
             Self::ParseError(s) => Self::ParseError(s.clone()),
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
             Self::Unsupported(s) => Self::Unsupported(s.clone()),
+            Self::DataUnavailable(s) => Self::DataUnavailable(s.clone()),
         }
     }
 }

@@ -2,17 +2,19 @@
 //!
 //! Reports which metrics are available on the current platform.
 
+use std::fmt;
+
 use serde::Serialize;
 
 /// Top-level capabilities report.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct Capabilities {
     pub system: SystemCapabilities,
     pub daemon: DaemonCapabilities,
     pub ssh: SshCapabilities,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct SystemCapabilities {
     pub cpu_usage: bool,
     pub per_core_cpu: bool,
@@ -27,14 +29,14 @@ pub struct SystemCapabilities {
     pub sensors: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct DaemonCapabilities {
     pub pid_check: bool,
     pub uptime_for_pid: bool,
     pub stale_socket_detection: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct SshCapabilities {
     pub mux_check: bool,
     pub config_validation: bool,
@@ -54,7 +56,7 @@ impl Capabilities {
 }
 
 impl SystemCapabilities {
-    fn detect() -> Self {
+    const fn detect() -> Self {
         Self {
             cpu_usage: true,
             per_core_cpu: true,
@@ -66,13 +68,13 @@ impl SystemCapabilities {
             uptime: true,
             hostname: true,
             os_info: true,
-            sensors: cfg!(target_os = "linux"),
+            sensors: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
         }
     }
 }
 
 impl DaemonCapabilities {
-    fn detect() -> Self {
+    const fn detect() -> Self {
         Self {
             pid_check: cfg!(unix),
             uptime_for_pid: cfg!(target_os = "macos") || cfg!(target_os = "linux"),
@@ -122,9 +124,7 @@ impl fmt::Display for Capabilities {
     }
 }
 
-fn yn(v: bool) -> &'static str { if v { "yes" } else { "no" } }
-
-use std::fmt;
+const fn yn(v: bool) -> &'static str { if v { "yes" } else { "no" } }
 
 #[cfg(test)]
 mod tests {

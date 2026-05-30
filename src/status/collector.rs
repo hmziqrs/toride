@@ -64,8 +64,8 @@ impl Collector {
     ///
     /// On the first call, returns `None` for the delta.
     pub fn collect(&mut self) -> (TorideStatus, Option<SystemDelta>) {
-        let now = Instant::now();
         let status = TorideStatus::collect();
+        let now = Instant::now();
         let delta = self.previous.as_ref().map(|(prev_time, prev_status)| {
             compute_delta(prev_status, &status.system, prev_time.elapsed())
         });
@@ -79,8 +79,8 @@ impl Collector {
     pub fn collect_after_interval(&mut self) -> (TorideStatus, Option<SystemDelta>) {
         if let Some((prev_time, _)) = &self.previous {
             let elapsed = prev_time.elapsed();
-            if elapsed < self.interval {
-                std::thread::sleep(self.interval - elapsed);
+            if let Some(remaining) = self.interval.checked_sub(elapsed) {
+                std::thread::sleep(remaining);
             }
         }
         self.collect()

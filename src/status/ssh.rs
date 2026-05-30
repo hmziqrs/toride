@@ -126,7 +126,7 @@ fn default_config_path() -> PathBuf {
 /// Returns `true` only if **all** checks pass.
 #[cfg(unix)]
 fn validate_control_path(path: &Path) -> bool {
-    use std::os::unix::fs::FileTypeExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
 
     // 1. Existence and type check.
     let Ok(metadata) = fs::symlink_metadata(path) else {
@@ -138,7 +138,6 @@ fn validate_control_path(path: &Path) -> bool {
     }
 
     // 2. Permission check (must be 0600).
-    use std::os::unix::fs::PermissionsExt;
     let mode = metadata.permissions().mode() & 0o7777;
     if mode != 0o600 {
         return false;

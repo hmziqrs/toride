@@ -275,17 +275,20 @@ impl SystemStatus {
         let mut sys = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap()),
+                .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
+                .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
         );
         // sysinfo requires a brief sleep to measure CPU usage accurately.
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_cpu_usage();
+        sys.refresh_processes(ProcessesToUpdate::All, true);
 
         let cpu_usage = Self::read_cpu(&sys);
         let memory = Self::read_memory(&sys);
         let disks = Self::read_disks();
         let disk = Self::find_root_disk(&disks);
-        let network = Self::read_network();
+        let networks = Networks::new_with_refreshed_list();
+        let network = Self::read_network(&networks);
         let load_average = Self::read_load_average();
         let uptime_secs = Self::read_uptime();
         let hostname = Self::read_hostname();
@@ -293,13 +296,13 @@ impl SystemStatus {
         let cpu_cores = Self::read_cpu_cores(&sys);
         let physical_cores = System::physical_core_count();
         let swap = Self::read_swap(&sys);
-        let network_interfaces = Self::read_network_interfaces();
+        let network_interfaces = Self::read_network_interfaces(&networks);
         let sensors = Self::read_sensors();
         let boot_time = {
             let bt = System::boot_time();
             if bt > 0 { Some(bt) } else { None }
         };
-        let processes = Self::read_processes();
+        let processes = Self::read_processes_from(&sys);
         let gpu = Self::read_gpus();
         let battery = Self::read_battery();
 
@@ -336,9 +339,9 @@ impl SystemStatus {
 
     fn read_memory(sys: &System) -> MemoryStatus {
         let total = sys.total_memory();
-        let used = sys.used_memory();
+        let used = sys.used_memory().min(total);
         let percentage = if total > 0 {
-            (used as f64 / total as f64) * 100.0
+            ((used as f64 / total as f64) * 100.0).min(100.0)
         } else {
             0.0
         };
@@ -366,10 +369,9 @@ impl SystemStatus {
             })
     }
 
-    fn read_network() -> NetworkStatus {
-        let networks = Networks::new_with_refreshed_list();
+    fn read_network(networks: &Networks) -> NetworkStatus {
         let (mut received, mut transmitted) = (0u64, 0u64);
-        for (_name, data) in networks.iter() {
+        for data in networks.values() {
             received = received.saturating_add(data.total_received());
             transmitted = transmitted.saturating_add(data.total_transmitted());
         }
@@ -467,8 +469,7 @@ impl SystemStatus {
             .collect()
     }
 
-    fn read_network_interfaces() -> Vec<NetworkInterface> {
-        let networks = Networks::new_with_refreshed_list();
+    fn read_network_interfaces(networks: &Networks) -> Vec<NetworkInterface> {
         networks
             .iter()
             .map(|(name, data)| NetworkInterface {
@@ -490,35 +491,43 @@ impl SystemStatus {
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
                 temperature: {
-                    let t = c.temperature();
-                    if t.is_some() && !t.unwrap().is_nan() { t } else { None }
+                    c.temperature().filter(|t| !t.is_nan())
                 },
             })
             .collect()
     }
 
-    fn read_processes() -> ProcessSnapshot {
-        let mut sys = System::new_with_specifics(
-            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-        );
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+    fn read_processes_from(sys: &System) -> ProcessSnapshot {
         let processes: Vec<ProcessStatus> = sys
             .processes()
             .iter()
             .map(|(pid, p)| ProcessStatus {
                 pid: pid.as_u32(),
-                parent_pid: p.parent().map(|pp| pp.as_u32()),
+                parent_pid: p.parent().map(sysinfo::Pid::as_u32),
                 name: p.name().to_string_lossy().to_string(),
                 cpu_usage: p.cpu_usage(),
                 memory_bytes: p.memory(),
-                status: format!("{:?}", p.status()),
-                start_time: Some(p.start_time()),
+                status: format!("{}", p.status()),
+                start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
             })
             .collect();
         let total_count = processes.len();
         ProcessSnapshot {
             processes,
             total_count,
+        }
+    }
+
+    /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
+    fn parse_vram_to_bytes(v: &str) -> Option<u64> {
+        let v = v.trim();
+        if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
+            gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
+        } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
+            mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
+        } else {
+            // Bare number, assume MB
+            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb * 1024 * 1024)
         }
     }
 
@@ -547,10 +556,7 @@ impl SystemStatus {
                         .to_string();
                     let vram = display["sppci_vram"]
                         .as_str()
-                        .and_then(|v| {
-                            let v = v.replace("MB", "").replace(" ", "");
-                            v.parse::<u64>().ok().map(|mb| mb * 1024 * 1024)
-                        });
+                        .and_then(Self::parse_vram_to_bytes);
                     gpus.push(GpuInfo {
                         name,
                         vendor,
@@ -600,10 +606,10 @@ impl SystemStatus {
                 .output()
                 .ok()?;
             let text = String::from_utf8_lossy(&output.stdout);
-            let percent_line = text.lines().find(|l| l.contains("%"))?;
+            let percent_line = text.lines().find(|l| l.contains('%'))?;
             let pct_str = percent_line
                 .split_whitespace()
-                .find(|w| w.ends_with("%"))?;
+                .find(|w| w.ends_with('%'))?;
             let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
             let state = if text.contains("charging") || text.contains("AC attached") {
                 "Charging"
@@ -622,18 +628,38 @@ impl SystemStatus {
         #[cfg(target_os = "linux")]
         {
             use std::fs;
-            let capacity = fs::read_to_string("/sys/class/power_supply/BAT0/capacity").ok()?;
-            let pct: f32 = capacity.trim().parse().ok()?;
-            let status = fs::read_to_string("/sys/class/power_supply/BAT0/status")
-                .ok()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            Some(BatteryInfo {
-                charge_percent: pct,
-                state: status,
-                time_to_empty_secs: None,
-                time_to_full_secs: None,
-            })
+            use std::path::Path;
+            // Enumerate all battery entries (BAT0, BAT1, BATT, etc.)
+            let supply_dir = Path::new("/sys/class/power_supply");
+            let entries = fs::read_dir(supply_dir).ok()?;
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Match BAT* or "battery" entries
+                if !name_str.starts_with("BAT") && name_str != "battery" {
+                    continue;
+                }
+                // Verify it's actually a battery (type == "Battery")
+                if let Ok(type_content) = fs::read_to_string(path.join("type")) {
+                    if type_content.trim() != "Battery" {
+                        continue;
+                    }
+                }
+                let capacity = fs::read_to_string(path.join("capacity")).ok()?;
+                let pct: f32 = capacity.trim().parse().ok()?;
+                let status = fs::read_to_string(path.join("status"))
+                    .ok()
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "Unknown".to_string());
+                return Some(BatteryInfo {
+                    charge_percent: pct,
+                    state: status,
+                    time_to_empty_secs: None,
+                    time_to_full_secs: None,
+                });
+            }
+            None
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
@@ -789,9 +815,9 @@ const EB: u64 = PB * 1024;
 /// Write bytes in human-readable form directly to the formatter.
 fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
     if bytes >= EB {
-        write!(f, "{:.1} EB", bytes as f64 / EB as f64)
+        write!(f, "{:.1} EiB", bytes as f64 / EB as f64)
     } else if bytes >= PB {
-        write!(f, "{:.1} PB", bytes as f64 / PB as f64)
+        write!(f, "{:.1} PiB", bytes as f64 / PB as f64)
     } else if bytes >= TB {
         write!(f, "{:.1} TiB", bytes as f64 / TB as f64)
     } else if bytes >= GB {
@@ -1066,11 +1092,11 @@ mod tests {
 
     #[test]
     fn format_bytes_u64_max() {
-        // u64::MAX = 18_446_744_073_709_551_615 ≈ 16.0 EB
+        // u64::MAX = 18_446_744_073_709_551_615 ≈ 16.0 EiB
         let result = format_bytes(u64::MAX);
         assert!(
-            result.ends_with("EB"),
-            "u64::MAX should format as EB, got: {result}"
+            result.ends_with("EiB"),
+            "u64::MAX should format as EiB, got: {result}"
         );
     }
 

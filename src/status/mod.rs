@@ -85,10 +85,10 @@ impl TorideStatus {
         let capabilities = Capabilities::detect();
         let mut warnings = Vec::new();
         if system.hostname.is_empty() {
-            warnings.push(StatusError::Unsupported("hostname unavailable".to_string()));
+            warnings.push(StatusError::DataUnavailable("hostname unavailable".to_string()));
         }
         if system.memory.total_bytes == 0 {
-            warnings.push(StatusError::Unsupported("memory info unavailable".to_string()));
+            warnings.push(StatusError::DataUnavailable("memory info unavailable".to_string()));
         }
         Self { system, daemon, ssh, capabilities, warnings }
     }
@@ -100,8 +100,8 @@ impl fmt::Display for TorideStatus {
         write!(f, "{}", self.system)?;
         write!(f, "{}", self.daemon)?;
         write!(f, "{}", self.ssh)?;
+        write!(f, "{}", self.capabilities)?;
         if !self.warnings.is_empty() {
-            write!(f, "{}", self.capabilities)?;
             writeln!(f, "Warnings:")?;
             for w in &self.warnings {
                 writeln!(f, "  \u{26a0} {}", w)?;
