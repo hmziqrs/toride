@@ -194,7 +194,7 @@ fn remove_ban_success() {
     let (_dir, store) = tmp_store();
     store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
 
-    let removed = store.remove_ban("192.168.1.1", "sshd").unwrap();
+    let removed = store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
     assert_eq!(removed.ip, "192.168.1.1".parse::<IpAddr>().unwrap());
     assert_eq!(removed.jail_name, "sshd");
 
@@ -211,7 +211,7 @@ fn remove_ban_success() {
 #[test]
 fn remove_ban_not_found_returns_not_banned() {
     let (_dir, store) = tmp_store();
-    let result = store.remove_ban("10.0.0.99", "sshd");
+    let result = store.remove_ban("10.0.0.99".parse().unwrap(), "sshd");
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(ip) => assert_eq!(ip, "10.0.0.99"),
@@ -224,7 +224,7 @@ fn remove_ban_wrong_jail_returns_not_banned() {
     let (_dir, store) = tmp_store();
     store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
 
-    let result = store.remove_ban("192.168.1.1", "nginx");
+    let result = store.remove_ban("192.168.1.1".parse().unwrap(), "nginx");
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -242,7 +242,7 @@ fn remove_ban_same_ip_different_jail_only_removes_target() {
     store.add_ban(make_ban("192.168.1.1", "sshd")).unwrap();
     store.add_ban(make_ban("192.168.1.1", "nginx")).unwrap();
 
-    store.remove_ban("192.168.1.1", "sshd").unwrap();
+    store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 1);
@@ -684,7 +684,7 @@ fn empty_store_get_bans_some_jail() {
 fn empty_store_remove_ban_errors() {
     let (_dir, store) = tmp_store();
     assert!(matches!(
-        store.remove_ban("1.2.3.4", "sshd"),
+        store.remove_ban("1.2.3.4".parse().unwrap(), "sshd"),
         Err(crate::Error::NotBanned(_))
     ));
 }
@@ -717,7 +717,7 @@ fn multiple_jails_same_ip_independent_ban_lifecycle() {
     store.add_ban(make_ban("192.168.1.1", "dovecot")).unwrap();
 
     // Remove from one jail.
-    store.remove_ban("192.168.1.1", "nginx").unwrap();
+    store.remove_ban("192.168.1.1".parse().unwrap(), "nginx").unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 2);
@@ -733,7 +733,7 @@ fn multiple_jails_same_ip_independent_ban_lifecycle() {
 
     // Removing from nginx again should fail.
     assert!(matches!(
-        store.remove_ban("192.168.1.1", "nginx"),
+        store.remove_ban("192.168.1.1".parse().unwrap(), "nginx"),
         Err(crate::Error::NotBanned(_))
     ));
 }
@@ -844,7 +844,7 @@ fn full_lifecycle_ban_remove_clear_trim() {
 
     // 2. Remove some bans -- they move to history.
     for i in 0..5 {
-        store.remove_ban(&format!("10.0.0.{i}"), "sshd").unwrap();
+        store.remove_ban(format!("10.0.0.{i}").parse().unwrap(), "sshd").unwrap();
     }
     assert_eq!(store.get_bans(None).unwrap().len(), 5);
 

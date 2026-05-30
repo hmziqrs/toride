@@ -91,10 +91,6 @@ pub enum Error {
     #[error("Command execution failed: {0}")]
     CommandFailed(String),
 
-    /// Invalid command template.
-    #[error("Invalid command template: {0}")]
-    InvalidTemplate(String),
-
     // -- Jail subsystem --
     /// Jail with the given name already exists.
     #[error("Jail already exists: {0}")]
@@ -103,20 +99,6 @@ pub enum Error {
     /// Jail with the given name not found.
     #[error("Jail not found: {0}")]
     JailNotFound(String),
-
-    // -- Platform subsystem --
-    /// Platform is not supported for the requested operation.
-    #[error("Unsupported platform: {0}")]
-    UnsupportedPlatform(String),
-
-    // -- PID subsystem --
-    /// PID file operation failed.
-    #[error("PID file error: {0}")]
-    PidFile(String),
-
-    /// Process signal error.
-    #[error("Signal error: {0}")]
-    Signal(String),
 }
 
 /// Crate-level result alias.

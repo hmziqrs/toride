@@ -152,8 +152,12 @@ fn default_max_history() -> usize {
 impl Fail2BanConfig {
     /// Load configuration from a JSON file.
     pub fn load(path: &Path) -> crate::Result<Self> {
-        let content = fs::read_to_string(path).map_err(|_| {
-            crate::Error::ConfigNotFound(path.display().to_string())
+        let content = fs::read_to_string(path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                crate::Error::ConfigNotFound(path.display().to_string())
+            } else {
+                crate::Error::Io(e)
+            }
         })?;
         let config: Self = serde_json::from_str(&content)?;
         config.validate()?;

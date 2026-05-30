@@ -102,7 +102,7 @@ impl Fail2BanManager {
     }
 
     /// Unban an IP from a specific jail.
-    pub fn unban_ip(&self, jail_name: &str, ip: &str, dry_run: bool) -> crate::Result<()> {
+    pub fn unban_ip(&self, jail_name: &str, ip: IpAddr, dry_run: bool) -> crate::Result<()> {
         let jail = self.jails.get(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
         })?;

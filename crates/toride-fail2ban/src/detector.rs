@@ -4,13 +4,19 @@
 
 use std::fs;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::net::IpAddr;
 use std::path::Path;
+use std::sync::LazyLock;
 
 use chrono::Utc;
 use regex::Regex;
 
 use crate::store::JournalEntry;
 use crate::types::{BanEntry, ScanResult};
+
+static FALLBACK_IP_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("hardcoded regex is valid")
+});
 
 /// A log detector that matches lines against a regex pattern.
 #[derive(Debug)]
@@ -31,7 +37,7 @@ pub struct LogDetector {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MatchDetail {
     /// Matched IP address (from named capture group `ip` or `host`).
-    pub ip: Option<String>,
+    pub ip: Option<IpAddr>,
     /// The full matched line.
     pub line: String,
     /// Line number in the file.
@@ -104,15 +110,10 @@ impl LogDetector {
 
             if let Some(detail) = self.match_line(&line, self.line_number) {
                 matches_found += 1;
-                if let Some(ip_str) = &detail.ip
-                    && let Ok(ip) = ip_str.parse::<std::net::IpAddr>()
-                {
+                if let Some(ip) = detail.ip {
                     new_bans.push(BanEntry {
                         ip,
-                        prefix: match ip {
-                            std::net::IpAddr::V4(_) => 32,
-                            std::net::IpAddr::V6(_) => 128,
-                        },
+                        prefix: default_prefix(ip),
                         banned_at: Utc::now(),
                         expires_at: None,
                         jail_name: self.jail_name.clone(),
@@ -136,12 +137,8 @@ impl LogDetector {
 
     /// Match a single line against the pattern.
     pub fn match_line(&self, line: &str, line_number: u64) -> Option<MatchDetail> {
-        if !self.regex.is_match(line) {
-            return None;
-        }
-
-        let ip = self.extract_ip(line);
-
+        let caps = self.regex.captures(line)?;
+        let ip = Self::extract_ip_from_caps(&caps);
         Some(MatchDetail {
             ip,
             line: line.trim_end().to_string(),
@@ -149,22 +146,30 @@ impl LogDetector {
         })
     }
 
-    /// Extract IP address from a line using named capture groups.
+    /// Extract IP address from capture groups.
     /// Looks for `ip` or `host` named groups, falls back to first IP-like match.
-    fn extract_ip(&self, line: &str) -> Option<String> {
-        // Try named capture groups first.
-        if let Some(caps) = self.regex.captures(line) {
-            if let Some(ip_match) = caps.name("ip") {
-                return Some(ip_match.as_str().to_string());
-            }
-            if let Some(host_match) = caps.name("host") {
-                return Some(host_match.as_str().to_string());
-            }
+    fn extract_ip_from_caps(caps: &regex::Captures) -> Option<IpAddr> {
+        if let Some(ip_match) = caps.name("ip")
+            && let Ok(ip) = ip_match.as_str().parse()
+        {
+            return Some(ip);
         }
+        if let Some(host_match) = caps.name("host")
+            && let Ok(ip) = host_match.as_str().parse()
+        {
+            return Some(ip);
+        }
+        // Fallback: find first IP-like pattern in the full match
+        let full_match = caps.get(0)?.as_str();
+        FALLBACK_IP_RE.find(full_match)
+            .and_then(|m| m.as_str().parse().ok())
+    }
+}
 
-        // Fallback: find first IP-like pattern in the line.
-        let ip_regex = Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").ok()?;
-        ip_regex.find(line).map(|m| m.as_str().to_string())
+fn default_prefix(ip: IpAddr) -> u8 {
+    match ip {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
     }
 }
 

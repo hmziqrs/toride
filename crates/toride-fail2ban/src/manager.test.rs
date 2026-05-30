@@ -367,14 +367,14 @@ fn unban_ip_succeeds_for_banned_ip() {
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, true).unwrap();
-    manager.unban_ip("sshd", "192.168.1.100", true).unwrap();
+    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true).unwrap();
 }
 
 #[test]
 fn unban_ip_nonexistent_jail_returns_not_found() {
     let (_dir, manager) = setup();
 
-    let result = manager.unban_ip("nonexistent", "192.168.1.100", true);
+    let result = manager.unban_ip("nonexistent", "192.168.1.100".parse().unwrap(), true);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::JailNotFound(name) => assert_eq!(name, "nonexistent"),
@@ -386,7 +386,7 @@ fn unban_ip_nonexistent_jail_returns_not_found() {
 fn unban_ip_not_banned_returns_not_banned() {
     let (_dir, manager) = setup();
 
-    let result = manager.unban_ip("sshd", "192.168.1.100", true);
+    let result = manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -614,7 +614,7 @@ fn ban_then_unban_reflects_in_status() {
     assert_eq!(js.banned_ips.len(), 1);
     assert_eq!(js.banned_ips[0].ip, ip);
 
-    manager.unban_ip("sshd", "192.168.1.100", true).unwrap();
+    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true).unwrap();
     let js = manager.jail_status("sshd").unwrap();
     assert!(js.banned_ips.is_empty());
 }

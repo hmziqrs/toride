@@ -158,6 +158,13 @@ impl ActionExec {
         self.commands.for_current_platform()
     }
 
+    /// Execute a shell command with environment variables.
+    ///
+    /// # Security
+    /// Commands are executed via `sh -c`. Template variables (`<ip>`, `<jail>`, etc.)
+    /// are substituted before execution. Callers must ensure template values are safe
+    /// for shell interpolation. IP addresses from regex captures are generally safe,
+    /// but user-provided paths or jail names should be validated.
     fn run_command(cmd_str: &str, env: &HashMap<String, String>) -> crate::Result<()> {
         let output = Command::new("sh")
             .args(["-c", cmd_str])

@@ -385,7 +385,7 @@ fn unban_ip_removes_ban_entry() {
     let ip: std::net::IpAddr = "203.0.113.50".parse().unwrap();
 
     jail.ban_ip(ip, false).unwrap();
-    let entry = jail.unban_ip("203.0.113.50", false).unwrap();
+    let entry = jail.unban_ip("203.0.113.50".parse().unwrap(), false).unwrap();
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.jail_name, "test-jail");
 
@@ -398,7 +398,7 @@ fn unban_ip_removes_ban_entry() {
 fn unban_ip_not_banned_returns_not_banned() {
     let (jail, _log, _dir) = setup_test_jail();
 
-    let result = jail.unban_ip("10.0.0.99", false);
+    let result = jail.unban_ip("10.0.0.99".parse().unwrap(), false);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(msg) => assert!(msg.contains("10.0.0.99")),
@@ -448,7 +448,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
     let jail_b = Jail::new(config_b, store2).unwrap();
 
     // Unban from jail-b should fail since the IP is banned under jail-a.
-    let result = jail_b.unban_ip("10.0.0.1", false);
+    let result = jail_b.unban_ip("10.0.0.1".parse().unwrap(), false);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -494,7 +494,7 @@ fn list_bans_after_unban_reflects_removal() {
     jail.ban_ip(ip1, false).unwrap();
     jail.ban_ip(ip2, false).unwrap();
 
-    jail.unban_ip("10.0.0.1", false).unwrap();
+    jail.unban_ip("10.0.0.1".parse().unwrap(), false).unwrap();
 
     let bans = jail.list_bans().unwrap();
     assert_eq!(bans.len(), 1);
@@ -685,7 +685,7 @@ fn unban_then_reban_succeeds() {
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
 
     jail.ban_ip(ip, false).unwrap();
-    jail.unban_ip("10.0.0.1", false).unwrap();
+    jail.unban_ip("10.0.0.1".parse().unwrap(), false).unwrap();
 
     // Re-banning should succeed.
     let entry = jail.ban_ip(ip, false).unwrap();

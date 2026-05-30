@@ -11,22 +11,22 @@ fn cidr_block_new_valid_ipv4() {
     let block = CidrBlock::new("192.168.1.0".parse().unwrap(), 24);
     assert!(block.is_ok());
     let block = block.unwrap();
-    assert_eq!(block.addr, "192.168.1.0".parse::<IpAddr>().unwrap());
-    assert_eq!(block.prefix, 24);
+    assert_eq!(block.addr(), "192.168.1.0".parse::<IpAddr>().unwrap());
+    assert_eq!(block.prefix(), 24);
 }
 
 #[test]
 fn cidr_block_new_valid_ipv4_slash_zero() {
     let block = CidrBlock::new("0.0.0.0".parse().unwrap(), 0);
     assert!(block.is_ok());
-    assert_eq!(block.unwrap().prefix, 0);
+    assert_eq!(block.unwrap().prefix(), 0);
 }
 
 #[test]
 fn cidr_block_new_valid_ipv4_slash_32() {
     let block = CidrBlock::new("10.0.0.1".parse().unwrap(), 32);
     assert!(block.is_ok());
-    assert_eq!(block.unwrap().prefix, 32);
+    assert_eq!(block.unwrap().prefix(), 32);
 }
 
 #[test]
@@ -34,22 +34,22 @@ fn cidr_block_new_valid_ipv6() {
     let block = CidrBlock::new("2001:db8::".parse().unwrap(), 32);
     assert!(block.is_ok());
     let block = block.unwrap();
-    assert_eq!(block.addr, "2001:db8::".parse::<IpAddr>().unwrap());
-    assert_eq!(block.prefix, 32);
+    assert_eq!(block.addr(), "2001:db8::".parse::<IpAddr>().unwrap());
+    assert_eq!(block.prefix(), 32);
 }
 
 #[test]
 fn cidr_block_new_valid_ipv6_slash_zero() {
     let block = CidrBlock::new("::".parse().unwrap(), 0);
     assert!(block.is_ok());
-    assert_eq!(block.unwrap().prefix, 0);
+    assert_eq!(block.unwrap().prefix(), 0);
 }
 
 #[test]
 fn cidr_block_new_valid_ipv6_slash_128() {
     let block = CidrBlock::new("::1".parse().unwrap(), 128);
     assert!(block.is_ok());
-    assert_eq!(block.unwrap().prefix, 128);
+    assert_eq!(block.unwrap().prefix(), 128);
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn ban_manager_unban_removes_entry() {
     manager.ban(ip, 32, "sshd", 3, 3600, None).unwrap();
     assert!(manager.is_banned(ip).unwrap());
 
-    let removed = manager.unban("192.168.1.100", "sshd");
+    let removed = manager.unban("192.168.1.100".parse().unwrap(), "sshd");
     assert!(removed.is_ok());
     assert_eq!(removed.unwrap().ip, ip);
 
@@ -418,7 +418,7 @@ fn ban_manager_unban_removes_entry() {
 fn ban_manager_unban_nonexistent_returns_not_banned() {
     let (manager, _dir) = setup_manager();
 
-    let result = manager.unban("10.0.0.99", "sshd");
+    let result = manager.unban("10.0.0.99".parse().unwrap(), "sshd");
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(msg) => assert!(msg.contains("10.0.0.99")),
@@ -449,7 +449,7 @@ fn ban_manager_is_banned_after_unban() {
     let ip: IpAddr = "10.0.0.5".parse().unwrap();
 
     manager.ban(ip, 32, "sshd", 1, 3600, None).unwrap();
-    manager.unban("10.0.0.5", "sshd").unwrap();
+    manager.unban("10.0.0.5".parse().unwrap(), "sshd").unwrap();
     assert!(!manager.is_banned(ip).unwrap());
 }
 
@@ -572,7 +572,7 @@ fn ban_manager_unban_wrong_jail_returns_not_banned() {
     manager.ban(ip, 32, "sshd", 1, 3600, None).unwrap();
 
     // Attempting to unban from a different jail should fail.
-    let result = manager.unban("10.0.0.1", "nginx");
+    let result = manager.unban("10.0.0.1".parse().unwrap(), "nginx");
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}

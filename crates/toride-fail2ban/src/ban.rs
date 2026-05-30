@@ -16,9 +16,9 @@ use crate::types::BanEntry;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CidrBlock {
     /// Network address.
-    pub addr: IpAddr,
+    addr: IpAddr,
     /// Prefix length (e.g., 24 for /24).
-    pub prefix: u8,
+    prefix: u8,
 }
 
 impl CidrBlock {
@@ -35,6 +35,12 @@ impl CidrBlock {
         }
         Ok(Self { addr, prefix })
     }
+
+    /// Get the network address.
+    pub fn addr(&self) -> IpAddr { self.addr }
+
+    /// Get the prefix length.
+    pub fn prefix(&self) -> u8 { self.prefix }
 
     /// Check if an IP address falls within this CIDR block.
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -85,24 +91,24 @@ impl CidrSet {
 
     /// Add a CIDR block to the set.
     pub fn insert(&mut self, block: CidrBlock) {
-        match block.addr {
+        match block.addr() {
             IpAddr::V4(addr) => {
-                if block.prefix == 32 {
+                if block.prefix() == 32 {
                     self.singles_v4.insert(u32::from(addr));
                 } else {
-                    let mask = !((1u32 << (32 - block.prefix)) - 1);
+                    let mask = !((1u32 << (32 - block.prefix())) - 1);
                     let net = u32::from(addr) & mask;
                     self.v4.push((net, mask));
                 }
             }
             IpAddr::V6(addr) => {
-                if block.prefix == 128 {
+                if block.prefix() == 128 {
                     self.singles_v6.insert(u128::from(addr));
                 } else {
-                    let mask = if block.prefix == 0 {
+                    let mask = if block.prefix() == 0 {
                         0
                     } else {
-                        !((1u128 << (128 - block.prefix)) - 1)
+                        !((1u128 << (128 - block.prefix())) - 1)
                     };
                     let net = u128::from(addr) & mask;
                     self.v6.push((net, mask));
@@ -133,12 +139,12 @@ impl CidrSet {
 
     /// Remove a CIDR block from the set.
     pub fn remove(&mut self, block: &CidrBlock) -> bool {
-        match block.addr {
+        match block.addr() {
             IpAddr::V4(addr) => {
-                if block.prefix == 32 {
+                if block.prefix() == 32 {
                     self.singles_v4.remove(&u32::from(addr))
                 } else {
-                    let mask = !((1u32 << (32 - block.prefix)) - 1);
+                    let mask = !((1u32 << (32 - block.prefix())) - 1);
                     let net = u32::from(addr) & mask;
                     let len_before = self.v4.len();
                     self.v4.retain(|&(n, m)| !(n == net && m == mask));
@@ -146,13 +152,13 @@ impl CidrSet {
                 }
             }
             IpAddr::V6(addr) => {
-                if block.prefix == 128 {
+                if block.prefix() == 128 {
                     self.singles_v6.remove(&u128::from(addr))
                 } else {
-                    let mask = if block.prefix == 0 {
+                    let mask = if block.prefix() == 0 {
                         0
                     } else {
-                        !((1u128 << (128 - block.prefix)) - 1)
+                        !((1u128 << (128 - block.prefix())) - 1)
                     };
                     let net = u128::from(addr) & mask;
                     let len_before = self.v6.len();
@@ -207,7 +213,7 @@ impl BanManager {
     }
 
     /// Unban an IP address.
-    pub fn unban(&self, ip: &str, jail_name: &str) -> crate::Result<BanEntry> {
+    pub fn unban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
         self.store.remove_ban(ip, jail_name)
     }
 

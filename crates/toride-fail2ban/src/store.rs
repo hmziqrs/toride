@@ -3,6 +3,7 @@
 //! Uses atomic write (temp file + rename) to prevent corruption.
 
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -54,8 +55,12 @@ impl Store {
         if !self.path.exists() {
             return Ok(StoreData::default());
         }
-        let content = fs::read_to_string(&self.path)?;
-        let data: StoreData = serde_json::from_str(&content)?;
+        let content = fs::read_to_string(&self.path).map_err(|e| {
+            crate::Error::Io(std::io::Error::new(e.kind(), format!("Failed to read '{}': {e}", self.path.display())))
+        })?;
+        let data: StoreData = serde_json::from_str(&content).map_err(|e| {
+            crate::Error::InvalidConfig(format!("Corrupt ban database '{}': {e}", self.path.display()))
+        })?;
         Ok(data)
     }
 
@@ -66,7 +71,10 @@ impl Store {
 
         // Atomic write: write to temp, then rename.
         fs::write(&tmp_path, &content)?;
-        fs::rename(&tmp_path, &self.path)?;
+        if let Err(e) = fs::rename(&tmp_path, &self.path) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(crate::Error::Io(std::io::Error::new(e.kind(), format!("Failed to atomically update '{}': {e}", self.path.display()))));
+        }
         Ok(())
     }
 
@@ -86,12 +94,10 @@ impl Store {
     }
 
     /// Remove a ban entry. Returns the removed entry.
-    pub fn remove_ban(&self, ip: &str, jail_name: &str) -> crate::Result<BanEntry> {
+    pub fn remove_ban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
         let mut data = self.load()?;
 
-        let pos = data.active_bans.iter().position(|b| {
-            b.ip.to_string() == ip && b.jail_name == jail_name
-        });
+        let pos = data.active_bans.iter().position(|b| b.ip == ip && b.jail_name == jail_name);
         let pos = pos.ok_or_else(|| crate::Error::NotBanned(ip.to_string()))?;
 
         let entry = data.active_bans.remove(pos);

@@ -62,7 +62,7 @@ fn match_line_returns_detail_on_match() {
     let detail = detector.match_line("Failed password from 10.0.0.1", 42);
     assert!(detail.is_some());
     let detail = detail.unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("10.0.0.1"));
+    assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
     assert_eq!(detail.line, "Failed password from 10.0.0.1");
     assert_eq!(detail.line_number, 42);
 }
@@ -110,7 +110,7 @@ fn extract_ip_from_named_group_ip() {
         r"(?P<ip>\d+\.\d+\.\d+\.\d+) login failure",
     );
     let detail = detector.match_line("10.20.30.40 login failure", 1).unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("10.20.30.40"));
+    assert_eq!(detail.ip, Some("10.20.30.40".parse().unwrap()));
 }
 
 #[test]
@@ -120,7 +120,7 @@ fn extract_ip_from_named_group_host() {
         r"(?P<host>\d+\.\d+\.\d+\.\d+) auth fail",
     );
     let detail = detector.match_line("172.16.0.5 auth fail", 1).unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("172.16.0.5"));
+    assert_eq!(detail.ip, Some("172.16.0.5".parse().unwrap()));
 }
 
 #[test]
@@ -131,7 +131,7 @@ fn extract_ip_prefers_ip_over_host() {
         r"(?P<host>\S+) -> (?P<ip>\d+\.\d+\.\d+\.\d+)",
     );
     let detail = detector.match_line("server -> 10.0.0.99", 1).unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("10.0.0.99"));
+    assert_eq!(detail.ip, Some("10.0.0.99".parse().unwrap()));
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn extract_ip_fallback_to_first_ip_pattern() {
     let detail = detector
         .match_line("connection from 192.168.55.1 refused", 1)
         .unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("192.168.55.1"));
+    assert_eq!(detail.ip, Some("192.168.55.1".parse().unwrap()));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn extract_ip_with_ipv6_via_named_group() {
     let detail = detector
         .match_line("from ::1 port 22", 1)
         .unwrap();
-    assert_eq!(detail.ip.as_deref(), Some("::1"));
+    assert_eq!(detail.ip, Some("::1".parse().unwrap()));
 }
 
 #[test]
@@ -546,7 +546,7 @@ fn extract_ip_fallback_picks_first_ip_in_line() {
     let (detector, _tmp) = detector_with_content(content, r"proxy .* forwarded");
     let detail = detector.match_line("proxy 10.0.0.1 forwarded to 10.0.0.2", 1).unwrap();
     // Fallback regex finds the first IP-like match.
-    assert_eq!(detail.ip.as_deref(), Some("10.0.0.1"));
+    assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
 }
 
 #[test]

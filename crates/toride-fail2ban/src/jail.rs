@@ -48,13 +48,15 @@ impl Jail {
             support::default_unban_commands(firewall),
         );
 
+        let ignore_ips = config.ignore_ips.clone();
+
         Ok(Self {
             config,
             detector,
             ban_manager,
             ban_action,
             unban_action,
-            ignore_ips: Vec::new(),
+            ignore_ips,
         })
     }
 
@@ -94,7 +96,9 @@ impl Jail {
                 );
 
                 // Execute ban action.
-                let _ = self.ban_action.exec(&vars);
+                if let Err(e) = self.ban_action.exec(&vars) {
+                    tracing::error!(jail = %self.config.name, ip = %ban.ip, error = %e, "ban action failed");
+                }
             }
         }
 
@@ -130,26 +134,30 @@ impl Jail {
                 1,
                 &self.config.log_path.display().to_string(),
             );
-            let _ = self.ban_action.exec(&vars);
+            if let Err(e) = self.ban_action.exec(&vars) {
+                tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
+            }
         }
 
         Ok(entry)
     }
 
     /// Unban a specific IP address.
-    pub fn unban_ip(&self, ip: &str, dry_run: bool) -> crate::Result<BanEntry> {
+    pub fn unban_ip(&self, ip: IpAddr, dry_run: bool) -> crate::Result<BanEntry> {
         let entry = self.ban_manager.unban(ip, &self.config.name)?;
 
         if !dry_run {
             let vars = ActionVars::new(
-                ip,
+                &ip.to_string(),
                 entry.prefix,
                 &self.config.name,
                 self.config.ban_time,
                 entry.fail_count,
                 &self.config.log_path.display().to_string(),
             );
-            let _ = self.unban_action.exec(&vars);
+            if let Err(e) = self.unban_action.exec(&vars) {
+                tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "unban action failed");
+            }
         }
 
         Ok(entry)
