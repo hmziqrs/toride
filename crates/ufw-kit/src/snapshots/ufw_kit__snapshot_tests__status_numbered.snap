@@ -1,0 +1,56 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: "format!(\"{status:#?}\")"
+---
+UfwStatus {
+    active: true,
+    default_incoming: None,
+    default_outgoing: None,
+    default_routed: None,
+    logging_level: None,
+    new_app_profiles: None,
+    rules: [
+        ParsedRule {
+            number: Some(
+                1,
+            ),
+            raw: "22/tcp                     ALLOW IN    Anywhere",
+            action: None,
+            direction: None,
+            protocol: None,
+            from: None,
+            to: None,
+            comment: None,
+            ipv6: false,
+            is_route: false,
+        },
+        ParsedRule {
+            number: Some(
+                2,
+            ),
+            raw: "443/tcp                    ALLOW IN    Anywhere",
+            action: None,
+            direction: None,
+            protocol: None,
+            from: None,
+            to: None,
+            comment: None,
+            ipv6: false,
+            is_route: false,
+        },
+        ParsedRule {
+            number: Some(
+                3,
+            ),
+            raw: "22/tcp                     ALLOW IN    Anywhere (v6)",
+            action: None,
+            direction: None,
+            protocol: None,
+            from: None,
+            to: None,
+            comment: None,
+            ipv6: true,
+            is_route: false,
+        },
+    ],
+}

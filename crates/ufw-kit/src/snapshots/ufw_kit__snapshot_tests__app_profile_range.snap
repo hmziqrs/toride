@@ -1,0 +1,11 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: render_profile(&spec)
+---
+# Managed by ufw-kit.
+# Do not edit manually unless you also disable this manager.
+
+[DevServer]
+title=Development Server
+description=Dev server with port range
+ports=3000/tcp|8000:9000/tcp

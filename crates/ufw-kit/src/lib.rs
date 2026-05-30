@@ -41,6 +41,10 @@ pub mod config;
 pub mod framework;
 pub mod service;
 
+#[cfg(test)]
+#[path = "snapshots.test.rs"]
+mod snapshot_tests;
+
 // Re-export the primary entry point at crate root.
 pub use client::Ufw;
 pub use error::{Error, Result};
