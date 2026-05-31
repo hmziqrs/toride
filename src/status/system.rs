@@ -120,6 +120,9 @@ fn read_battery_os() -> Option<BatteryInfo> {
         state: state.to_string(),
         time_to_empty_secs: None,
         time_to_full_secs: None,
+        voltage: None,
+        cycle_count: None,
+        health_percent: None,
     })
 }
 
@@ -153,6 +156,9 @@ fn read_battery_os() -> Option<BatteryInfo> {
             state: status,
             time_to_empty_secs: None,
             time_to_full_secs: None,
+            voltage: None,
+            cycle_count: None,
+            health_percent: None,
         });
     }
     None
@@ -162,6 +168,53 @@ fn read_battery_os() -> Option<BatteryInfo> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_battery_os() -> Option<BatteryInfo> {
     None
+}
+
+/// Static hardware information that does not change between snapshots.
+#[derive(Debug, Clone, Serialize)]
+pub struct StaticInfo {
+    pub os: OsInfo,
+    pub kernel_version: Option<String>,
+    pub hostname: String,
+    pub cpu_brand: String,
+    pub cpu_vendor: String,
+    pub cpu_frequency: u64,
+    pub physical_cores: Option<usize>,
+    pub logical_cores: usize,
+    pub memory_total_bytes: u64,
+}
+
+/// Aggregated sensor snapshot with CPU/GPU temperature highlights.
+#[derive(Debug, Clone, Serialize)]
+pub struct SensorSnapshot {
+    pub readings: Vec<SensorStatus>,
+    pub cpu_temperature: Option<f32>,
+    pub gpu_temperature: Option<f32>,
+}
+
+/// Virtualization environment detection.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct VirtualizationSnapshot {
+    pub in_docker: bool,
+    pub in_lxc: bool,
+    pub in_containerd: bool,
+    pub in_kubernetes: bool,
+    pub in_wsl: bool,
+    pub in_vm: bool,
+    pub hypervisor_vendor: Option<String>,
+    pub cgroup_version: Option<String>,
+    pub cpu_quota: Option<f64>,
+    pub memory_limit_bytes: Option<u64>,
+}
+
+/// Disk I/O counters snapshot.
+#[derive(Debug, Clone, Copy, Serialize, Default)]
+pub struct DiskIoSnapshot {
+    pub read_bytes: u64,
+    pub written_bytes: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
+    pub busy_time_ms: u64,
 }
 
 /// OS-level system metrics snapshot.
@@ -206,6 +259,14 @@ pub struct SystemStatus {
     pub gpu: Vec<GpuInfo>,
     /// Battery status, if available.
     pub battery: Option<BatteryInfo>,
+    /// Static hardware information.
+    pub static_info: StaticInfo,
+    /// Aggregated sensor snapshot.
+    pub sensor_snapshot: SensorSnapshot,
+    /// Virtualization environment detection.
+    pub virtualization: VirtualizationSnapshot,
+    /// Disk I/O counters.
+    pub disk_io: DiskIoSnapshot,
 }
 
 /// Memory usage snapshot.
@@ -217,6 +278,12 @@ pub struct MemoryStatus {
     pub total_bytes: u64,
     /// Usage percentage (0.0–100.0).
     pub percentage: f64,
+    /// Free memory in bytes.
+    pub free_bytes: u64,
+    /// Available memory in bytes.
+    pub available_bytes: u64,
+    /// Cached memory in bytes.
+    pub cached_bytes: u64,
 }
 
 /// Disk usage snapshot.
@@ -236,6 +303,12 @@ pub struct DiskStatus {
     pub percentage: f64,
     /// Whether the disk is removable.
     pub is_removable: bool,
+    /// Free disk space in bytes.
+    pub free_bytes: u64,
+    /// Available disk space in bytes.
+    pub available_bytes: u64,
+    /// Disk type: "SSD", "HDD", or "Unknown".
+    pub disk_type: String,
 }
 
 /// Network I/O counters.
@@ -310,6 +383,14 @@ pub struct NetworkInterface {
     pub errors_received: u64,
     /// Transmit errors.
     pub errors_transmitted: u64,
+    /// Hardware (MAC) address, if available.
+    pub mac_address: Option<String>,
+    /// Maximum transmission unit, if available.
+    pub mtu: Option<u32>,
+    /// Receive drops.
+    pub drops_received: u64,
+    /// Transmit drops.
+    pub drops_transmitted: u64,
 }
 
 /// Temperature sensor reading.
@@ -332,6 +413,12 @@ pub struct GpuInfo {
     pub vram_bytes: Option<u64>,
     /// Driver version, if available.
     pub driver_version: Option<String>,
+    /// GPU type: "Integrated" or "Discrete", if detectable.
+    pub gpu_type: Option<String>,
+    /// GPU temperature in Celsius, if available.
+    pub temperature: Option<f32>,
+    /// GPU utilization percentage (0.0-100.0), if available.
+    pub utilization: Option<f32>,
 }
 
 /// Battery status snapshot.
@@ -345,6 +432,12 @@ pub struct BatteryInfo {
     pub time_to_empty_secs: Option<u64>,
     /// Time to full (seconds), if charging.
     pub time_to_full_secs: Option<u64>,
+    /// Battery voltage in volts, if available.
+    pub voltage: Option<f32>,
+    /// Battery cycle count, if available.
+    pub cycle_count: Option<u32>,
+    /// Battery health as a percentage (0.0-100.0), if available.
+    pub health_percent: Option<f32>,
 }
 
 /// Process information snapshot.
@@ -364,6 +457,14 @@ pub struct ProcessStatus {
     pub status: String,
     /// Process start time (seconds since epoch).
     pub start_time: Option<u64>,
+    /// Path to the process executable.
+    pub executable_path: Option<String>,
+    /// User running the process.
+    pub user: Option<String>,
+    /// Virtual memory usage in bytes.
+    pub virtual_memory: u64,
+    /// Number of threads.
+    pub thread_count: Option<u32>,
 }
 
 /// Process list snapshot.
@@ -389,8 +490,8 @@ impl ProcessSnapshot {
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
-    ///         ProcessStatus { pid: 1, parent_pid: None, name: "idle".into(), cpu_usage: 0.1, memory_bytes: 100, status: "Sleeping".into(), start_time: None },
-    ///         ProcessStatus { pid: 2, parent_pid: None, name: "busy".into(), cpu_usage: 95.0, memory_bytes: 200, status: "Running".into(), start_time: None },
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "idle".into(), cpu_usage: 0.1, memory_bytes: 100, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "busy".into(), cpu_usage: 95.0, memory_bytes: 200, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
     ///     ],
     ///     total_count: 2,
     /// };
@@ -420,8 +521,8 @@ impl ProcessSnapshot {
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
-    ///         ProcessStatus { pid: 1, parent_pid: None, name: "small".into(), cpu_usage: 1.0, memory_bytes: 1024, status: "Sleeping".into(), start_time: None },
-    ///         ProcessStatus { pid: 2, parent_pid: None, name: "large".into(), cpu_usage: 1.0, memory_bytes: 1024 * 1024 * 100, status: "Running".into(), start_time: None },
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "small".into(), cpu_usage: 1.0, memory_bytes: 1024, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "large".into(), cpu_usage: 1.0, memory_bytes: 1024 * 1024 * 100, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
     ///     ],
     ///     total_count: 2,
     /// };
@@ -487,6 +588,10 @@ impl SystemStatus {
         let processes = Self::read_processes_from(&sys);
         let gpu = Self::read_gpus();
         let battery = read_battery_os();
+        let static_info = Self::read_static_info(&sys);
+        let sensor_snapshot = Self::read_sensor_snapshot();
+        let virtualization = Self::read_virtualization();
+        let disk_io = Self::read_disk_io();
 
         Self {
             cpu_usage,
@@ -507,6 +612,10 @@ impl SystemStatus {
             processes,
             gpu,
             battery,
+            static_info,
+            sensor_snapshot,
+            virtualization,
+            disk_io,
         }
     }
 
@@ -524,6 +633,8 @@ impl SystemStatus {
     fn read_memory(sys: &System) -> MemoryStatus {
         let total = sys.total_memory();
         let used = sys.used_memory().min(total);
+        let free = sys.free_memory();
+        let available = sys.available_memory();
         let percentage = if total > 0 {
             ((used as f64 / total as f64) * 100.0).min(100.0)
         } else {
@@ -533,6 +644,9 @@ impl SystemStatus {
             used_bytes: used,
             total_bytes: total,
             percentage,
+            free_bytes: free,
+            available_bytes: available,
+            cached_bytes: 0,
         }
     }
 
@@ -550,6 +664,9 @@ impl SystemStatus {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                free_bytes: 0,
+                available_bytes: 0,
+                disk_type: "Unknown".to_string(),
             })
     }
 
@@ -651,6 +768,9 @@ impl SystemStatus {
                     total_bytes: total,
                     percentage,
                     is_removable: d.is_removable(),
+                    free_bytes: available,
+                    available_bytes: available,
+                    disk_type: "Unknown".to_string(),
                 }
             })
             .collect()
@@ -667,6 +787,10 @@ impl SystemStatus {
                 packets_transmitted: data.total_packets_transmitted(),
                 errors_received: data.errors_on_received(),
                 errors_transmitted: data.errors_on_transmitted(),
+                mac_address: None,
+                mtu: None,
+                drops_received: 0,
+                drops_transmitted: 0,
             })
             .collect()
     }
@@ -696,6 +820,10 @@ impl SystemStatus {
                 memory_bytes: p.memory(),
                 status: format!("{}", p.status()),
                 start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
+                user: None,
+                virtual_memory: p.virtual_memory(),
+                thread_count: None,
             })
             .collect();
         let total_count = processes.len();
@@ -736,6 +864,9 @@ impl SystemStatus {
                         vendor,
                         vram_bytes: vram,
                         driver_version: None,
+                        gpu_type: None,
+                        temperature: None,
+                        utilization: None,
                     });
                 }
             }
@@ -761,6 +892,9 @@ impl SystemStatus {
                                 vendor: "NVIDIA".to_string(),
                                 vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
                                 driver_version: Some(driver),
+                                gpu_type: Some("Discrete".to_string()),
+                                temperature: None,
+                                utilization: None,
                             });
                         }
                     }
@@ -768,6 +902,106 @@ impl SystemStatus {
             }
         }
         gpus
+    }
+
+    fn read_static_info(sys: &System) -> StaticInfo {
+        let cpus = sys.cpus();
+        let brand = cpus.first().map_or_else(String::new, |c| c.brand().to_string());
+        let vendor = cpus.first().map_or_else(String::new, |c| c.vendor_id().to_string());
+        let freq = cpus.first().map_or(0, |c| c.frequency());
+        StaticInfo {
+            os: Self::read_os_info(),
+            kernel_version: sysinfo::System::kernel_version(),
+            hostname: Self::read_hostname(),
+            cpu_brand: brand,
+            cpu_vendor: vendor,
+            cpu_frequency: freq,
+            physical_cores: sysinfo::System::physical_core_count(),
+            logical_cores: cpus.len(),
+            memory_total_bytes: sys.total_memory(),
+        }
+    }
+
+    fn read_sensor_snapshot() -> SensorSnapshot {
+        let components = Components::new_with_refreshed_list();
+        let readings: Vec<SensorStatus> = components
+            .iter()
+            .map(|c| SensorStatus {
+                label: c.label().to_string(),
+                temperature: c.temperature().filter(|t| !t.is_nan()),
+            })
+            .collect();
+        let cpu_temperature = readings.iter().find_map(|s| {
+            if s.label.to_lowercase().contains("cpu") { s.temperature } else { None }
+        });
+        let gpu_temperature = readings.iter().find_map(|s| {
+            if s.label.to_lowercase().contains("gpu") { s.temperature } else { None }
+        });
+        SensorSnapshot { readings, cpu_temperature, gpu_temperature }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_virtualization() -> VirtualizationSnapshot {
+        use std::fs;
+        let mut snap = VirtualizationSnapshot::default();
+        snap.in_docker = std::path::Path::new("/.dockerenv").exists();
+        if let Ok(cgroup) = fs::read_to_string("/proc/self/cgroup") {
+            if cgroup.contains("/lxc/") || cgroup.contains("lxc.payload") { snap.in_lxc = true; }
+            if cgroup.contains("containerd") { snap.in_containerd = true; }
+            if cgroup.contains("kubepods") { snap.in_kubernetes = true; }
+            snap.cgroup_version = Some(if cgroup.starts_with("0::/") { "v2" } else { "v1" }.to_string());
+        }
+        if let Ok(version) = fs::read_to_string("/proc/version") {
+            let lower = version.to_lowercase();
+            if lower.contains("microsoft") || lower.contains("wsl") { snap.in_wsl = true; }
+        }
+        if let Ok(product) = fs::read_to_string("/sys/class/dmi/id/product_name") {
+            let lower = product.to_lowercase();
+            if lower.contains("virtualbox") || lower.contains("vmware") || lower.contains("kvm")
+                || lower.contains("qemu") || lower.contains("hyper-v") || lower.contains("virtual")
+            {
+                snap.in_vm = true;
+                snap.hypervisor_vendor = Some(product.trim().to_string());
+            }
+        }
+        snap
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_virtualization() -> VirtualizationSnapshot {
+        VirtualizationSnapshot::default()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_disk_io() -> DiskIoSnapshot {
+        use std::fs;
+        let content = match fs::read_to_string("/proc/diskstats") {
+            Ok(c) => c, Err(_) => return DiskIoSnapshot::default(),
+        };
+        let mut snap = DiskIoSnapshot::default();
+        for line in content.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() < 14 { continue; }
+            let name = fields[2];
+            if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") { continue; }
+            let sectors_read: u64 = fields[5].parse().unwrap_or(0);
+            let read_time: u64 = fields[6].parse().unwrap_or(0);
+            let reads: u64 = fields[3].parse().unwrap_or(0);
+            let sectors_written: u64 = fields[9].parse().unwrap_or(0);
+            let write_time: u64 = fields[10].parse().unwrap_or(0);
+            let writes: u64 = fields[7].parse().unwrap_or(0);
+            snap.read_bytes = snap.read_bytes.saturating_add(sectors_read * 512);
+            snap.written_bytes = snap.written_bytes.saturating_add(sectors_written * 512);
+            snap.read_ops = snap.read_ops.saturating_add(reads);
+            snap.write_ops = snap.write_ops.saturating_add(writes);
+            snap.busy_time_ms = snap.busy_time_ms.saturating_add(read_time.saturating_add(write_time));
+        }
+        snap
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn read_disk_io() -> DiskIoSnapshot {
+        DiskIoSnapshot::default()
     }
 }
 
@@ -994,6 +1228,8 @@ impl MemoryProvider for SysinfoProvider {
     fn memory(&mut self) -> StatusResult<MemoryStatus> {
         let total = self.sys.total_memory();
         let used = self.sys.used_memory().min(total);
+        let free = self.sys.free_memory();
+        let available = self.sys.available_memory();
         let percentage = if total > 0 {
             ((used as f64 / total as f64) * 100.0).min(100.0)
         } else {
@@ -1003,6 +1239,9 @@ impl MemoryProvider for SysinfoProvider {
             used_bytes: used,
             total_bytes: total,
             percentage,
+            free_bytes: free,
+            available_bytes: available,
+            cached_bytes: 0,
         })
     }
 
@@ -1037,6 +1276,9 @@ impl DiskProvider for SysinfoProvider {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                free_bytes: 0,
+                available_bytes: 0,
+                disk_type: "Unknown".to_string(),
             }))
     }
 
@@ -1062,6 +1304,9 @@ impl DiskProvider for SysinfoProvider {
                     total_bytes: total,
                     percentage,
                     is_removable: d.is_removable(),
+                    free_bytes: available,
+                    available_bytes: available,
+                    disk_type: "Unknown".to_string(),
                 }
             })
             .collect())
@@ -1094,6 +1339,10 @@ impl NetworkProvider for SysinfoProvider {
                 packets_transmitted: data.total_packets_transmitted(),
                 errors_received: data.errors_on_received(),
                 errors_transmitted: data.errors_on_transmitted(),
+                mac_address: None,
+                mtu: None,
+                drops_received: 0,
+                drops_transmitted: 0,
             })
             .collect())
     }
@@ -1154,6 +1403,10 @@ impl ProcessProvider for SysinfoProvider {
                 memory_bytes: p.memory(),
                 status: format!("{}", p.status()),
                 start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
+                user: None,
+                virtual_memory: p.virtual_memory(),
+                thread_count: None,
             })
             .collect();
         let total_count = processes.len();
@@ -1202,6 +1455,9 @@ impl GpuProvider for SysinfoProvider {
                         vendor,
                         vram_bytes: vram,
                         driver_version: None,
+                        gpu_type: None,
+                        temperature: None,
+                        utilization: None,
                     });
                 }
             }
@@ -1227,6 +1483,9 @@ impl GpuProvider for SysinfoProvider {
                                 vendor: "NVIDIA".to_string(),
                                 vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
                                 driver_version: Some(driver),
+                                gpu_type: Some("Discrete".to_string()),
+                                temperature: None,
+                                utilization: None,
                             });
                         }
                     }
@@ -1284,6 +1543,9 @@ impl SystemStatus {
             used_bytes: 0,
             total_bytes: 0,
             percentage: 0.0,
+            free_bytes: 0,
+            available_bytes: 0,
+            cached_bytes: 0,
         });
         let disk = provider.root_disk().unwrap_or_else(|_| DiskStatus {
             name: String::new(),
@@ -1293,6 +1555,9 @@ impl SystemStatus {
             total_bytes: 0,
             percentage: 0.0,
             is_removable: false,
+            free_bytes: 0,
+            available_bytes: 0,
+            disk_type: "Unknown".to_string(),
         });
         let disks = provider.all_disks().unwrap_or_default();
         let network = provider.aggregate().unwrap_or(NetworkStatus {
@@ -1321,6 +1586,14 @@ impl SystemStatus {
         let gpu = provider.gpus().unwrap_or_default();
         let battery = provider.battery().ok().flatten();
 
+        let static_info = Self::read_static_info(&System::new_with_specifics(
+            RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
+                .with_memory(MemoryRefreshKind::nothing().with_ram()),
+        ));
+        let sensor_snapshot = Self::read_sensor_snapshot();
+        let virtualization = Self::read_virtualization();
+        let disk_io = Self::read_disk_io();
+
         Self {
             cpu_usage,
             memory,
@@ -1340,6 +1613,10 @@ impl SystemStatus {
             processes,
             gpu,
             battery,
+            static_info,
+            sensor_snapshot,
+            virtualization,
+            disk_io,
         }
     }
 }
@@ -1671,6 +1948,9 @@ mod tests {
                 used_bytes: 0,
                 total_bytes: 0,
                 percentage: 0.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: String::new(),
@@ -1680,6 +1960,9 @@ mod tests {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -1707,6 +1990,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("CPU: N/A"), "expected 'CPU: N/A' in output:\n{output}");
@@ -1771,6 +2068,9 @@ mod tests {
                 used_bytes: 8 * GB,
                 total_bytes: 16 * GB,
                 percentage: 50.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: "Macintosh HD".to_string(),
@@ -1780,6 +2080,9 @@ mod tests {
                 total_bytes: TB,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 100 * GB,
@@ -1825,6 +2128,9 @@ mod tests {
                     total_bytes: TB,
                     percentage: 50.0,
                     is_removable: false,
+                    disk_type: "Unknown".to_string(),
+                    available_bytes: 0,
+                    free_bytes: 0,
                 },
                 DiskStatus {
                     name: "External".to_string(),
@@ -1834,6 +2140,9 @@ mod tests {
                     total_bytes: 500 * GB,
                     percentage: 20.0,
                     is_removable: true,
+                    disk_type: "Unknown".to_string(),
+                    available_bytes: 0,
+                    free_bytes: 0,
                 },
             ],
             network_interfaces: vec![
@@ -1845,6 +2154,10 @@ mod tests {
                     packets_transmitted: 500_000,
                     errors_received: 0,
                     errors_transmitted: 0,
+                    drops_transmitted: 0,
+                    drops_received: 0,
+                    mtu: None,
+                    mac_address: None,
                 },
                 NetworkInterface {
                     name: "lo0".to_string(),
@@ -1854,6 +2167,10 @@ mod tests {
                     packets_transmitted: 2_000_000,
                     errors_received: 0,
                     errors_transmitted: 0,
+                    drops_transmitted: 0,
+                    drops_received: 0,
+                    mtu: None,
+                    mac_address: None,
                 },
             ],
             sensors: vec![
@@ -1873,6 +2190,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         insta::assert_snapshot!("system_status_display", format!("{}", status));
     }
@@ -1898,6 +2229,10 @@ mod tests {
                     memory_bytes: 100,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
                 ProcessStatus {
                     pid: 2,
@@ -1907,6 +2242,10 @@ mod tests {
                     memory_bytes: 100,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
                 ProcessStatus {
                     pid: 3,
@@ -1916,6 +2255,10 @@ mod tests {
                     memory_bytes: 100,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
             ],
             total_count: 3,
@@ -1938,6 +2281,10 @@ mod tests {
                     memory_bytes: 1024,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
                 ProcessStatus {
                     pid: 2,
@@ -1947,6 +2294,10 @@ mod tests {
                     memory_bytes: 1024 * 1024 * 100,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
                 ProcessStatus {
                     pid: 3,
@@ -1956,6 +2307,10 @@ mod tests {
                     memory_bytes: 1024 * 1024,
                     status: "Running".to_string(),
                     start_time: Some(1000),
+                    thread_count: None,
+                    virtual_memory: 0,
+                    user: None,
+                    executable_path: None,
                 },
             ],
             total_count: 3,
@@ -2117,6 +2472,20 @@ mod tests {
             processes: ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![],
             battery: None,
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            virtualization: VirtualizationSnapshot::default(),
+            disk_io: DiskIoSnapshot::default(),
         }
     }
 
@@ -2129,6 +2498,9 @@ mod tests {
             total_bytes: 0,
             percentage: 0.0,
             is_removable: false,
+            free_bytes: 0,
+            available_bytes: 0,
+            disk_type: "Unknown".to_string(),
         }
     }
 
@@ -2136,7 +2508,7 @@ mod tests {
     fn memory_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             empty_disk(),
         );
         assert!((status.memory.percentage).abs() < f64::EPSILON);
@@ -2146,7 +2518,7 @@ mod tests {
     fn memory_percentage_capped_at_100() {
         // When used > total (e.g. reclaimed/buffer memory), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0 },
+            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             empty_disk(),
         );
         assert!(
@@ -2162,7 +2534,7 @@ mod tests {
     fn disk_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2171,6 +2543,9 @@ mod tests {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
         );
         assert!((status.disk.percentage).abs() < f64::EPSILON);
@@ -2180,7 +2555,7 @@ mod tests {
     fn disk_percentage_capped_at_100() {
         // When used > total (e.g. filesystem overhead), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2189,6 +2564,9 @@ mod tests {
                 total_bytes: 500 * GB,
                 percentage: 100.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
         );
         assert!(
@@ -2209,6 +2587,10 @@ mod tests {
             memory_bytes: mem,
             status: "Running".to_string(),
             start_time: Some(1000),
+            executable_path: None,
+            user: None,
+            virtual_memory: 0,
+            thread_count: None,
         }
     }
 
@@ -2334,6 +2716,9 @@ mod tests {
                 used_bytes: 0,
                 total_bytes: 0,
                 percentage: 0.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: String::new(),
@@ -2343,6 +2728,9 @@ mod tests {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -2370,6 +2758,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("System:"), "should contain 'System:' header");
@@ -2387,7 +2789,7 @@ mod tests {
     fn display_with_gpu_data() {
         let status = SystemStatus {
             cpu_usage: Some(50.0),
-            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0 },
+            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
@@ -2407,8 +2809,25 @@ mod tests {
                 vendor: "NVIDIA".to_string(),
                 vram_bytes: Some(24 * GB),
                 driver_version: Some("535.129.03".to_string()),
+                utilization: None,
+                temperature: None,
+                gpu_type: None,
             }],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("GPU 0:"), "should contain GPU section");
@@ -2421,7 +2840,7 @@ mod tests {
     fn display_with_battery_data() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
@@ -2442,7 +2861,24 @@ mod tests {
                 state: "Charging".to_string(),
                 time_to_full_secs: Some(1800),
                 time_to_empty_secs: None,
+                health_percent: None,
+                cycle_count: None,
+                voltage: None,
             }),
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("Battery:"), "should contain Battery section");
@@ -2454,7 +2890,7 @@ mod tests {
     fn display_sensors_none_temperature() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
@@ -2480,6 +2916,20 @@ mod tests {
             processes: ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("Sensors:"), "should contain Sensors section");
@@ -2494,7 +2944,7 @@ mod tests {
         // Display should not panic when all memory/disk values are zero.
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2503,6 +2953,9 @@ mod tests {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
@@ -2524,6 +2977,20 @@ mod tests {
             processes: ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         // Should not panic when displaying
         let _ = format!("{status}");
@@ -2537,6 +3004,9 @@ mod tests {
                 used_bytes: 8 * 1024 * 1024 * 1024,
                 total_bytes: 16 * 1024 * 1024 * 1024,
                 percentage: 50.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: "disk".to_string(),
@@ -2546,6 +3016,9 @@ mod tests {
                 total_bytes: 200,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus { bytes_received: 100, bytes_transmitted: 50 },
             load_average: None,
@@ -2570,13 +3043,33 @@ mod tests {
                 vendor: "Apple".to_string(),
                 vram_bytes: Some(8 * 1024 * 1024 * 1024),
                 driver_version: None,
+                utilization: None,
+                temperature: None,
+                gpu_type: None,
             }],
             battery: Some(BatteryInfo {
                 charge_percent: 85.0,
                 state: "Charging".to_string(),
                 time_to_empty_secs: None,
                 time_to_full_secs: Some(3600),
+                health_percent: None,
+                cycle_count: None,
+                voltage: None,
             }),
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let output = format!("{status}");
         assert!(output.contains("GPU 0: Apple M1 (Apple)"));
@@ -2998,5 +3491,248 @@ mod tests {
         let provider = SysinfoProvider::new();
         let bt = provider.boot_time().expect("boot_time should succeed");
         let _ = bt.is_some();
+    }
+
+    // ── FakeProvider ──────────────────────────────────────────────────
+
+    struct FakeProvider {
+        cpu_usage_val: Option<f64>,
+        cpu_cores_val: Vec<CpuCore>,
+        memory_val: MemoryStatus,
+        swap_val: Option<SwapStatus>,
+        disk_val: DiskStatus,
+        disks_val: Vec<DiskStatus>,
+        network_val: NetworkStatus,
+        interfaces_val: Vec<NetworkInterface>,
+        os_info_val: OsInfo,
+        hostname_val: String,
+        uptime_val: Option<u64>,
+        boot_time_val: Option<u64>,
+        load_avg_val: Option<LoadAverage>,
+        processes_val: ProcessSnapshot,
+        gpus_val: Vec<GpuInfo>,
+        battery_val: Option<BatteryInfo>,
+        sensors_val: Vec<SensorStatus>,
+    }
+
+    impl FakeProvider {
+        fn happy() -> Self {
+            Self {
+                cpu_usage_val: Some(42.0),
+                cpu_cores_val: vec![CpuCore { name: "cpu0".into(), usage: 45.0, frequency: 3200 }],
+                memory_val: MemoryStatus { used_bytes: 8_000_000_000, total_bytes: 16_000_000_000, percentage: 50.0, free_bytes: 8_000_000_000, available_bytes: 12_000_000_000, cached_bytes: 2_000_000_000 },
+                swap_val: Some(SwapStatus { used_bytes: 500_000_000, total_bytes: 2_000_000_000, percentage: 25.0 }),
+                disk_val: DiskStatus { name: "test".into(), mount_point: "/".into(), filesystem: "ext4".into(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 100, available_bytes: 100, disk_type: "SSD".into() },
+                disks_val: vec![],
+                network_val: NetworkStatus { bytes_received: 1000, bytes_transmitted: 500 },
+                interfaces_val: vec![],
+                os_info_val: OsInfo { name: Some("TestOS".into()), version: Some("1.0".into()), kernel_version: Some("5.0".into()), arch: "x86_64".into() },
+                hostname_val: "test-host".into(),
+                uptime_val: Some(3600),
+                boot_time_val: Some(1700000000),
+                load_avg_val: Some(LoadAverage { one: 1.0, five: 2.0, fifteen: 3.0 }),
+                processes_val: ProcessSnapshot { processes: vec![], total_count: 0 },
+                gpus_val: vec![],
+                battery_val: None,
+                sensors_val: vec![],
+            }
+        }
+
+        fn empty() -> Self {
+            Self {
+                cpu_usage_val: None,
+                cpu_cores_val: vec![],
+                memory_val: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+                swap_val: None,
+                disk_val: DiskStatus { name: String::new(), mount_point: "/".into(), filesystem: String::new(), used_bytes: 0, total_bytes: 0, percentage: 0.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".into() },
+                disks_val: vec![],
+                network_val: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+                interfaces_val: vec![],
+                os_info_val: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                hostname_val: String::new(),
+                uptime_val: None,
+                boot_time_val: None,
+                load_avg_val: None,
+                processes_val: ProcessSnapshot { processes: vec![], total_count: 0 },
+                gpus_val: vec![],
+                battery_val: None,
+                sensors_val: vec![],
+            }
+        }
+    }
+
+    impl CpuProvider for FakeProvider {
+        fn cpu_usage(&mut self) -> crate::status::error::StatusResult<Option<f64>> {
+            Ok(self.cpu_usage_val)
+        }
+        fn cpu_cores(&mut self) -> crate::status::error::StatusResult<Vec<CpuCore>> {
+            Ok(self.cpu_cores_val.clone())
+        }
+        fn physical_cores(&self) -> crate::status::error::StatusResult<Option<usize>> {
+            Ok(Some(self.cpu_cores_val.len()))
+        }
+    }
+
+    impl MemoryProvider for FakeProvider {
+        fn memory(&mut self) -> crate::status::error::StatusResult<MemoryStatus> {
+            Ok(self.memory_val)
+        }
+        fn swap(&mut self) -> crate::status::error::StatusResult<Option<SwapStatus>> {
+            Ok(self.swap_val)
+        }
+    }
+
+    impl DiskProvider for FakeProvider {
+        fn root_disk(&mut self) -> crate::status::error::StatusResult<DiskStatus> {
+            Ok(self.disk_val.clone())
+        }
+        fn all_disks(&mut self) -> crate::status::error::StatusResult<Vec<DiskStatus>> {
+            Ok(self.disks_val.clone())
+        }
+    }
+
+    impl NetworkProvider for FakeProvider {
+        fn aggregate(&mut self) -> crate::status::error::StatusResult<NetworkStatus> {
+            Ok(self.network_val)
+        }
+        fn interfaces(&mut self) -> crate::status::error::StatusResult<Vec<NetworkInterface>> {
+            Ok(self.interfaces_val.clone())
+        }
+    }
+
+    impl OsProvider for FakeProvider {
+        fn os_info(&self) -> crate::status::error::StatusResult<OsInfo> {
+            Ok(self.os_info_val.clone())
+        }
+        fn hostname(&self) -> crate::status::error::StatusResult<String> {
+            Ok(self.hostname_val.clone())
+        }
+        fn uptime(&self) -> crate::status::error::StatusResult<Option<u64>> {
+            Ok(self.uptime_val)
+        }
+        fn boot_time(&self) -> crate::status::error::StatusResult<Option<u64>> {
+            Ok(self.boot_time_val)
+        }
+        fn load_average(&self) -> crate::status::error::StatusResult<Option<LoadAverage>> {
+            Ok(self.load_avg_val)
+        }
+    }
+
+    impl ProcessProvider for FakeProvider {
+        fn processes(&mut self) -> crate::status::error::StatusResult<ProcessSnapshot> {
+            Ok(self.processes_val.clone())
+        }
+    }
+
+    impl GpuProvider for FakeProvider {
+        fn gpus(&self) -> crate::status::error::StatusResult<Vec<GpuInfo>> {
+            Ok(self.gpus_val.clone())
+        }
+    }
+
+    impl BatteryProvider for FakeProvider {
+        fn battery(&self) -> crate::status::error::StatusResult<Option<BatteryInfo>> {
+            Ok(self.battery_val.clone())
+        }
+    }
+
+    impl SensorProvider for FakeProvider {
+        fn sensors(&self) -> crate::status::error::StatusResult<Vec<SensorStatus>> {
+            Ok(self.sensors_val.clone())
+        }
+    }
+
+    #[test]
+    fn fake_provider_happy_path() {
+        let mut p = FakeProvider::happy();
+
+        let cpu = p.cpu_usage().unwrap();
+        assert_eq!(cpu, Some(42.0));
+
+        let cores = p.cpu_cores().unwrap();
+        assert_eq!(cores.len(), 1);
+        assert_eq!(cores[0].name, "cpu0");
+
+        let phys = p.physical_cores().unwrap();
+        assert_eq!(phys, Some(1));
+
+        let mem = p.memory().unwrap();
+        assert_eq!(mem.total_bytes, 16_000_000_000);
+        assert_eq!(mem.used_bytes, 8_000_000_000);
+
+        let swap = p.swap().unwrap();
+        assert!(swap.is_some());
+        assert_eq!(swap.unwrap().percentage, 25.0);
+
+        let disk = p.root_disk().unwrap();
+        assert_eq!(disk.mount_point, "/");
+
+        let net = p.aggregate().unwrap();
+        assert_eq!(net.bytes_received, 1000);
+        assert_eq!(net.bytes_transmitted, 500);
+
+        let os = p.os_info().unwrap();
+        assert_eq!(os.name.as_deref(), Some("TestOS"));
+
+        let host = p.hostname().unwrap();
+        assert_eq!(host, "test-host");
+
+        let uptime = p.uptime().unwrap();
+        assert_eq!(uptime, Some(3600));
+
+        let boot = p.boot_time().unwrap();
+        assert_eq!(boot, Some(1700000000));
+
+        let load = p.load_average().unwrap();
+        assert!(load.is_some());
+        let load = load.unwrap();
+        assert!((load.one - 1.0).abs() < f64::EPSILON);
+
+        let procs = p.processes().unwrap();
+        assert_eq!(procs.total_count, 0);
+
+        let gpus = p.gpus().unwrap();
+        assert!(gpus.is_empty());
+
+        let battery = p.battery().unwrap();
+        assert!(battery.is_none());
+
+        let sensors = p.sensors().unwrap();
+        assert!(sensors.is_empty());
+    }
+
+    #[test]
+    fn fake_provider_empty_path() {
+        let mut p = FakeProvider::empty();
+
+        assert!(p.cpu_usage().unwrap().is_none());
+        assert!(p.cpu_cores().unwrap().is_empty());
+        assert_eq!(p.physical_cores().unwrap(), Some(0));
+
+        let mem = p.memory().unwrap();
+        assert_eq!(mem.total_bytes, 0);
+
+        assert!(p.swap().unwrap().is_none());
+
+        let disk = p.root_disk().unwrap();
+        assert!(disk.name.is_empty());
+
+        let net = p.aggregate().unwrap();
+        assert_eq!(net.bytes_received, 0);
+
+        let os = p.os_info().unwrap();
+        assert!(os.name.is_none());
+
+        assert!(p.hostname().unwrap().is_empty());
+        assert!(p.uptime().unwrap().is_none());
+        assert!(p.boot_time().unwrap().is_none());
+        assert!(p.load_average().unwrap().is_none());
+
+        let procs = p.processes().unwrap();
+        assert_eq!(procs.total_count, 0);
+
+        assert!(p.gpus().unwrap().is_empty());
+        assert!(p.battery().unwrap().is_none());
+        assert!(p.sensors().unwrap().is_empty());
     }
 }

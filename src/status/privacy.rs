@@ -210,6 +210,54 @@ impl Redactor {
     pub fn should_show_username(&self) -> bool {
         self.mode == PrivacyMode::Full
     }
+
+    /// Redact a UUID string.
+    ///
+    /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
+    /// * `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let safe = Redactor::new(PrivacyMode::Safe);
+    /// assert_eq!(safe.redact_uuid("550e8400-e29b-41d4-a716-446655440000"), "[redacted]");
+    ///
+    /// let full = Redactor::new(PrivacyMode::Full);
+    /// assert_eq!(full.redact_uuid("550e8400-e29b-41d4-a716-446655440000"), "550e8400-e29b-41d4-a716-446655440000");
+    /// ```
+    #[must_use]
+    pub fn redact_uuid(&self, uuid: &str) -> String {
+        match self.mode {
+            PrivacyMode::Safe | PrivacyMode::Diagnostics => "[redacted]".to_string(),
+            PrivacyMode::Full => uuid.to_string(),
+        }
+    }
+
+    /// Redact a hardware asset tag.
+    ///
+    /// * `Safe` / `Diagnostics` -- returns `"[redacted]"`.
+    /// * `Full` -- returns the original value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    ///
+    /// let safe = Redactor::new(PrivacyMode::Safe);
+    /// assert_eq!(safe.redact_asset_tag("ASSET-001234"), "[redacted]");
+    ///
+    /// let full = Redactor::new(PrivacyMode::Full);
+    /// assert_eq!(full.redact_asset_tag("ASSET-001234"), "ASSET-001234");
+    /// ```
+    #[must_use]
+    pub fn redact_asset_tag(&self, tag: &str) -> String {
+        match self.mode {
+            PrivacyMode::Safe | PrivacyMode::Diagnostics => "[redacted]".to_string(),
+            PrivacyMode::Full => tag.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

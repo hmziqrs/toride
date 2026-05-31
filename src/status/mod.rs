@@ -26,14 +26,18 @@ use std::fmt;
 use serde::Serialize;
 
 pub use capabilities::Capabilities;
-pub use collector::{Collector, SystemDelta};
+pub use collector::{Collector, DiskIoDelta, GpuDelta, ProcessDelta, SystemDelta};
 pub use daemon::DaemonStatus;
 pub use doctor::{CheckStatus, DoctorCheck, DoctorReport};
 pub use error::{StatusError, StatusResult};
 pub use presets::Preset;
 pub use privacy::{PrivacyMode, Redactor};
 pub use ssh::SshStatus;
-pub use system::SystemStatus;
+pub use system::{
+    BatteryInfo, CpuCore, DiskIoSnapshot, DiskStatus, GpuInfo, LoadAverage, MemoryStatus,
+    NetworkInterface, NetworkStatus, OsInfo, ProcessSnapshot, ProcessStatus, SensorSnapshot,
+    SensorStatus, StaticInfo, SwapStatus, SystemStatus, VirtualizationSnapshot,
+};
 
 /// Top-level aggregated status snapshot.
 ///
@@ -62,6 +66,9 @@ pub struct TorideStatus {
     /// Non-fatal warnings collected during status gathering.
     #[serde(skip)]
     pub warnings: Vec<StatusError>,
+    /// Wall-clock time when this snapshot was collected.
+    #[serde(skip)]
+    pub collected_at: std::time::SystemTime,
 }
 
 impl TorideStatus {
@@ -166,7 +173,7 @@ impl TorideStatus {
         if system.memory.total_bytes == 0 {
             warnings.push(StatusError::DataUnavailable("memory info unavailable".to_string()));
         }
-        Self { system, daemon, ssh, capabilities, warnings }
+        Self { system, daemon, ssh, capabilities, warnings, collected_at: std::time::SystemTime::now() }
     }
 
     /// Zero out fields excluded by the given preset.
@@ -278,6 +285,9 @@ mod tests {
                     used_bytes: 8 * 1024 * 1024 * 1024,
                     total_bytes: 16 * 1024 * 1024 * 1024,
                     percentage: 50.0,
+                    cached_bytes: 0,
+                    available_bytes: 0,
+                    free_bytes: 0,
                 },
                 disk: DiskStatus {
                     name: "Macintosh HD".to_string(),
@@ -287,6 +297,9 @@ mod tests {
                     total_bytes: 1024 * 1024 * 1024 * 1024,
                     percentage: 50.0,
                     is_removable: false,
+                    disk_type: "Unknown".to_string(),
+                    available_bytes: 0,
+                    free_bytes: 0,
                 },
                 network: NetworkStatus {
                     bytes_received: 100 * 1024 * 1024 * 1024,
@@ -333,6 +346,10 @@ mod tests {
                         packets_transmitted: 500_000,
                         errors_received: 0,
                         errors_transmitted: 0,
+                        drops_transmitted: 0,
+                        drops_received: 0,
+                        mtu: None,
+                        mac_address: None,
                     },
                 ],
                 sensors: vec![
@@ -348,6 +365,20 @@ mod tests {
                 },
                 gpu: vec![],
                 battery: None,
+                disk_io: DiskIoSnapshot::default(),
+                virtualization: VirtualizationSnapshot::default(),
+                sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+                static_info: StaticInfo {
+                    os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                    kernel_version: None,
+                    hostname: String::new(),
+                    cpu_brand: String::new(),
+                    cpu_vendor: String::new(),
+                    cpu_frequency: 0,
+                    physical_cores: None,
+                    logical_cores: 0,
+                    memory_total_bytes: 0,
+                },
             },
             daemon: DaemonStatus {
                 alive: true,
@@ -365,6 +396,7 @@ mod tests {
             },
             capabilities: Capabilities::detect(),
             warnings: vec![],
+            collected_at: std::time::SystemTime::now(),
         };
         insta::assert_snapshot!("toride_status_display", format!("{}", status));
     }

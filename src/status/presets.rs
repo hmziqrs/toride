@@ -68,6 +68,8 @@ pub enum Preset {
     ServerMonitoring,
     /// Privacy-safe bug report: OS, CPU family, memory total, GPU model.
     PrivacySafeBugReport,
+    /// Hardware inventory: static info, sensors, GPU, battery, all disks.
+    HardwareInventory,
 }
 
 impl Preset {
@@ -85,7 +87,7 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_per_core_cpu(self) -> bool {
-        matches!(self, Self::TaskManager | Self::Diagnostics)
+        matches!(self, Self::TaskManager | Self::Diagnostics | Self::HardwareInventory)
     }
 
     /// Whether this preset includes swap data.
@@ -119,7 +121,7 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_sensors(self) -> bool {
-        matches!(self, Self::TaskManager | Self::Diagnostics)
+        matches!(self, Self::TaskManager | Self::Diagnostics | Self::HardwareInventory)
     }
 
     /// Whether this preset includes process data.
@@ -171,7 +173,7 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_all_disks(self) -> bool {
-        matches!(self, Self::Diagnostics | Self::TaskManager)
+        matches!(self, Self::Diagnostics | Self::TaskManager | Self::HardwareInventory)
     }
 
     /// Whether this preset includes GPU information.
@@ -188,7 +190,7 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_gpu(self) -> bool {
-        matches!(self, Self::Diagnostics | Self::PrivacySafeBugReport)
+        matches!(self, Self::Diagnostics | Self::PrivacySafeBugReport | Self::HardwareInventory)
     }
 
     /// Whether this preset includes battery status.
@@ -205,7 +207,7 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_battery(self) -> bool {
-        matches!(self, Self::Diagnostics)
+        matches!(self, Self::Diagnostics | Self::HardwareInventory)
     }
 
     /// Whether this preset includes OS info.
@@ -244,6 +246,7 @@ impl Preset {
             Self::Diagnostics => "Diagnostics",
             Self::ServerMonitoring => "Server Monitoring",
             Self::PrivacySafeBugReport => "Privacy-Safe Bug Report",
+            Self::HardwareInventory => "Hardware Inventory",
         }
     }
 }

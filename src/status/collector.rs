@@ -64,7 +64,7 @@ use crate::status::TorideStatus;
 pub struct Collector {
     interval: Duration,
     preset: Preset,
-    previous: Option<(Instant, SystemStatus)>,
+    previous: Option<(Instant, (std::time::SystemTime, SystemStatus))>,
 }
 
 /// Delta between two system snapshots, used for rate calculations.
@@ -97,6 +97,10 @@ pub struct Collector {
 pub struct SystemDelta {
     /// Time elapsed between snapshots.
     pub elapsed: Duration,
+    /// Wall-clock time of the previous snapshot.
+    pub from: std::time::SystemTime,
+    /// Wall-clock time of the current snapshot.
+    pub to: std::time::SystemTime,
     /// CPU usage change.
     pub cpu_usage_delta: Option<f64>,
     /// Network bytes received since last snapshot.
@@ -107,6 +111,51 @@ pub struct SystemDelta {
     pub bytes_received_rate: f64,
     /// Network bytes transmitted per second.
     pub bytes_transmitted_rate: f64,
+    /// Disk I/O delta, if available.
+    pub disk_io: Option<DiskIoDelta>,
+    /// Process count delta, if available.
+    pub process: Option<ProcessDelta>,
+    /// Per-GPU deltas, if available.
+    pub gpu: Option<Vec<GpuDelta>>,
+}
+
+/// Delta between two disk I/O snapshots.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct DiskIoDelta {
+    /// Bytes read since last snapshot.
+    pub read_bytes_delta: u64,
+    /// Bytes written since last snapshot.
+    pub written_bytes_delta: u64,
+    /// Read operations since last snapshot.
+    pub read_ops_delta: u64,
+    /// Write operations since last snapshot.
+    pub write_ops_delta: u64,
+    /// Busy time change in milliseconds.
+    pub busy_time_ms_delta: u64,
+    /// Read bytes per second.
+    pub read_bytes_rate: f64,
+    /// Written bytes per second.
+    pub written_bytes_rate: f64,
+}
+
+/// Delta between two process snapshots.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessDelta {
+    /// Change in total process count.
+    pub count_delta: i64,
+    /// Number of new processes (PIDs in current but not in previous).
+    pub new_count: u32,
+    /// Number of exited processes (PIDs in previous but not in current).
+    pub exited_count: u32,
+}
+
+/// Delta for a single GPU between two snapshots.
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuDelta {
+    /// Change in GPU utilization percentage.
+    pub utilization_delta: Option<f32>,
+    /// Change in GPU temperature in Celsius.
+    pub temperature_delta: Option<f32>,
 }
 
 impl Collector {
@@ -189,10 +238,11 @@ impl Collector {
     pub fn collect(&mut self) -> (TorideStatus, Option<SystemDelta>) {
         let status = TorideStatus::collect();
         let now = Instant::now();
-        let delta = self.previous.as_ref().map(|(prev_time, prev_status)| {
-            compute_delta(prev_status, &status.system, prev_time.elapsed())
+        let now_sys = std::time::SystemTime::now();
+        let delta = self.previous.as_ref().map(|(prev_time, (_prev_sys, prev_status))| {
+            compute_delta(prev_status, &status.system, prev_time.elapsed(), now_sys)
         });
-        self.previous = Some((now, status.system.clone()));
+        self.previous = Some((now, (now_sys, status.system.clone())));
         (status, delta)
     }
 
@@ -245,8 +295,45 @@ impl Collector {
     }
 }
 
+/// Builder for configuring a [`Collector`].
+pub struct CollectorBuilder {
+    interval: Duration,
+    preset: Preset,
+}
+
+impl CollectorBuilder {
+    /// Set the collection interval.
+    pub fn interval(mut self, interval: Duration) -> Self {
+        self.interval = interval;
+        self
+    }
+
+    /// Set the collection preset.
+    pub fn preset(mut self, preset: Preset) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    /// Build the [`Collector`].
+    #[must_use]
+    pub fn build(self) -> Collector {
+        Collector::new(self.interval, self.preset)
+    }
+}
+
+impl Collector {
+    /// Create a builder for configuring a [`Collector`].
+    #[must_use]
+    pub fn builder() -> CollectorBuilder {
+        CollectorBuilder {
+            interval: Duration::from_secs(1),
+            preset: Preset::default(),
+        }
+    }
+}
+
 #[allow(clippy::cast_precision_loss)] // u64->f64 for rate calculation display; negligible precision loss
-fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration) -> SystemDelta {
+fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to: std::time::SystemTime) -> SystemDelta {
     let elapsed_secs = elapsed.as_secs_f64();
     let bytes_received_delta = curr
         .network
@@ -257,8 +344,69 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration) ->
         .bytes_transmitted
         .saturating_sub(prev.network.bytes_transmitted);
 
+    // Disk I/O delta
+    let has_prev_io = prev.disk_io.read_bytes > 0 || prev.disk_io.written_bytes > 0;
+    let has_curr_io = curr.disk_io.read_bytes > 0 || curr.disk_io.written_bytes > 0;
+    let disk_io = if has_prev_io && has_curr_io {
+        let read_bytes_delta = curr.disk_io.read_bytes.saturating_sub(prev.disk_io.read_bytes);
+        let written_bytes_delta = curr.disk_io.written_bytes.saturating_sub(prev.disk_io.written_bytes);
+        Some(DiskIoDelta {
+            read_bytes_delta,
+            written_bytes_delta,
+            read_ops_delta: curr.disk_io.read_ops.saturating_sub(prev.disk_io.read_ops),
+            write_ops_delta: curr.disk_io.write_ops.saturating_sub(prev.disk_io.write_ops),
+            busy_time_ms_delta: curr.disk_io.busy_time_ms.saturating_sub(prev.disk_io.busy_time_ms),
+            read_bytes_rate: if elapsed_secs > 0.0 { read_bytes_delta as f64 / elapsed_secs } else { 0.0 },
+            written_bytes_rate: if elapsed_secs > 0.0 { written_bytes_delta as f64 / elapsed_secs } else { 0.0 },
+        })
+    } else {
+        None
+    };
+
+    // Process delta
+    let process = if prev.processes.total_count > 0 && curr.processes.total_count > 0 {
+        let prev_pids: std::collections::HashSet<u32> =
+            prev.processes.processes.iter().map(|p| p.pid).collect();
+        let curr_pids: std::collections::HashSet<u32> =
+            curr.processes.processes.iter().map(|p| p.pid).collect();
+        let new_count = curr_pids.difference(&prev_pids).count() as u32;
+        let exited_count = prev_pids.difference(&curr_pids).count() as u32;
+        Some(ProcessDelta {
+            count_delta: curr.processes.total_count as i64 - prev.processes.total_count as i64,
+            new_count,
+            exited_count,
+        })
+    } else {
+        None
+    };
+
+    // GPU delta
+    let gpu = if !prev.gpu.is_empty() && !curr.gpu.is_empty() {
+        let len = prev.gpu.len().min(curr.gpu.len());
+        Some(
+            (0..len)
+                .map(|i| GpuDelta {
+                    utilization_delta: match (prev.gpu[i].utilization, curr.gpu[i].utilization) {
+                        (Some(p), Some(c)) => Some(c - p),
+                        _ => None,
+                    },
+                    temperature_delta: match (prev.gpu[i].temperature, curr.gpu[i].temperature) {
+                        (Some(p), Some(c)) => Some(c - p),
+                        _ => None,
+                    },
+                })
+                .collect(),
+        )
+    } else {
+        None
+    };
+
+    let from = to - elapsed;
+
     SystemDelta {
         elapsed,
+        from,
+        to,
         cpu_usage_delta: match (prev.cpu_usage, curr.cpu_usage) {
             (Some(p), Some(c)) => Some(c - p),
             _ => None,
@@ -275,6 +423,9 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration) ->
         } else {
             0.0
         },
+        disk_io,
+        process,
+        gpu,
     }
 }
 
@@ -290,8 +441,33 @@ impl std::fmt::Display for SystemDelta {
             f,
             "  Network TX: {} bytes ({:.1} B/s)",
             self.bytes_transmitted_delta, self.bytes_transmitted_rate
-        )
-
+        )?;
+        if let Some(ref dio) = self.disk_io {
+            writeln!(
+                f,
+                "  Disk IO: {} read / {} written ({:.1} / {:.1} B/s)",
+                dio.read_bytes_delta, dio.written_bytes_delta, dio.read_bytes_rate, dio.written_bytes_rate
+            )?;
+        }
+        if let Some(ref proc) = self.process {
+            writeln!(
+                f,
+                "  Processes: {:+} ({} new, {} exited)",
+                proc.count_delta, proc.new_count, proc.exited_count
+            )?;
+        }
+        if let Some(ref gpus) = self.gpu {
+            for (i, g) in gpus.iter().enumerate() {
+                if let Some(util) = g.utilization_delta {
+                    write!(f, "  GPU {i}: util {util:+.1}%")?;
+                    if let Some(temp) = g.temperature_delta {
+                        write!(f, ", temp {temp:+.1}°C")?;
+                    }
+                    writeln!(f)?;
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -299,14 +475,15 @@ impl std::fmt::Display for SystemDelta {
 mod tests {
     use super::*;
     use crate::status::system::{
-        DiskStatus, MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot, SystemStatus,
+        DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot,
+        SensorSnapshot, StaticInfo, SystemStatus, VirtualizationSnapshot,
     };
 
     /// Helper to construct a minimal `SystemStatus` with specific `cpu_usage` and network values.
     fn make_system_status(cpu_usage: Option<f64>, rx: u64, tx: u64) -> SystemStatus {
         SystemStatus {
             cpu_usage,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -315,6 +492,9 @@ mod tests {
                 total_bytes: 0,
                 percentage: 0.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus { bytes_received: rx, bytes_transmitted: tx },
             load_average: None,
@@ -331,6 +511,20 @@ mod tests {
             processes: ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         }
     }
 
@@ -340,7 +534,7 @@ mod tests {
     fn compute_delta_zero_elapsed_produces_zero_rates() {
         let prev = make_system_status(Some(50.0), 1000, 500);
         let curr = make_system_status(Some(60.0), 2000, 1500);
-        let delta = compute_delta(&prev, &curr, Duration::ZERO);
+        let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
 
         assert_eq!(delta.elapsed, Duration::ZERO);
         assert_eq!(delta.bytes_received_delta, 1000);
@@ -356,7 +550,7 @@ mod tests {
         // Simulate u64 wrap: prev > curr. saturating_sub yields 0.
         let prev = make_system_status(None, u64::MAX - 10, u64::MAX - 5);
         let curr = make_system_status(None, 100, 200);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
 
         // saturating_sub prevents underflow; returns 0 when curr < prev.
         assert_eq!(delta.bytes_received_delta, 0);
@@ -369,7 +563,7 @@ mod tests {
     fn compute_delta_both_cpu_none() {
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(None, 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(2));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(2), std::time::SystemTime::now());
 
         assert!(delta.cpu_usage_delta.is_none());
         assert_eq!(delta.bytes_received_delta, 200);
@@ -383,13 +577,13 @@ mod tests {
         // prev is None, curr is Some -> should yield None
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(Some(75.0), 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
         assert!(delta.cpu_usage_delta.is_none());
 
         // prev is Some, curr is None -> should also yield None
         let prev = make_system_status(Some(75.0), 100, 200);
         let curr = make_system_status(None, 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
         assert!(delta.cpu_usage_delta.is_none());
     }
 
@@ -397,7 +591,7 @@ mod tests {
     fn compute_delta_very_large_network_deltas() {
         let prev = make_system_status(Some(0.0), 0, 0);
         let curr = make_system_status(Some(100.0), u64::MAX, u64::MAX);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
 
         assert_eq!(delta.bytes_received_delta, u64::MAX);
         assert_eq!(delta.bytes_transmitted_delta, u64::MAX);
@@ -436,7 +630,7 @@ mod tests {
         let prev = make_system_status(Some(10.0), 1_000_000, 500_000);
         let curr = make_system_status(Some(50.0), 1_000_000 + 86_400 * 1000, 500_000 + 86_400 * 500);
         let long_elapsed = Duration::from_hours(24);
-        let delta = compute_delta(&prev, &curr, long_elapsed);
+        let delta = compute_delta(&prev, &curr, long_elapsed, std::time::SystemTime::now());
 
         assert_eq!(delta.elapsed, long_elapsed);
         assert_eq!(delta.cpu_usage_delta, Some(40.0));
@@ -466,11 +660,16 @@ mod tests {
     fn display_with_negative_cpu_delta() {
         let d = SystemDelta {
             elapsed: Duration::from_secs(2),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(-15.3),
             bytes_received_delta: 0,
             bytes_transmitted_delta: 0,
             bytes_received_rate: 0.0,
             bytes_transmitted_rate: 0.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         let output = format!("{d}");
         assert!(output.contains("Delta"), "should contain header");
@@ -483,11 +682,16 @@ mod tests {
     fn display_with_zero_deltas() {
         let d = SystemDelta {
             elapsed: Duration::from_millis(100),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(0.0),
             bytes_received_delta: 0,
             bytes_transmitted_delta: 0,
             bytes_received_rate: 0.0,
             bytes_transmitted_rate: 0.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         let output = format!("{d}");
         assert!(output.contains("0.0"), "should display zero values");
@@ -499,11 +703,16 @@ mod tests {
     fn display_with_very_large_values() {
         let d = SystemDelta {
             elapsed: Duration::from_secs(u64::MAX / 1_000_000_000),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(100.0),
             bytes_received_delta: u64::MAX,
             bytes_transmitted_delta: u64::MAX,
             bytes_received_rate: 1_000_000_000.0,
             bytes_transmitted_rate: 1_000_000_000.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         let output = format!("{d}");
         assert!(output.contains("Delta"), "should contain header");
@@ -516,11 +725,16 @@ mod tests {
     fn display_with_no_cpu_delta() {
         let d = SystemDelta {
             elapsed: Duration::from_secs(1),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: None,
             bytes_received_delta: 500,
             bytes_transmitted_delta: 300,
             bytes_received_rate: 500.0,
             bytes_transmitted_rate: 300.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         let output = format!("{d}");
         // CPU line should be absent when cpu_usage_delta is None.
@@ -590,11 +804,16 @@ mod tests {
     fn delta_display() {
         let d = SystemDelta {
             elapsed: Duration::from_secs(1),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(5.0),
             bytes_received_delta: 1024,
             bytes_transmitted_delta: 512,
             bytes_received_rate: 1024.0,
             bytes_transmitted_rate: 512.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         let output = format!("{d}");
         assert!(output.contains("Delta"));
@@ -605,11 +824,16 @@ mod tests {
     fn serialize_to_json() {
         let d = SystemDelta {
             elapsed: Duration::from_secs(1),
+            from: std::time::SystemTime::now(),
+            to: std::time::SystemTime::now(),
             cpu_usage_delta: None,
             bytes_received_delta: 0,
             bytes_transmitted_delta: 0,
             bytes_received_rate: 0.0,
             bytes_transmitted_rate: 0.0,
+            disk_io: None,
+            process: None,
+            gpu: None,
         };
         assert!(serde_json::to_string(&d).is_ok());
     }
@@ -619,7 +843,7 @@ mod tests {
         let prev = make_system_status(Some(50.0), 1000, 500);
         let curr = prev.clone();
         // Zero elapsed with identical snapshots should not cause division by zero
-        let delta = compute_delta(&prev, &curr, Duration::ZERO);
+        let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
         assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
         assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
         assert_eq!(delta.bytes_received_delta, 0);
@@ -633,11 +857,38 @@ mod tests {
         let mut curr = prev.clone();
         curr.network.bytes_received = 50; // Wrapped around
         curr.network.bytes_transmitted = 25;
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1));
+        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
         // saturating_sub yields 0 when curr < prev (counter wrap detected)
         assert_eq!(delta.bytes_received_delta, 0);
         assert_eq!(delta.bytes_transmitted_delta, 0);
         assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
         assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
+    }
+
+    // ── CollectorBuilder tests ────────────────────────────────────────
+
+    #[test]
+    fn collector_builder_default() {
+        let collector = Collector::builder().build();
+        assert_eq!(collector.interval(), Duration::from_secs(1));
+        assert_eq!(collector.preset(), Preset::default());
+    }
+
+    #[test]
+    fn collector_builder_custom_interval() {
+        let collector = Collector::builder()
+            .interval(Duration::from_secs(5))
+            .build();
+        assert_eq!(collector.interval(), Duration::from_secs(5));
+        assert_eq!(collector.preset(), Preset::default());
+    }
+
+    #[test]
+    fn collector_builder_custom_preset() {
+        let collector = Collector::builder()
+            .preset(Preset::Minimal)
+            .build();
+        assert_eq!(collector.interval(), Duration::from_secs(1));
+        assert_eq!(collector.preset(), Preset::Minimal);
     }
 }

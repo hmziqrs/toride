@@ -150,8 +150,10 @@ impl DoctorReport {
     pub fn check_with(system: &SystemStatus, daemon: &DaemonStatus, ssh: &SshStatus) -> Self {
         let mut checks = Vec::new();
         checks.extend(check_system(system));
+        checks.extend(check_system_extended(system));
         checks.extend(check_daemon(*daemon));
         checks.extend(check_ssh(*ssh));
+        checks.extend(check_privacy(system));
         Self { checks }
     }
 
@@ -294,6 +296,78 @@ fn check_system(system: &SystemStatus) -> Vec<DoctorCheck> {
     checks
 }
 
+fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    checks.push(DoctorCheck {
+        name: "system.gpu_provider".to_string(),
+        status: if system.gpu.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
+        message: format!("{} GPU(s) detected", system.gpu.len()),
+    });
+    checks.push(DoctorCheck {
+        name: "system.battery_provider".to_string(),
+        status: if system.battery.is_some() { CheckStatus::Pass } else { CheckStatus::Warn },
+        message: if system.battery.is_some() { "battery detected" } else { "no battery detected" }.to_string(),
+    });
+    checks.push(DoctorCheck {
+        name: "system.sensor_provider".to_string(),
+        status: if system.sensors.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
+        message: format!("{} sensor(s) found", system.sensors.len()),
+    });
+    checks.push(DoctorCheck {
+        name: "system.cpu_sample_quality".to_string(),
+        status: if let Some(cpu) = system.cpu_usage { if (0.0..=100.0).contains(&cpu) { CheckStatus::Pass } else { CheckStatus::Fail } } else { CheckStatus::Warn },
+        message: system.cpu_usage.map_or_else(|| "CPU usage unavailable".to_string(), |u| format!("CPU usage: {u:.1}%")),
+    });
+    checks.push(DoctorCheck {
+        name: "system.memory_sanity".to_string(),
+        status: if system.memory.total_bytes > 0 && system.memory.used_bytes <= system.memory.total_bytes { CheckStatus::Pass } else if system.memory.total_bytes == 0 { CheckStatus::Fail } else { CheckStatus::Warn },
+        message: format!("memory: {} / {} (used <= total: {})", system.memory.used_bytes, system.memory.total_bytes, system.memory.used_bytes <= system.memory.total_bytes),
+    });
+    let mut mount_points: Vec<&str> = system.disks.iter().map(|d| d.mount_point.as_str()).collect();
+    mount_points.sort();
+    let has_dupes = mount_points.windows(2).any(|w| w[0] == w[1]);
+    checks.push(DoctorCheck {
+        name: "system.disk_duplicates".to_string(),
+        status: if has_dupes { CheckStatus::Warn } else { CheckStatus::Pass },
+        message: if has_dupes { "duplicate mount points detected".to_string() } else { format!("{} disk(s), no duplicates", system.disks.len()) },
+    });
+    let virt = &system.virtualization;
+    let mut envs = Vec::new();
+    if virt.in_docker { envs.push("docker"); }
+    if virt.in_lxc { envs.push("lxc"); }
+    if virt.in_containerd { envs.push("containerd"); }
+    if virt.in_kubernetes { envs.push("kubernetes"); }
+    if virt.in_wsl { envs.push("wsl"); }
+    if virt.in_vm { envs.push("vm"); }
+    checks.push(DoctorCheck {
+        name: "system.virtualization".to_string(),
+        status: CheckStatus::Pass,
+        message: if envs.is_empty() { "bare metal or unknown".to_string() } else { format!("running in: {}", envs.join(", ")) },
+    });
+    checks.push(DoctorCheck {
+        name: "system.disk_io".to_string(),
+        status: if system.disk_io.read_bytes > 0 || system.disk_io.written_bytes > 0 { CheckStatus::Pass } else { CheckStatus::Warn },
+        message: format!("read: {} bytes, written: {} bytes", system.disk_io.read_bytes, system.disk_io.written_bytes),
+    });
+    checks
+}
+
+fn check_privacy(system: &SystemStatus) -> Vec<DoctorCheck> {
+    let mut checks = Vec::new();
+    checks.push(DoctorCheck {
+        name: "privacy.hostname".to_string(),
+        status: if system.hostname.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
+        message: if system.hostname.is_empty() { "hostname is empty (may be redacted)" } else { "hostname present" }.to_string(),
+    });
+    let has_details = system.processes.processes.iter().any(|p| p.executable_path.is_some() || p.user.is_some() || p.thread_count.is_some());
+    checks.push(DoctorCheck {
+        name: "privacy.process_details".to_string(),
+        status: if has_details { CheckStatus::Pass } else { CheckStatus::Warn },
+        message: if has_details { "process details available" } else { "no process details available" }.to_string(),
+    });
+    checks
+}
+
 fn check_daemon(daemon: DaemonStatus) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(DoctorCheck {
@@ -421,13 +495,16 @@ mod tests {
 
     #[test]
     fn check_with_custom_statuses() {
-        use crate::status::system::{DiskStatus, MemoryStatus, NetworkStatus, OsInfo};
+        use crate::status::system::{DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
                 used_bytes: 100,
                 total_bytes: 200,
                 percentage: 50.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: "test".to_string(),
@@ -437,6 +514,9 @@ mod tests {
                 total_bytes: 200,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -464,6 +544,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let daemon = DaemonStatus {
             alive: true,
@@ -485,11 +579,11 @@ mod tests {
 
     #[test]
     fn check_system_hostname_empty_fails() {
-        use crate::status::system::{DiskStatus, MemoryStatus, NetworkStatus, OsInfo};
+        use crate::status::system::{DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(50.0),
-            memory: MemoryStatus { used_bytes: 100, total_bytes: 200, percentage: 50.0 },
-            disk: DiskStatus { name: "test".to_string(), mount_point: "/".to_string(), filesystem: "ext4".to_string(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false },
+            memory: MemoryStatus { used_bytes: 100, total_bytes: 200, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            disk: DiskStatus { name: "test".to_string(), mount_point: "/".to_string(), filesystem: "ext4".to_string(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".to_string() },
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None, uptime_secs: Some(100), hostname: String::new(),
             os_info: OsInfo { name: Some("TestOS".to_string()), version: Some("1.0".to_string()), kernel_version: None, arch: "x86_64".to_string() },
@@ -497,6 +591,20 @@ mod tests {
             network_interfaces: vec![], sensors: vec![], boot_time: None,
             processes: crate::status::system::ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![], battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let daemon = DaemonStatus { alive: false, pid: None, uptime_secs: None, restart_count: 0, stale_socket: false };
         let ssh = SshStatus { mux_master_alive: false, control_path_valid: false, config_valid: false, agent_running: false, key_count: 0 };
@@ -508,13 +616,16 @@ mod tests {
     // --- Helpers ---
 
     fn happy_system() -> SystemStatus {
-        use crate::status::system::{DiskStatus, MemoryStatus, NetworkStatus, OsInfo};
+        use crate::status::system::{DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
                 used_bytes: 100,
                 total_bytes: 200,
                 percentage: 50.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: "test".to_string(),
@@ -524,6 +635,9 @@ mod tests {
                 total_bytes: 200,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -549,6 +663,9 @@ mod tests {
                 total_bytes: 200,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             }],
             network_interfaces: vec![],
             sensors: vec![],
@@ -559,6 +676,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         }
     }
 
@@ -607,6 +738,9 @@ mod tests {
             used_bytes: 0,
             total_bytes: 0,
             percentage: 0.0,
+            cached_bytes: 0,
+            available_bytes: 0,
+            free_bytes: 0,
         };
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
         assert_eq!(find_check(&report, "system.memory").status, CheckStatus::Fail);
@@ -796,13 +930,16 @@ mod tests {
 
     #[test]
     fn snapshot_doctor_report_display() {
-        use crate::status::system::{DiskStatus, MemoryStatus, NetworkStatus, OsInfo};
+        use crate::status::system::{DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(42.5),
             memory: MemoryStatus {
                 used_bytes: 8_000_000_000,
                 total_bytes: 16_000_000_000,
                 percentage: 50.0,
+                cached_bytes: 0,
+                available_bytes: 0,
+                free_bytes: 0,
             },
             disk: DiskStatus {
                 name: "Macintosh HD".to_string(),
@@ -812,6 +949,9 @@ mod tests {
                 total_bytes: 1_000_000_000_000,
                 percentage: 50.0,
                 is_removable: false,
+                disk_type: "Unknown".to_string(),
+                available_bytes: 0,
+                free_bytes: 0,
             },
             network: NetworkStatus {
                 bytes_received: 100_000_000_000,
@@ -843,6 +983,20 @@ mod tests {
             },
             gpu: vec![],
             battery: None,
+            disk_io: DiskIoSnapshot::default(),
+            virtualization: VirtualizationSnapshot::default(),
+            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            static_info: StaticInfo {
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+            },
         };
         let daemon = DaemonStatus {
             alive: true,

@@ -53,6 +53,18 @@
 //!         StatusError::DataUnavailable(msg) => {
 //!             eprintln!("Data unavailable: {msg}");
 //!         }
+//!         StatusError::MissingProvider(name) => {
+//!             eprintln!("Missing provider: {name}");
+//!         }
+//!         StatusError::StaleSample(msg) => {
+//!             eprintln!("Stale sample: {msg}");
+//!         }
+//!         StatusError::RedactedData(msg) => {
+//!             eprintln!("Redacted data: {msg}");
+//!         }
+//!         StatusError::OsApiError(msg) => {
+//!             eprintln!("OS API error: {msg}");
+//!         }
 //!     }
 //! }
 //! ```
@@ -145,6 +157,22 @@ pub enum StatusError {
     /// not be determined, memory info returned zero).
     #[error("data unavailable: {0}")]
     DataUnavailable(String),
+
+    /// A required provider was not registered or available.
+    #[error("missing provider: {0}")]
+    MissingProvider(String),
+
+    /// A sample is stale and should not be used for rate calculations.
+    #[error("stale sample: {0}")]
+    StaleSample(String),
+
+    /// Data was redacted due to privacy constraints.
+    #[error("redacted data: {0}")]
+    RedactedData(String),
+
+    /// The OS-level API returned an error.
+    #[error("OS API error: {0}")]
+    OsApiError(String),
 }
 
 impl Clone for StatusError {
@@ -162,6 +190,10 @@ impl Clone for StatusError {
             Self::Io(e) => Self::Io(std::io::Error::new(e.kind(), e.to_string())),
             Self::Unsupported(s) => Self::Unsupported(s.clone()),
             Self::DataUnavailable(s) => Self::DataUnavailable(s.clone()),
+            Self::MissingProvider(s) => Self::MissingProvider(s.clone()),
+            Self::StaleSample(s) => Self::StaleSample(s.clone()),
+            Self::RedactedData(s) => Self::RedactedData(s.clone()),
+            Self::OsApiError(s) => Self::OsApiError(s.clone()),
         }
     }
 }
