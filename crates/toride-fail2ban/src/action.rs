@@ -3,10 +3,10 @@
 //! Handles command templating with variable expansion and execution.
 
 use std::collections::HashMap;
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
+use crate::command::Runner;
 use crate::types::PlatformCommands;
 
 /// Escape a value for safe use in `sh -c` command strings.
@@ -200,13 +200,13 @@ impl ActionExec {
         Ok(expand_template(template, &replacements))
     }
 
-    /// Execute the action for the current platform.
-    pub fn exec(&self, vars: &ActionVars) -> crate::Result<()> {
+    /// Execute the action for the current platform using the provided runner.
+    pub fn exec(&self, vars: &ActionVars, runner: &dyn Runner) -> crate::Result<()> {
         let commands = self.commands.for_current_platform();
 
         for template in commands {
             let cmd_str = Self::expand_command(template, vars)?;
-            Self::run_command(&cmd_str, &self.env)?;
+            Self::run_command(&cmd_str, &self.env, runner)?;
         }
         Ok(())
     }
@@ -224,8 +224,8 @@ impl ActionExec {
         Ok(expanded)
     }
 
-    /// Validate that the action can be executed.
-    pub fn validate(&self) -> crate::Result<()> {
+    /// Validate that the action can be executed using the provided runner.
+    pub fn validate(&self, runner: &dyn Runner) -> crate::Result<()> {
         for template in &self.validation_commands {
             let replacements: [(&str, &str); 6] = [
                 ("<ip>", "127.0.0.1"),
@@ -237,24 +237,15 @@ impl ActionExec {
             ];
             let cmd_str = expand_template(template, &replacements);
 
-            let status = Command::new("sh")
-                .args(["-c", &cmd_str])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
+            let output = runner.run("sh", &["-c", &cmd_str])?;
 
-            match status {
-                Ok(s) if s.success() => {}
-                Ok(s) => {
-                    return Err(crate::Error::CommandFailed(format!(
-                        "Validation command '{cmd_str}' exited with status: {s}"
-                    )));
-                }
-                Err(e) => {
-                    return Err(crate::Error::CommandFailed(format!(
-                        "Failed to run validation command '{cmd_str}': {e}"
-                    )));
-                }
+            if !output.success {
+                return Err(crate::Error::CommandFailed(format!(
+                    "Validation command '{cmd_str}' exited with status: {}",
+                    output
+                        .exit_code
+                        .map_or("unknown".to_string(), |c| c.to_string())
+                )));
             }
         }
         Ok(())
@@ -266,25 +257,26 @@ impl ActionExec {
         self.commands.for_current_platform()
     }
 
-    /// Execute a shell command with environment variables.
+    /// Execute a shell command using the provided runner.
     ///
     /// # Security
     /// Commands are executed via `sh -c`. Template variables (`<ip>`, `<jail>`, etc.)
     /// are substituted before execution. Callers must ensure template values are safe
     /// for shell interpolation. IP addresses from regex captures are generally safe,
     /// but user-provided paths or jail names should be validated.
-    fn run_command(cmd_str: &str, env: &HashMap<String, String>) -> crate::Result<()> {
-        let output = Command::new("sh")
-            .args(["-c", cmd_str])
-            .envs(env)
-            .output()
-            .map_err(|e| crate::Error::CommandFailed(format!("Failed to execute '{cmd_str}': {e}")))?;
+    fn run_command(
+        cmd_str: &str,
+        _env: &HashMap<String, String>,
+        runner: &dyn Runner,
+    ) -> crate::Result<()> {
+        let output = runner.run("sh", &["-c", cmd_str])?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
             return Err(crate::Error::CommandFailed(format!(
                 "Command '{}' failed (exit {}): {}",
-                cmd_str, output.status, stderr
+                cmd_str,
+                output.exit_code.map_or("unknown".to_string(), |c| c.to_string()),
+                output.stderr.trim()
             )));
         }
         Ok(())

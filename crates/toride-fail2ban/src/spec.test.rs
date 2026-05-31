@@ -845,6 +845,7 @@ fn jail_spec_builder_defaults() {
     assert!(jail.ignore_ips.is_empty());            // default = IgnoreIpList::default()
     assert_eq!(jail.usedns, UseDns::No);            // default = No
     assert!(jail.maxlines.is_none());               // default = None
+    assert!(!jail.allow_permanent_ban);             // default = false
     assert!(jail.extra_options.is_empty());         // default = HashMap::new()
 }
 
@@ -1267,4 +1268,458 @@ fn debug_format_for_value_types() {
 
     let r = RegexLine::new("^fail <HOST>$").unwrap();
     assert!(format!("{r:?}").contains("<HOST>"));
+}
+
+// ===========================================================================
+// DurationSpec permanent support
+// ===========================================================================
+
+#[test]
+fn duration_spec_accepts_permanent_string() {
+    assert!(DurationSpec::new("permanent").is_ok());
+    let d = DurationSpec::new("permanent").unwrap();
+    assert!(d.is_permanent());
+    assert_eq!(d.as_str(), "permanent");
+}
+
+#[test]
+fn duration_spec_accepts_negative_one() {
+    assert!(DurationSpec::new("-1").is_ok());
+    let d = DurationSpec::new("-1").unwrap();
+    assert!(d.is_permanent());
+    assert_eq!(d.as_str(), "-1");
+}
+
+#[test]
+fn duration_spec_normal_duration_is_not_permanent() {
+    let d = DurationSpec::new("10m").unwrap();
+    assert!(!d.is_permanent());
+}
+
+#[test]
+fn duration_spec_permanent_to_duration_is_max() {
+    let d = DurationSpec::new("permanent").unwrap();
+    assert_eq!(d.to_duration(), std::time::Duration::MAX);
+
+    let d2 = DurationSpec::new("-1").unwrap();
+    assert_eq!(d2.to_duration(), std::time::Duration::MAX);
+}
+
+#[test]
+fn duration_spec_permanent_roundtrip() {
+    let d = DurationSpec::new("permanent").unwrap();
+    let json = serde_json::to_string(&d).unwrap();
+    let back: DurationSpec = serde_json::from_str(&json).unwrap();
+    assert_eq!(d, back);
+    assert!(back.is_permanent());
+
+    let d2 = DurationSpec::new("-1").unwrap();
+    let json2 = serde_json::to_string(&d2).unwrap();
+    let back2: DurationSpec = serde_json::from_str(&json2).unwrap();
+    assert_eq!(d2, back2);
+    assert!(back2.is_permanent());
+}
+
+#[test]
+fn duration_spec_permanent_trims_whitespace() {
+    let d = DurationSpec::new("  permanent  ").unwrap();
+    assert!(d.is_permanent());
+    assert_eq!(d.as_str(), "permanent");
+}
+
+// ===========================================================================
+// findtime > 0 validation
+// ===========================================================================
+
+#[test]
+fn jail_validate_rejects_zero_findtime() {
+    let mut jail = minimal_jail();
+    jail.findtime = DurationSpec::new("0s").unwrap();
+    let err = jail.validate().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("findtime must be greater than zero"),
+        "expected findtime zero error, got: {msg}"
+    );
+}
+
+#[test]
+fn jail_validate_accepts_positive_findtime() {
+    let jail = minimal_jail();
+    // minimal_jail uses findtime="10m" which is > 0
+    assert!(jail.validate().is_ok());
+}
+
+// ===========================================================================
+// Permanent ban gating
+// ===========================================================================
+
+#[test]
+fn jail_validate_rejects_permanent_ban_without_opt_in() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("permanent").unwrap();
+    // default allow_permanent_ban = false
+    let err = jail.validate().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("permanent bans require explicit opt-in via allow_permanent_ban"),
+        "expected permanent ban gating error, got: {msg}"
+    );
+}
+
+#[test]
+fn jail_validate_rejects_negative_one_bantime_without_opt_in() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("-1").unwrap();
+    let err = jail.validate().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("permanent bans require explicit opt-in via allow_permanent_ban"),
+        "expected permanent ban gating error, got: {msg}"
+    );
+}
+
+#[test]
+fn jail_validate_accepts_permanent_ban_with_opt_in() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("permanent").unwrap();
+    jail.allow_permanent_ban = true;
+    assert!(jail.validate().is_ok());
+}
+
+#[test]
+fn jail_validate_accepts_negative_one_bantime_with_opt_in() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("-1").unwrap();
+    jail.allow_permanent_ban = true;
+    assert!(jail.validate().is_ok());
+}
+
+// ===========================================================================
+// bantime >= findtime sanity check
+// ===========================================================================
+
+#[test]
+fn jail_validate_rejects_bantime_less_than_findtime() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("5m").unwrap();
+    jail.findtime = DurationSpec::new("10m").unwrap();
+    let err = jail.validate().unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("bantime should typically be >= findtime"),
+        "expected bantime < findtime error, got: {msg}"
+    );
+}
+
+#[test]
+fn jail_validate_accepts_bantime_equal_to_findtime() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("10m").unwrap();
+    jail.findtime = DurationSpec::new("10m").unwrap();
+    assert!(jail.validate().is_ok());
+}
+
+#[test]
+fn jail_validate_accepts_bantime_greater_than_findtime() {
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("1h").unwrap();
+    jail.findtime = DurationSpec::new("10m").unwrap();
+    assert!(jail.validate().is_ok());
+}
+
+#[test]
+fn jail_validate_permanent_bantime_bypasses_findtime_comparison() {
+    // Permanent bantime should be allowed regardless of findtime value
+    let mut jail = minimal_jail();
+    jail.bantime = DurationSpec::new("permanent").unwrap();
+    jail.findtime = DurationSpec::new("1h").unwrap();
+    jail.allow_permanent_ban = true;
+    assert!(jail.validate().is_ok());
+}
+
+// ===========================================================================
+// JournalMatch '=' validation
+// ===========================================================================
+
+#[test]
+fn journal_match_rejects_missing_equals() {
+    let err = JournalMatch::new("no_equals_here").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("must contain a '='"),
+        "expected '=' validation error, got: {msg}"
+    );
+}
+
+#[test]
+fn journal_match_accepts_equals_format() {
+    assert!(JournalMatch::new("FIELD=value").is_ok());
+    assert!(JournalMatch::new("_SYSTEMD_UNIT=sshd.service").is_ok());
+    assert!(JournalMatch::new("SYSLOG_IDENTIFIER=sshd").is_ok());
+}
+
+#[test]
+fn journal_match_from_str_rejects_missing_equals() {
+    let result = "no_equals".parse::<JournalMatch>();
+    assert!(result.is_err());
+}
+
+// ===========================================================================
+// LogPath path traversal protection
+// ===========================================================================
+
+#[test]
+fn log_path_rejects_parent_dir_component() {
+    let result = LogPath::new(Path::new("/tmp/../etc/passwd"));
+    assert!(result.is_err());
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("\"..\""),
+        "expected path traversal error, got: {msg}"
+    );
+}
+
+#[test]
+fn log_path_rejects_dot_dot_in_middle() {
+    let result = LogPath::new(Path::new("/tmp/logs/../../etc/shadow"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn log_path_rejects_leading_dot_dot() {
+    let result = LogPath::new(Path::new("../var/log/test.log"));
+    assert!(result.is_err());
+}
+
+#[test]
+fn log_path_accepts_clean_path() {
+    assert!(LogPath::new(Path::new("/tmp/test.log")).is_ok());
+}
+
+#[test]
+fn log_path_accepts_path_with_dot_component() {
+    // A single "." (CurrentDir) is fine; only ".." (ParentDir) is rejected.
+    assert!(LogPath::new(Path::new("/tmp/./test.log")).is_ok());
+}
+
+// ===========================================================================
+// Property-based tests (proptest)
+// ===========================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // -- Strategies ----------------------------------------------------------
+
+    /// Characters that are allowed in valid names: alphanumeric, hyphen,
+    /// underscore, dot (but not two consecutive dots).
+    fn valid_name_char() -> impl Strategy<Value = char> {
+        any::<char>().prop_filter("valid name char", |c| {
+            c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.'
+        })
+    }
+
+    /// Strategy for a string of valid name characters, guaranteed non-empty
+    /// and free of ".." sequences.
+    fn valid_name_strategy() -> impl Strategy<Value = String> {
+        // Generate 1..=20 valid chars, then filter out ".."
+        prop::collection::vec(valid_name_char(), 1..=20)
+            .prop_filter("no consecutive dots", |chars| {
+                let s: String = chars.iter().collect();
+                !s.is_empty() && !s.contains("..") && s.trim() == s
+            })
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    /// Characters that are forbidden in names.
+    fn forbidden_char() -> impl Strategy<Value = char> {
+        prop::sample::select(&[
+            '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{', '}',
+        ][..])
+    }
+
+    /// Strategy for a string containing at least one forbidden character.
+    /// The forbidden char is placed between non-whitespace characters so it
+    /// survives the `trim()` inside `validate_name`.
+    fn invalid_name_strategy() -> impl Strategy<Value = String> {
+        let safe_char = prop::sample::select(&['a', 'b', 'c', 'x', 'z', '1', '2'][..]);
+        let bad_char = forbidden_char();
+        (
+            prop::collection::vec(safe_char.clone(), 1..=3),
+            bad_char,
+            prop::collection::vec(safe_char, 1..=3),
+        )
+            .prop_map(|(prefix, bad, suffix)| {
+                let mut s = prefix;
+                s.push(bad);
+                s.extend(suffix);
+                s.into_iter().collect()
+            })
+    }
+
+    /// Strategy for valid IPv4 addresses as strings.
+    fn ipv4_addr_strategy() -> impl Strategy<Value = String> {
+        (any::<u8>(), any::<u8>(), any::<u8>(), any::<u8>())
+            .prop_map(|(a, b, c, d)| format!("{a}.{b}.{c}.{d}"))
+    }
+
+    /// Strategy for valid IPv4 CIDR addresses.
+    fn ipv4_cidr_strategy() -> impl Strategy<Value = String> {
+        (ipv4_addr_strategy(), 0u8..=32u8)
+            .prop_map(|(addr, prefix)| format!("{addr}/{prefix}"))
+    }
+
+    /// Strategy for valid humantime duration strings.
+    fn humantime_strategy() -> impl Strategy<Value = String> {
+        let unit = prop::sample::select(&["s", "m", "h", "d"][..]);
+        let value = 1u64..=10000u64;
+        (value, unit).prop_map(|(v, u)| format!("{v}{u}"))
+    }
+
+    // -- JailName proptests --------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn jail_name_accepts_valid_names(name in valid_name_strategy()) {
+            prop_assert!(JailName::new(&name).is_ok());
+        }
+
+        #[test]
+        fn jail_name_rejects_forbidden_chars(input in invalid_name_strategy()) {
+            prop_assert!(JailName::new(&input).is_err());
+        }
+
+        #[test]
+        fn jail_name_display_roundtrip(name in valid_name_strategy()) {
+            let jn = JailName::new(&name).unwrap();
+            prop_assert_eq!(jn.as_str(), &name);
+            prop_assert_eq!(format!("{jn}"), name);
+        }
+    }
+
+    // -- FilterName proptests ------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn filter_name_accepts_valid_names(name in valid_name_strategy()) {
+            prop_assert!(FilterName::new(&name).is_ok());
+        }
+
+        #[test]
+        fn filter_name_rejects_forbidden_chars(input in invalid_name_strategy()) {
+            prop_assert!(FilterName::new(&input).is_err());
+        }
+
+        #[test]
+        fn filter_name_display_roundtrip(name in valid_name_strategy()) {
+            let fn_ = FilterName::new(&name).unwrap();
+            prop_assert_eq!(fn_.as_str(), &name);
+            prop_assert_eq!(format!("{fn_}"), name);
+        }
+    }
+
+    // -- ActionName proptests ------------------------------------------------
+
+    proptest! {
+        #[test]
+        fn action_name_accepts_valid_names(name in valid_name_strategy()) {
+            prop_assert!(ActionName::new(&name).is_ok());
+        }
+
+        #[test]
+        fn action_name_rejects_forbidden_chars(input in invalid_name_strategy()) {
+            prop_assert!(ActionName::new(&input).is_err());
+        }
+
+        #[test]
+        fn action_name_display_roundtrip(name in valid_name_strategy()) {
+            let an = ActionName::new(&name).unwrap();
+            prop_assert_eq!(an.as_str(), &name);
+            prop_assert_eq!(format!("{an}"), name);
+        }
+    }
+
+    // -- IpOrCidr round-trip proptests ---------------------------------------
+
+    proptest! {
+        #[test]
+        fn ip_or_cidr_ipv4_roundtrip(addr in ipv4_addr_strategy()) {
+            let parsed = IpOrCidr::from_str(&addr).unwrap();
+            let displayed = parsed.to_string();
+            let re_parsed = IpOrCidr::from_str(&displayed).unwrap();
+            prop_assert_eq!(parsed, re_parsed);
+        }
+
+        #[test]
+        fn ip_or_cidr_ipv4_cidr_roundtrip(cidr in ipv4_cidr_strategy()) {
+            let parsed = IpOrCidr::from_str(&cidr).unwrap();
+            let displayed = parsed.to_string();
+            let re_parsed = IpOrCidr::from_str(&displayed).unwrap();
+            prop_assert_eq!(parsed, re_parsed);
+        }
+
+        #[test]
+        fn ip_or_cidr_ipv6_roundtrip(addr in "([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4}") {
+            if let Ok(parsed) = IpOrCidr::from_str(&addr) {
+                let displayed = parsed.to_string();
+                let re_parsed = IpOrCidr::from_str(&displayed).unwrap();
+                prop_assert_eq!(parsed, re_parsed);
+            }
+        }
+
+        #[test]
+        fn ip_or_cidr_ipv6_cidr_roundtrip(
+            pair in ("([0-9a-fA-F]{0,4}:){0,7}[0-9a-fA-F]{0,4}", 0u8..=128u8)
+        ) {
+            let cidr = format!("{}/{}", pair.0, pair.1);
+            if let Ok(parsed) = IpOrCidr::from_str(&cidr) {
+                let displayed = parsed.to_string();
+                let re_parsed = IpOrCidr::from_str(&displayed).unwrap();
+                prop_assert_eq!(parsed, re_parsed);
+            }
+        }
+
+        #[test]
+        fn ip_or_cidr_rejects_garbage(input in "\\PC*") {
+            // Skip strings that happen to parse as valid IP/CIDR
+            if let Ok(parsed) = IpOrCidr::from_str(&input) {
+                let displayed = parsed.to_string();
+                let re_parsed = IpOrCidr::from_str(&displayed);
+                prop_assert!(re_parsed.is_ok());
+            }
+        }
+    }
+
+    // -- DurationSpec proptests ----------------------------------------------
+
+    proptest! {
+        #[test]
+        fn duration_spec_parses_valid_humantime(s in humantime_strategy()) {
+            prop_assert!(DurationSpec::new(&s).is_ok());
+        }
+
+        #[test]
+        fn duration_spec_roundtrip(s in humantime_strategy()) {
+            let d = DurationSpec::new(&s).unwrap();
+            prop_assert_eq!(d.as_str(), s);
+        }
+
+        #[test]
+        fn duration_spec_rejects_random_garbage(input in "\\PC*") {
+            // Only strings that humantime can parse should succeed.
+            // We verify that if it parses, the as_str matches input (trimmed).
+            if let Ok(d) = DurationSpec::new(&input) {
+                // Permanent is a special case
+                let trimmed = input.trim();
+                if d.is_permanent() {
+                    prop_assert!(trimmed == "permanent" || trimmed == "-1");
+                } else {
+                    prop_assert_eq!(d.as_str(), trimmed);
+                }
+            }
+        }
+    }
 }

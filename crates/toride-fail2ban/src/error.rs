@@ -182,6 +182,14 @@ pub enum Error {
     PermissionDenied(String),
 
     // =======================================================================
+    // Locking subsystem
+    // =======================================================================
+
+    /// Advisory file lock could not be acquired for config write coordination.
+    #[error("lock error: {0}")]
+    LockFailed(String),
+
+    // =======================================================================
     // Parsing subsystem
     // =======================================================================
 
@@ -212,7 +220,7 @@ impl serde::Serialize for Error {
         // Two-field map: { "type": "<variant>", "detail": "<message>" }
         let mut s = serializer.serialize_struct("Error", 2)?;
         s.serialize_field("type", self.tag())?;
-        s.serialize_field("detail", &fmt::Display::to_string(self))?;
+        s.serialize_field("detail", &<dyn fmt::Display>::to_string(self))?;
         s.end()
     }
 }
@@ -243,10 +251,12 @@ impl Error {
             Self::Validation(_) => "validation",
             Self::Doctor(_) => "doctor",
             Self::PermissionDenied(_) => "permission_denied",
+            Self::LockFailed(_) => "lock_failed",
             Self::Parse(_) => "parse",
-            // NOTE: `_` is unreachable while the enum is `non_exhaustive`
-            // within this crate, but the wildcard is required for forward
-            // compatibility with external callers.
+            // NOTE: The `_` wildcard is required for `#[non_exhaustive]`
+            // forward compatibility with external callers. Within this crate
+            // it is unreachable, so suppress the lint.
+            #[allow(unreachable_patterns)]
             _ => "unknown",
         }
     }

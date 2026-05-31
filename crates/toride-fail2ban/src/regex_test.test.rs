@@ -566,6 +566,248 @@ fn parse_gibberish_returns_zeros() {
 }
 
 // ---------------------------------------------------------------------------
+// test_datepattern()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_datepattern_matching_regex_parses_lines_summary() {
+    // Simulates fail2ban-regex output with a custom datepattern.
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-f", "{^LN-BEG}", "Jan  1 00:00:00 host sshd[1]: Failed password", r"sshd\[\d+\]: Failed password"],
+        CommandOutput {
+            stdout: "Lines: 1 lines, 1 matched, 0 missed\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_datepattern(
+        "{^LN-BEG}",
+        "Jan  1 00:00:00 host sshd[1]: Failed password",
+        r"sshd\[\d+\]: Failed password",
+    ).unwrap();
+
+    assert_eq!(result.lines_matched, 1);
+    assert_eq!(result.lines_processed, 1);
+    assert!(result.success);
+    assert!(result.output.contains("Lines: 1 lines"));
+}
+
+#[test]
+fn test_datepattern_no_match() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-f", "{^LN-BEG}", "some log line", r"will not match"],
+        CommandOutput {
+            stdout: "Sorry, no match\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_datepattern(
+        "{^LN-BEG}",
+        "some log line",
+        r"will not match",
+    ).unwrap();
+
+    assert_eq!(result.lines_matched, 0);
+    assert_eq!(result.lines_processed, 1);
+    assert!(result.success);
+}
+
+#[test]
+fn test_datepattern_records_flag_in_args() {
+    let fake = FakeRunner::new();
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let _ = tester.test_datepattern(
+        "{^LN-BEG}",
+        "log line",
+        r"pattern",
+    ).unwrap();
+
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    // test_datepattern passes ["-f", datepattern, log_line, regex]
+    assert_eq!(calls[0].1, vec!["-f", "{^LN-BEG}", "log line", "pattern"]);
+}
+
+#[test]
+fn test_datepattern_nonzero_exit_still_parses_output() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-f", "Epoch", "line", r"pat"],
+        CommandOutput {
+            stdout: "Lines: 5 lines, 2 matched, 3 missed\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(1),
+            success: false,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_datepattern("Epoch", "line", r"pat").unwrap();
+
+    assert_eq!(result.lines_matched, 2);
+    assert_eq!(result.lines_processed, 5);
+    assert!(!result.success);
+    assert!(result.output.contains("Lines:"));
+}
+
+#[test]
+fn test_datepattern_stderr_only_output_is_captured() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-f", "ISO8601", "line", r"pat"],
+        CommandOutput {
+            stdout: String::new(),
+            stderr: "Lines: 3 lines, 1 matched, 2 missed\n".to_string(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_datepattern("ISO8601", "line", r"pat").unwrap();
+
+    assert_eq!(result.lines_matched, 1);
+    assert_eq!(result.lines_processed, 3);
+    assert!(result.success);
+    assert!(result.output.contains("Lines:"));
+}
+
+// ---------------------------------------------------------------------------
+// test_maxlines()
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_maxlines_matching_regex_parses_lines_summary() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-l", "5", "multi-line log entry", r"<HOST> banned"],
+        CommandOutput {
+            stdout: "Lines: 1 lines, 1 matched, 0 missed\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_maxlines(5, "multi-line log entry", r"<HOST> banned").unwrap();
+
+    assert_eq!(result.lines_matched, 1);
+    assert_eq!(result.lines_processed, 1);
+    assert!(result.success);
+    assert!(result.output.contains("Lines: 1 lines"));
+}
+
+#[test]
+fn test_maxlines_no_match() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-l", "10", "some log line", r"nope"],
+        CommandOutput {
+            stdout: "Sorry, no match\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_maxlines(10, "some log line", r"nope").unwrap();
+
+    assert_eq!(result.lines_matched, 0);
+    assert_eq!(result.lines_processed, 1);
+    assert!(result.success);
+}
+
+#[test]
+fn test_maxlines_records_flag_in_args() {
+    let fake = FakeRunner::new();
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let _ = tester.test_maxlines(3, "log line", r"pattern").unwrap();
+
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    // test_maxlines passes ["-l", "3", log_line, regex]
+    assert_eq!(calls[0].1, vec!["-l", "3", "log line", "pattern"]);
+}
+
+#[test]
+fn test_maxlines_nonzero_exit_still_parses_output() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-l", "2", "line", r"pat"],
+        CommandOutput {
+            stdout: "Lines: 8 lines, 4 matched, 4 missed\n".to_string(),
+            stderr: String::new(),
+            exit_code: Some(1),
+            success: false,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_maxlines(2, "line", r"pat").unwrap();
+
+    assert_eq!(result.lines_matched, 4);
+    assert_eq!(result.lines_processed, 8);
+    assert!(!result.success);
+    assert!(result.output.contains("Lines:"));
+}
+
+#[test]
+fn test_maxlines_stderr_only_output_is_captured() {
+    let mut fake = FakeRunner::new();
+    fake.with_response(
+        FAKE_BINARY,
+        &["-l", "1", "line", r"pat"],
+        CommandOutput {
+            stdout: String::new(),
+            stderr: "Lines: 6 lines, 3 matched, 3 missed\n".to_string(),
+            exit_code: Some(0),
+            success: true,
+        },
+    );
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let result = tester.test_maxlines(1, "line", r"pat").unwrap();
+
+    assert_eq!(result.lines_matched, 3);
+    assert_eq!(result.lines_processed, 6);
+    assert!(result.success);
+    assert!(result.output.contains("Lines:"));
+}
+
+#[test]
+fn test_maxlines_zero_maxlines() {
+    // Edge case: maxlines = 0 should still pass the flag correctly.
+    let fake = FakeRunner::new();
+    let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
+
+    let _ = tester.test_maxlines(0, "line", r"pat").unwrap();
+
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].1, vec!["-l", "0", "line", "pat"]);
+}
+
+// ---------------------------------------------------------------------------
 // combine_output helper
 // ---------------------------------------------------------------------------
 

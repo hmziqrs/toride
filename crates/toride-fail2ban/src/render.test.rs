@@ -1250,3 +1250,147 @@ fn action_local_no_blank_lines_between_set_fields() {
         "action output should not contain consecutive blank lines in the INI body"
     );
 }
+
+// ===========================================================================
+// Property-based tests (proptest)
+// ===========================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::spec::*;
+    use proptest::prelude::*;
+
+    // -- Strategies ----------------------------------------------------------
+
+    /// Strategy for valid name strings (alphanumeric + hyphens + underscores).
+    fn valid_name_strategy() -> impl Strategy<Value = String> {
+        let ch = prop::sample::select(&[
+            'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
+            '0', '1', '2', '3', '-', '_', '.', 'x', 'y', 'z',
+        ][..]);
+        prop::collection::vec(ch, 1..=20)
+            .prop_filter("no consecutive dots", |chars| {
+                let s: String = chars.iter().collect();
+                !s.is_empty() && !s.contains("..") && s.trim() == s
+            })
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    /// Strategy for valid humantime duration strings.
+    fn humantime_strategy() -> impl Strategy<Value = String> {
+        let unit = prop::sample::select(&["s", "m", "h", "d"][..]);
+        let value = 1u64..=10000u64;
+        (value, unit).prop_map(|(v, u)| format!("{v}{u}"))
+    }
+
+    /// Strategy for a minimal JailSpec with a random valid name.
+    fn jail_spec_strategy() -> impl Strategy<Value = JailSpec> {
+        (valid_name_strategy(), valid_name_strategy(), humantime_strategy(), humantime_strategy())
+            .prop_map(|(jail_name, filter_name, bantime, findtime)| {
+                JailSpec::builder()
+                    .name(JailName::new(&jail_name).unwrap())
+                    .filter(
+                        FilterSpec::builder()
+                            .name(FilterName::new(&filter_name).unwrap())
+                            .failregex(vec![RegexLine::new("^fail <HOST>$").unwrap()])
+                            .build(),
+                    )
+                    .bantime(DurationSpec::new(&bantime).unwrap())
+                    .findtime(DurationSpec::new(&findtime).unwrap())
+                    .log_paths(vec![LogPath::new(Path::new("/tmp/test.log")).unwrap()])
+                    .build()
+            })
+    }
+
+    /// Strategy for a minimal FilterSpec with a random valid name.
+    fn filter_spec_strategy() -> impl Strategy<Value = FilterSpec> {
+        valid_name_strategy().prop_map(|name| {
+            FilterSpec::builder()
+                .name(FilterName::new(&name).unwrap())
+                .failregex(vec![RegexLine::new("^fail <HOST>$").unwrap()])
+                .build()
+        })
+    }
+
+    // -- render_jail_local proptests -----------------------------------------
+
+    proptest! {
+        #[test]
+        fn jail_local_always_contains_managed_header(jail in jail_spec_strategy()) {
+            let out = render_jail_local(&jail, "test-ns");
+            prop_assert!(
+                out.starts_with("# Managed by fail2ban-kit"),
+                "output should start with managed header"
+            );
+        }
+
+        #[test]
+        fn jail_local_always_contains_section_header(jail in jail_spec_strategy()) {
+            let out = render_jail_local(&jail, "test-ns");
+            let expected = format!("[{}]", jail.name.as_str());
+            prop_assert!(
+                out.contains(&expected),
+                "output should contain section header [{}]",
+                jail.name.as_str()
+            );
+        }
+
+        #[test]
+        fn jail_local_always_contains_enabled(jail in jail_spec_strategy()) {
+            let out = render_jail_local(&jail, "test-ns");
+            prop_assert!(
+                out.contains("enabled = true") || out.contains("enabled = false"),
+                "output should contain 'enabled = true' or 'enabled = false'"
+            );
+        }
+
+        #[test]
+        fn jail_local_always_contains_bantime_and_findtime(
+            jail in jail_spec_strategy()
+        ) {
+            let out = render_jail_local(&jail, "test-ns");
+            prop_assert!(
+                out.contains(&format!("bantime = {}", jail.bantime.as_str())),
+                "output should contain bantime"
+            );
+            prop_assert!(
+                out.contains(&format!("findtime = {}", jail.findtime.as_str())),
+                "output should contain findtime"
+            );
+        }
+    }
+
+    // -- render_filter_local proptests ---------------------------------------
+
+    proptest! {
+        #[test]
+        fn filter_local_always_contains_managed_header(filter in filter_spec_strategy()) {
+            let out = render_filter_local(&filter, "test-ns");
+            prop_assert!(
+                out.starts_with("# Managed by fail2ban-kit"),
+                "output should start with managed header"
+            );
+        }
+
+        #[test]
+        fn filter_local_always_contains_section_header(filter in filter_spec_strategy()) {
+            let out = render_filter_local(&filter, "test-ns");
+            let expected = format!("[{}]", filter.name.as_str());
+            prop_assert!(
+                out.contains(&expected),
+                "output should contain section header [{}]",
+                filter.name.as_str()
+            );
+        }
+
+        #[test]
+        fn filter_local_always_contains_failregex(filter in filter_spec_strategy()) {
+            let out = render_filter_local(&filter, "test-ns");
+            prop_assert!(
+                out.contains("failregex"),
+                "output should contain 'failregex' key"
+            );
+        }
+    }
+}

@@ -15,6 +15,20 @@
 //!
 //! All commands go through the [`Runner`](crate::command::Runner) trait. No
 //! direct `std::process::Command` calls are made anywhere in this module.
+//!
+//! # Feature flags (planned deep-inspection backends)
+//!
+//! - **`firewall-nft`**: Enables native nftables JSON ruleset inspection.  When
+//!   implemented, [`FirewallChecker::inspect_nft_ruleset_json`] will parse the
+//!   full nftables ruleset returned by `nft -j list ruleset` into structured
+//!   Rust types, allowing programmatic verification of ban rules without shelling
+//!   out to `nft` for each individual query.  **Not yet implemented.**
+//!
+//! - **`firewall-iptables`**: Enables native iptables rules parsing.  When
+//!   implemented, [`FirewallChecker::inspect_iptables_rules`] will parse
+//!   `iptables-save` output (or equivalent) into structured rule representations,
+//!   enabling offline analysis of ban chains and jump targets.  **Not yet
+//!   implemented.**
 
 use crate::command::Runner;
 use crate::report::{Finding, Severity};
@@ -369,6 +383,67 @@ impl<'a> FirewallChecker<'a> {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Feature-gated deep-inspection stubs
+    // -----------------------------------------------------------------------
+
+    /// Parse the full nftables ruleset from JSON output into structured types.
+    ///
+    /// Runs `nft -j list ruleset` and deserialises the result into a typed
+    /// representation that can be inspected programmatically -- for example to
+    /// verify that Fail2Ban's ban sets and rules are present and correctly
+    /// ordered.
+    ///
+    /// # Feature
+    ///
+    /// Only available when the `firewall-nft` feature is enabled.
+    ///
+    /// # Returns
+    ///
+    /// A parsed nftables ruleset on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `nft` command fails or the JSON output cannot
+    /// be deserialised.
+    #[cfg(feature = "firewall-nft")]
+    pub fn inspect_nft_ruleset_json(
+        &self,
+    ) -> Result<serde_json::Value> {
+        todo!(
+            "inspect_nft_ruleset_json: parse `nft -j list ruleset` output \
+             into structured nftables types"
+        )
+    }
+
+    /// Parse iptables rules into a structured representation.
+    ///
+    /// Reads the output of `iptables-save` (or the equivalent via the runner)
+    /// and parses each rule into a typed structure covering the table, chain,
+    /// match criteria, and target (ACCEPT, DROP, REJECT, jump, etc.).
+    ///
+    /// # Feature
+    ///
+    /// Only available when the `firewall-iptables` feature is enabled.
+    ///
+    /// # Returns
+    ///
+    /// A collection of parsed iptables rules on success.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the `iptables-save` command fails or the output
+    /// cannot be parsed.
+    #[cfg(feature = "firewall-iptables")]
+    pub fn inspect_iptables_rules(
+        &self,
+    ) -> Result<Vec<serde_json::Value>> {
+        todo!(
+            "inspect_iptables_rules: parse `iptables-save` output into \
+             structured iptables rule representations"
+        )
     }
 }
 

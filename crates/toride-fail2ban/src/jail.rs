@@ -7,6 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::action::{ActionExec, ActionVars};
 use crate::ban::{BanManager, CidrBlock, CidrSet};
+use crate::command::Runner;
 use crate::config::{ActionConfig, ResolvedJail};
 use crate::detector::LogDetector;
 use crate::store::Store;
@@ -29,6 +30,8 @@ pub struct Jail {
     ignore_set: CidrSet,
     /// Tracks failure timestamps per IP for find_time/max_retry logic.
     failure_tracker: HashMap<IpAddr, Vec<DateTime<Utc>>>,
+    /// Command runner for executing ban/unban actions.
+    runner: Box<dyn Runner>,
 }
 
 impl Jail {
@@ -45,6 +48,7 @@ impl Jail {
         config: ResolvedJail,
         store: Store,
         actions: Option<&HashMap<String, ActionConfig>>,
+        runner: Box<dyn Runner>,
     ) -> crate::Result<Self> {
         let detector = LogDetector::new(
             &config.name,
@@ -79,6 +83,7 @@ impl Jail {
             unban_action,
             ignore_set,
             failure_tracker: HashMap::new(),
+            runner,
         })
     }
 
@@ -196,7 +201,7 @@ impl Jail {
                     // Execute ban action (skip in dry-run).
                     if !mode.is_dry_run() {
                         let vars = self.make_action_vars(&ip, prefix, fail_count);
-                        if let Err(e) = self.ban_action.exec(&vars) {
+                        if let Err(e) = self.ban_action.exec(&vars, self.runner.as_ref()) {
                             tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
                             // Rollback: remove from store since firewall command failed.
                             if let Err(e) = self.ban_manager.unban(ip, &self.config.name) {
@@ -251,7 +256,7 @@ impl Jail {
         // Execute ban action (skip in dry-run).
         if !mode.is_dry_run() {
             let vars = self.make_action_vars(&ip, prefix, 1);
-            if let Err(e) = self.ban_action.exec(&vars) {
+            if let Err(e) = self.ban_action.exec(&vars, self.runner.as_ref()) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "ban action failed");
                 // Rollback: remove from store since firewall command failed.
                 if let Err(rb_err) = self.ban_manager.unban(ip, &self.config.name) {
@@ -280,7 +285,7 @@ impl Jail {
         // Execute unban action (skip in dry-run).
         if !mode.is_dry_run() {
             let vars = self.make_action_vars(&ip, entry.prefix, entry.fail_count);
-            if let Err(e) = self.unban_action.exec(&vars) {
+            if let Err(e) = self.unban_action.exec(&vars, self.runner.as_ref()) {
                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e, "unban action failed");
                 return Err(e);
             }

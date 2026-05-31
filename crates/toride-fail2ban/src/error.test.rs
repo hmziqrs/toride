@@ -473,7 +473,7 @@ mod serde_tests {
         let val = to_json(&err);
 
         assert_eq!(val["type"], "timeout");
-        assert!(val["detail"].as_str().unwrap().contains("60s"));
+        assert!(val["detail"].as_str().unwrap().contains("1m"), "detail should mention duration: {}", val["detail"]);
     }
 
     #[test]

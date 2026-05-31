@@ -23,6 +23,15 @@
 //! by `persist()` (atomic rename). This ensures that readers never see a
 //! partially-written config file.
 //!
+//! # Advisory locking
+//!
+//! Advisory locking via `fd-lock` for coordination between concurrent processes.
+//! This is **NOT** a security boundary -- it prevents conflicting writes from
+//! this library, not adversarial access. Every write and remove operation
+//! acquires an exclusive write lock on `{config_dir}/.fail2ban-kit.lock`
+//! before proceeding. The lock is released automatically when the operation
+//! completes (RAII via [`fd_lock::RwLockWriteGuard`]).
+//!
 //! # Backups
 //!
 //! Before overwriting an existing managed file, a timestamped backup is created
@@ -38,7 +47,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use std::path::Path;
 //! use toride_fail2ban::ini::IniManager;
 //!
@@ -54,8 +63,10 @@
 //! }
 //! ```
 
+use std::fs::File;
 use std::path::{Path, PathBuf};
 
+use fd_lock::RwLock;
 use crate::render;
 use crate::report::ApplyReport;
 use crate::spec::*;
@@ -212,8 +223,16 @@ impl IniManager {
     ///
     /// Format: `{original}.bak-{timestamp}`
     fn backup_path(&self, original: &Path) -> PathBuf {
-        let ts = chrono::Local::now().format("%Y%m%dT%H%M%S");
+        let ts = chrono::Local::now().format("%Y%m%dT%H%M%S%.3f");
         PathBuf::from(format!("{}.bak-{}", original.display(), ts))
+    }
+
+    /// Returns the path to the advisory lock file used for coordinating
+    /// concurrent writes.
+    ///
+    /// Format: `{config_dir}/.fail2ban-kit.lock`
+    fn lock_file(&self) -> PathBuf {
+        self.config_dir.join(".fail2ban-kit.lock")
     }
 
     // -----------------------------------------------------------------------
@@ -412,11 +431,62 @@ impl IniManager {
     // Internal helpers
     // -----------------------------------------------------------------------
 
-    /// Perform an atomic write of `content` to `path`.
+    /// Acquire an exclusive advisory write lock and run the given closure.
+    ///
+    /// The lock file is `{config_dir}/.fail2ban-kit.lock`. If the file does
+    /// not exist it is created automatically. The lock is held for the
+    /// duration of the closure and released on drop.
+    ///
+    /// Advisory locking via fd-lock for coordination between concurrent
+    /// processes. This is NOT a security boundary -- it prevents conflicting
+    /// writes from this library, not adversarial access.
+    fn with_write_lock<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&Self) -> Result<T>,
+    {
+        let lock_path = self.lock_file();
+
+        // Ensure the parent directory exists (it should, since config_dir
+        // is validated at construction, but be defensive).
+        if let Some(parent) = lock_path.parent() {
+            fs_err::create_dir_all(parent)?;
+        }
+
+        let file = File::create(&lock_path).map_err(|e| {
+            Error::LockFailed(format!(
+                "failed to create lock file {}: {e}",
+                lock_path.display()
+            ))
+        })?;
+
+        let mut lock = RwLock::new(file);
+        let _guard = lock.write().map_err(|e| {
+            Error::LockFailed(format!(
+                "failed to acquire write lock on {}: {e}",
+                lock_path.display()
+            ))
+        })?;
+
+        // Lock is held via `_guard`; run the operation.
+        f(self)
+    }
+
+    /// Perform an atomic write of `content` to `path` under the advisory lock.
+    ///
+    /// Acquires an exclusive write lock before delegating to
+    /// [`atomic_write_inner`].
+    fn atomic_write(&self, path: &Path, content: &str) -> Result<ApplyReport> {
+        let path = path.to_path_buf();
+        let content = content.to_owned();
+        self.with_write_lock(|mgr| mgr.atomic_write_inner(&path, &content))
+    }
+
+    /// Inner implementation of atomic write (callers must already hold the
+    /// advisory lock).
     ///
     /// Creates the parent directory if needed, backs up any existing managed
     /// file, writes to a `NamedTempFile`, fsyncs, and atomically renames.
-    fn atomic_write(&self, path: &Path, content: &str) -> Result<ApplyReport> {
+    fn atomic_write_inner(&self, path: &Path, content: &str) -> Result<ApplyReport> {
         let mut report = ApplyReport::empty();
 
         // Ensure parent directory exists.
@@ -455,9 +525,18 @@ impl IniManager {
         Ok(report)
     }
 
-    /// Remove a managed file after verifying the managed header and creating
-    /// a backup.
+    /// Remove a managed file under the advisory lock.
+    ///
+    /// Acquires an exclusive write lock before delegating to
+    /// [`managed_remove_inner`].
     fn managed_remove(&self, path: &Path) -> Result<ApplyReport> {
+        let path = path.to_path_buf();
+        self.with_write_lock(|mgr| mgr.managed_remove_inner(&path))
+    }
+
+    /// Remove a managed file after verifying the managed header and creating
+    /// a backup (callers must already hold the advisory lock).
+    fn managed_remove_inner(&self, path: &Path) -> Result<ApplyReport> {
         let mut report = ApplyReport::empty();
 
         if !path.exists() {

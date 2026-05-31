@@ -62,7 +62,7 @@ impl Fail2BanManager {
             } else {
                 Some(&self.config.actions)
             };
-            let mut jail = Jail::new(resolved, self.store.clone(), actions)?;
+            let mut jail = Jail::new(resolved, self.store.clone(), actions, Box::new(crate::command::DuctRunner::new()))?;
             // Resume scanning from the last persisted journal position.
             jail.restore_journal()?;
             self.jails.insert(name.to_string(), jail);
@@ -85,7 +85,7 @@ impl Fail2BanManager {
         } else {
             Some(&self.config.actions)
         };
-        let jail = Jail::new(resolved, self.store.clone(), actions)?;
+        let jail = Jail::new(resolved, self.store.clone(), actions, Box::new(crate::command::DuctRunner::new()))?;
         self.jails.insert(name.to_string(), jail);
         Ok(())
     }

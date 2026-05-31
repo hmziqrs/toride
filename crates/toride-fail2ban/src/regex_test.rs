@@ -147,6 +147,44 @@ impl<'a> RegexTester<'a> {
         self.run_regex(&["--ignoreregex", regex, log_line])
     }
 
+    /// Test a datepattern against a log line with a failregex.
+    ///
+    /// Runs `fail2ban-regex -f '<datepattern>' '<log_line>' '<regex>'` and
+    /// parses the output for match statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `datepattern` - A Fail2Ban datepattern string (e.g. `{^LN-BEG}`).
+    /// * `log_line` - A single line of log text to test against.
+    /// * `regex` - A Fail2Ban failregex string (may contain `<HOST>` etc.).
+    pub fn test_datepattern(
+        &self,
+        datepattern: &str,
+        log_line: &str,
+        regex: &str,
+    ) -> Result<RegexTestResult> {
+        self.run_regex(&["-f", datepattern, log_line, regex])
+    }
+
+    /// Test multi-line regex behavior with a specified maxlines count.
+    ///
+    /// Runs `fail2ban-regex -l <maxlines> '<log_line>' '<regex>'` and parses
+    /// the output for match statistics.
+    ///
+    /// # Arguments
+    ///
+    /// * `maxlines` - Maximum number of lines to buffer for multi-line matching.
+    /// * `log_line` - A single line of log text to test against.
+    /// * `regex` - A Fail2Ban failregex string (may contain `<HOST>` etc.).
+    pub fn test_maxlines(
+        &self,
+        maxlines: u32,
+        log_line: &str,
+        regex: &str,
+    ) -> Result<RegexTestResult> {
+        self.run_regex(&["-l", &maxlines.to_string(), log_line, regex])
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------

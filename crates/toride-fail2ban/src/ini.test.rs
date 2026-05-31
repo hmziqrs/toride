@@ -201,11 +201,11 @@ mod tests {
             backup_str.contains(".bak-"),
             "backup path should contain '.bak-': {backup_str}"
         );
-        // Timestamp format is YYYYMMDDTHHMMSS
+        // Timestamp format is YYYYMMDDTHHMMSS.mmm (millisecond precision)
         let bak_suffix = backup_str.split(".bak-").nth(1).unwrap();
         assert!(
-            bak_suffix.len() == 15,
-            "timestamp should be 15 chars (YYYYMMDDTHHMMSS): {bak_suffix}"
+            bak_suffix.len() == 19,
+            "timestamp should be 19 chars (YYYYMMDDTHHMMSS.mmm): {bak_suffix}"
         );
         assert!(
             bak_suffix.contains('T'),
@@ -957,12 +957,12 @@ mod tests {
         // Backup has v1 content.
         let backup = fs::read_to_string(&r2.backup_paths[0]).unwrap();
         assert!(backup.contains("bantime = 1m"), "backup should have v1 bantime");
-        assert!(backup.contains("failregex = ^v1"), "backup should have v1 regex");
+        assert!(backup.contains("findtime = 1m"), "backup should have v1 findtime");
 
         // Current file has v2 content.
         let current = mgr.read_jail("versioned").unwrap();
         assert!(current.contains("bantime = 2m"));
-        assert!(current.contains("failregex = ^v2"));
+        assert!(current.contains("findtime = 2m"));
     }
 
     #[test]

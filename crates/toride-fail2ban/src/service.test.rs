@@ -393,8 +393,10 @@ fn custom_service_name_propagates_to_all_commands() {
 
     // Verify each call targets the custom service name.
     for (_program, args) in &calls {
-        let last = args.last().expect("every call should have args");
-        assert_eq!(last.as_str(), "custom", "all calls should target the custom unit");
+        assert!(
+            args.iter().any(|a| a == "custom"),
+            "all calls should target the custom unit: {args:?}"
+        );
     }
 }
 

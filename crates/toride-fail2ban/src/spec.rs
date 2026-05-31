@@ -215,23 +215,33 @@ impl fmt::Display for ActionKind {
 // Value types
 // ---------------------------------------------------------------------------
 
-/// A human-readable duration string validated by `humantime`.
+/// A human-readable duration string validated by `humantime`, or a permanent marker.
 ///
-/// Examples: `"10m"`, `"1h"`, `"7d"`, `"30s"`.
-/// Stored as the original string and validated on construction via `humantime::parse_duration`.
+/// Examples: `"10m"`, `"1h"`, `"7d"`, `"30s"`, `"permanent"`, `"-1"`.
+/// Stored as the original string and validated on construction via `humantime::parse_duration`,
+/// unless the value is `"permanent"` or `"-1"` which represent an indefinite duration.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DurationSpec(String);
 
+/// Sentinel values that represent a permanent (indefinite) ban duration.
+const PERMANENT_MARKERS: &[&str] = &["permanent", "-1"];
+
 impl DurationSpec {
     /// Construct a validated duration spec from a string.
+    ///
+    /// Accepts standard `humantime` duration strings (e.g. `"10m"`, `"1h"`) as well as
+    /// the special sentinel values `"permanent"` and `"-1"` which represent an indefinite
+    /// duration used for permanent bans.
     pub fn new(s: &str) -> Result<Self> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return Err(Error::InvalidConfig("DurationSpec must not be empty".into()));
         }
-        humantime::parse_duration(trimmed).map_err(|e| {
-            Error::InvalidConfig(format!("invalid duration {s:?}: {e}"))
-        })?;
+        if !PERMANENT_MARKERS.contains(&trimmed) {
+            humantime::parse_duration(trimmed).map_err(|e| {
+                Error::InvalidConfig(format!("invalid duration {s:?}: {e}"))
+            })?;
+        }
         Ok(Self(trimmed.to_owned()))
     }
 
@@ -240,12 +250,22 @@ impl DurationSpec {
         &self.0
     }
 
+    /// Returns `true` if this duration represents a permanent (indefinite) ban.
+    pub fn is_permanent(&self) -> bool {
+        PERMANENT_MARKERS.contains(&self.0.as_str())
+    }
+
     /// Parse the inner string into a `std::time::Duration`.
+    ///
+    /// For permanent durations, returns `std::time::Duration::MAX`.
     ///
     /// # Panics
     ///
     /// Will never panic because the string was validated on construction.
     pub fn to_duration(&self) -> std::time::Duration {
+        if self.is_permanent() {
+            return std::time::Duration::MAX;
+        }
         humantime::parse_duration(&self.0).expect("DurationSpec was validated on construction")
     }
 }
@@ -389,9 +409,19 @@ mod ipnet_serde {
 pub struct LogPath(PathBuf);
 
 impl LogPath {
-    /// Construct a log path, validating that the parent directory exists.
+    /// Construct a log path, validating that the parent directory exists and the
+    /// path does not contain `..` (parent directory) components.
     pub fn new(path: &Path) -> Result<Self> {
         let p = path.to_path_buf();
+
+        // Path traversal protection: reject any ".." components
+        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err(Error::Validation(format!(
+                "log path must not contain \"..\" components: {}",
+                p.display()
+            )));
+        }
+
         match p.parent() {
             Some(parent) if parent.as_os_str().is_empty() => {}
             Some(parent) => {
@@ -448,13 +478,20 @@ impl FromStr for LogPath {
 pub struct JournalMatch(String);
 
 impl JournalMatch {
-    /// Construct a journal match, validating it is non-empty.
+    /// Construct a journal match, validating it is non-empty and contains at
+    /// least one `=` character (systemd journal match syntax requires
+    /// `field=value` format, e.g. `_SYSTEMD_UNIT=sshd.service`).
     pub fn new(s: &str) -> Result<Self> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
             return Err(Error::InvalidConfig(
                 "JournalMatch must not be empty".into(),
             ));
+        }
+        if !trimmed.contains('=') {
+            return Err(Error::Validation(format!(
+                "JournalMatch must contain a '=' character (expected field=value format): {s:?}"
+            )));
         }
         Ok(Self(trimmed.to_owned()))
     }
@@ -615,6 +652,10 @@ pub struct JailSpec {
     /// Maximum number of log lines to buffer for multi-line regex matching.
     #[builder(default = None)]
     pub maxlines: Option<u32>,
+    /// Whether permanent bans (`bantime = "permanent"` or `"-1"`) are allowed.
+    /// Defaults to `false` for safety; must be explicitly opted-in.
+    #[builder(default = false)]
+    pub allow_permanent_ban: bool,
     /// Additional Fail2Ban jail options not covered by typed fields.
     #[builder(default = HashMap::new())]
     pub extra_options: HashMap<String, String>,
@@ -625,12 +666,39 @@ impl JailSpec {
     ///
     /// Checks:
     /// - `maxretry > 0`
+    /// - `findtime > 0` (zero duration from values like `"0s"` is rejected)
+    /// - `bantime` should typically be >= `findtime`
+    /// - permanent `bantime` requires `allow_permanent_ban`
     /// - `backend == Systemd` requires `journal_matches` to be non-empty and `log_paths` to be empty
     /// - file-log backends require at least one `log_path`
     pub fn validate(&self) -> Result<()> {
         if self.maxretry == 0 {
-            return Err(Error::InvalidConfig(format!(
+            return Err(Error::Validation(format!(
                 "jail {:?}: maxretry must be > 0",
+                self.name
+            )));
+        }
+
+        // findtime must be greater than zero
+        let findtime_dur = self.findtime.to_duration();
+        if findtime_dur == std::time::Duration::ZERO {
+            return Err(Error::Validation(
+                "findtime must be greater than zero".into(),
+            ));
+        }
+
+        // Permanent ban gating
+        if self.bantime.is_permanent() && !self.allow_permanent_ban {
+            return Err(Error::Validation(
+                "permanent bans require explicit opt-in via allow_permanent_ban".into(),
+            ));
+        }
+
+        // bantime should typically be >= findtime
+        let bantime_dur = self.bantime.to_duration();
+        if !self.bantime.is_permanent() && bantime_dur < findtime_dur {
+            return Err(Error::Validation(format!(
+                "jail {:?}: bantime should typically be >= findtime",
                 self.name
             )));
         }
@@ -638,13 +706,13 @@ impl JailSpec {
         match self.backend {
             Backend::Systemd => {
                 if self.journal_matches.is_empty() {
-                    return Err(Error::InvalidConfig(format!(
+                    return Err(Error::Validation(format!(
                         "jail {:?}: backend=systemd requires at least one journal_match",
                         self.name
                     )));
                 }
                 if !self.log_paths.is_empty() {
-                    return Err(Error::InvalidConfig(format!(
+                    return Err(Error::Validation(format!(
                         "jail {:?}: backend=systemd must not use log_paths (use journal_matches instead)",
                         self.name
                     )));
@@ -652,7 +720,7 @@ impl JailSpec {
             }
             Backend::Auto | Backend::Polling => {
                 if self.log_paths.is_empty() && self.journal_matches.is_empty() {
-                    return Err(Error::InvalidConfig(format!(
+                    return Err(Error::Validation(format!(
                         "jail {:?}: file-log backend requires at least one log_path",
                         self.name
                     )));

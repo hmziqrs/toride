@@ -19,6 +19,21 @@
 //! }
 //! ```
 //!
+//! # Implementation tiers
+//!
+//! - **Current (default):** Uses `systemctl` through the [`Runner`] trait for all
+//!   service operations (start, stop, restart, status queries, journal access).
+//!   This is the production path and works on any system with systemd installed.
+//!
+//! - **Optional `systemd-zbus` feature:** Direct D-Bus communication with systemd
+//!   via the `zbus` crate, avoiding the `systemctl` process spawn entirely.  This
+//!   enables lower-latency service control and richer structured metadata from
+//!   systemd properties.  **Not yet implemented.**
+//!
+//! - **Optional `service-manager` feature:** A portable service management
+//!   abstraction that works across init systems (OpenRC, runit, s6, etc.), not
+//!   just systemd.  **Not yet implemented.**
+//!
 //! # Non-systemd environments
 //!
 //! In v1 the service manager targets `systemctl` exclusively.  For non-systemd
@@ -26,6 +41,35 @@
 //! local service manager, or simply avoid using this module altogether -- many
 //! applications should only manage config and let the deploy system handle
 //! restarts.
+
+// ---------------------------------------------------------------------------
+// Feature-gated stubs for planned backends
+// ---------------------------------------------------------------------------
+
+// The `systemd-zbus` feature is planned but not yet implemented.
+//
+// When complete it will provide direct D-Bus communication with systemd,
+// removing the need to shell out to `systemctl` for each operation.
+// Enable with `cargo build --features systemd-zbus`.
+//
+// FIXME: implement the D-Bus backend when the `systemd-zbus` feature is
+// activated.  The stub below shows the intended public surface; each method
+// should delegate to `zbus_systemd` instead of spawning `systemctl`.
+//
+// #[cfg(feature = "systemd-zbus")]
+// mod zbus_backend { ... }
+
+/// Placeholder module that marks the `systemd-zbus` feature as unimplemented.
+///
+/// Enabling the feature currently has no effect beyond reserving the feature
+/// gate.  Once the `zbus_systemd` dependency is wired in, this module will be
+/// replaced with a D-Bus–backed [`ServiceManager`] variant.
+#[cfg(feature = "systemd-zbus")]
+pub mod systemd_zbus_stub {
+    //! **Not yet implemented.** This module exists so that the `systemd-zbus`
+    //! feature compiles without pulling in the heavy `zbus` dependency in v1.
+    //! See the project roadmap for scheduling.
+}
 
 use crate::command::{CommandOutput, Runner};
 use crate::{Error, Result};

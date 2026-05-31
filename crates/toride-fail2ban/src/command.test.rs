@@ -453,3 +453,97 @@ fn runner_trait_is_dyn_compatible() {
     let _boxed: Box<dyn Runner> = Box::new(DuctRunner::new());
     let _fake_boxed: Box<dyn Runner> = Box::new(FakeRunner::new());
 }
+
+// ===========================================================================
+// Property-based tests (proptest)
+// ===========================================================================
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Strategy that produces a string containing one of the sensitive keywords
+    /// as a substring (case-insensitive).
+    fn sensitive_arg_strategy() -> impl Strategy<Value = String> {
+        let keyword = prop::sample::select(&[
+            "password", "token", "key", "secret",
+            "PASSWORD", "TOKEN", "KEY", "SECRET",
+            "Password", "Token", "Key", "Secret",
+        ][..]);
+        (keyword, "\\PC*", "\\PC*")
+            .prop_map(|(kw, pre, suf)| format!("{pre}{kw}{suf}"))
+    }
+
+    /// Strategy for a non-sensitive argument (no sensitive keywords).
+    fn safe_arg_strategy() -> impl Strategy<Value = String> {
+        "\\PC*".prop_filter("must not contain sensitive keywords", |s| {
+            let lower = s.to_ascii_lowercase();
+            !lower.contains("password")
+                && !lower.contains("token")
+                && !lower.contains("key")
+                && !lower.contains("secret")
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn redacted_cmd_str_masks_sensitive_args(arg in sensitive_arg_strategy()) {
+            let result = redacted_cmd_str("cmd", &[&arg]);
+            prop_assert!(
+                !result.contains(&arg),
+                "sensitive argument should be redacted, but found: {arg:?}"
+            );
+            prop_assert!(
+                result.contains("***"),
+                "redacted output should contain '***'"
+            );
+        }
+
+        #[test]
+        fn redacted_cmd_str_preserves_safe_args(arg in safe_arg_strategy()) {
+            let result = redacted_cmd_str("cmd", &[&arg]);
+            if !arg.is_empty() {
+                prop_assert!(
+                    result.contains(&arg),
+                    "safe argument should be preserved, but was redacted: {arg:?}"
+                );
+            }
+            prop_assert!(
+                !result.contains("***"),
+                "safe argument should not be redacted"
+            );
+        }
+
+        #[test]
+        fn redacted_cmd_str_sensitive_keyword_case_insensitive(
+            keyword in prop::sample::select(&["password", "PASSWORD", "Password", "ToKeN", "SECRET", "Key"][..]),
+            value in ".+"
+        ) {
+            let arg = format!("--{keyword}={value}");
+            let result = redacted_cmd_str("app", &[&arg]);
+            prop_assert!(
+                result.contains("***"),
+                "argument with keyword '{}' should be redacted",
+                keyword
+            );
+            prop_assert!(
+                !result.contains(&value),
+                "sensitive value should not appear in output"
+            );
+        }
+
+        #[test]
+        fn redacted_cmd_str_always_starts_with_program(
+            program in "[a-zA-Z][a-zA-Z0-9_-]{0,20}",
+            args in prop::collection::vec("\\PC*", 0..=5)
+        ) {
+            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+            let result = redacted_cmd_str(&program, &arg_refs);
+            prop_assert!(
+                result.starts_with(&program),
+                "output should start with program name"
+            );
+        }
+    }
+}
