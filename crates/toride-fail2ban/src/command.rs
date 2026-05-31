@@ -18,7 +18,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(feature = "client")]
 use std::process::Output;
+#[cfg(feature = "client")]
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -45,6 +47,7 @@ pub struct CommandOutput {
 
 impl CommandOutput {
     /// Build a `CommandOutput` from a `std::process::Output`.
+    #[cfg(feature = "client")]
     fn from_raw_output(output: &Output) -> Self {
         let exit_code = output.status.code();
         let success = output.status.success();
@@ -59,6 +62,7 @@ impl CommandOutput {
     }
 
     /// Create a successful empty output (used in dry-run mode).
+    #[cfg(feature = "client")]
     fn empty_success() -> Self {
         Self {
             stdout: String::new(),
@@ -102,11 +106,13 @@ pub trait Runner: Send + Sync {
 // ---------------------------------------------------------------------------
 
 /// Keywords that mark an argument value as sensitive.
+#[cfg(feature = "client")]
 const SENSITIVE_KEYWORDS: &[&str] = &["password", "token", "key", "secret"];
 
 /// Redact any argument whose value contains a sensitive keyword.
 ///
 /// Returns a formatted string suitable for logging.
+#[cfg(feature = "client")]
 fn redacted_cmd_str(program: &str, args: &[&str]) -> String {
     let mut parts = vec![program.to_string()];
     for arg in args {
@@ -129,6 +135,9 @@ fn redacted_cmd_str(program: &str, args: &[&str]) -> String {
 /// Uses [`duct::cmd`] for execution. Timeouts are implemented by spawning the
 /// child via `start()`, then waiting on a channel with a deadline. If the
 /// deadline expires the child is killed.
+///
+/// Only available when the `client` feature is enabled.
+#[cfg(feature = "client")]
 pub struct DuctRunner {
     /// Default timeout applied by [`Runner::run`].
     default_timeout: Duration,
@@ -136,6 +145,7 @@ pub struct DuctRunner {
     dry_run: bool,
 }
 
+#[cfg(feature = "client")]
 impl DuctRunner {
     /// Create a new runner with a 30-second default timeout.
     #[must_use]
@@ -203,12 +213,14 @@ impl DuctRunner {
     }
 }
 
+#[cfg(feature = "client")]
 impl Default for DuctRunner {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "client")]
 impl Runner for DuctRunner {
     fn run(&self, program: &str, args: &[&str]) -> Result<CommandOutput> {
         let cmd_str = redacted_cmd_str(program, args);

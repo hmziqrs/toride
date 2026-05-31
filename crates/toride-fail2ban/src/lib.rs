@@ -43,36 +43,59 @@
 )]
 
 // ---------------------------------------------------------------------------
-// Module declarations -- existing modules
+// Module declarations -- always compiled
 // ---------------------------------------------------------------------------
 
-pub mod action;
-pub mod ban;
-pub mod cli;
-pub mod config;
-pub mod detector;
-pub mod jail;
-pub mod manager;
-pub mod paths;
-pub mod store;
-pub mod support;
+pub mod command;
+pub mod error;
+pub mod report;
 pub mod types;
 
 // ---------------------------------------------------------------------------
-// Module declarations -- plan-required modules
+// Module declarations -- feature-gated
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "client")]
 pub mod client;
-pub mod command;
-pub mod doctor;
-pub mod error;
-pub mod firewall;
-pub mod ini;
-pub mod regex_test;
-pub mod render;
-pub mod report;
+#[cfg(feature = "client")]
 pub mod service;
+#[cfg(feature = "client")]
+pub mod firewall;
+
+#[cfg(feature = "doctor")]
+pub mod doctor;
+
+#[cfg(feature = "config")]
+pub mod action;
+#[cfg(feature = "config")]
+pub mod ban;
+#[cfg(feature = "config")]
+pub mod config;
+#[cfg(feature = "config")]
+pub mod detector;
+#[cfg(feature = "config")]
+pub mod jail;
+#[cfg(feature = "config")]
+pub mod manager;
+#[cfg(feature = "config")]
+pub mod paths;
+#[cfg(feature = "config")]
+pub mod store;
+#[cfg(feature = "config")]
+pub mod support;
+
+#[cfg(feature = "jail-lifecycle")]
+pub mod ini;
+#[cfg(feature = "jail-lifecycle")]
+pub mod render;
+#[cfg(feature = "jail-lifecycle")]
 pub mod spec;
+
+#[cfg(feature = "regex-test")]
+pub mod regex_test;
+
+#[cfg(feature = "cli")]
+pub mod cli;
 
 // ---------------------------------------------------------------------------
 // Error types -- re-exported from the `error` module (unified source of truth)
@@ -195,6 +218,7 @@ impl Fail2Ban {
     /// # Errors
     ///
     /// Returns an error if `/etc/fail2ban` does not exist.
+    #[cfg(feature = "client")]
     pub fn system() -> Result<Self> {
         let runner = command::DuctRunner::new();
         let paths = SystemPaths::default()?;
@@ -211,6 +235,7 @@ impl Fail2Ban {
     /// # Errors
     ///
     /// Returns an error if `paths.config_dir` does not exist.
+    #[cfg(feature = "client")]
     pub fn with_paths(paths: SystemPaths) -> Result<Self> {
         let runner = command::DuctRunner::new();
         Ok(Self {
@@ -251,16 +276,19 @@ impl Fail2Ban {
     // -----------------------------------------------------------------------
 
     /// Return a [`client::Fail2BanClient`] borrowing this instance's runner.
+    #[cfg(feature = "client")]
     pub fn client(&self) -> Result<client::Fail2BanClient<'_>> {
         client::Fail2BanClient::new(self.runner.as_ref())
     }
 
     /// Return a [`service::ServiceManager`] borrowing this instance's runner.
+    #[cfg(feature = "client")]
     pub fn service(&self) -> service::ServiceManager<'_> {
         service::ServiceManager::new(self.runner.as_ref())
     }
 
     /// Return a [`firewall::FirewallChecker`] borrowing this instance's runner.
+    #[cfg(feature = "client")]
     pub fn firewall(&self) -> firewall::FirewallChecker<'_> {
         firewall::FirewallChecker::new(self.runner.as_ref())
     }
@@ -271,6 +299,7 @@ impl Fail2Ban {
     ///
     /// Returns [`Error::NotFound`] if the `fail2ban-regex` binary cannot
     /// be found on `$PATH`.
+    #[cfg(feature = "regex-test")]
     pub fn regex_tester(&self) -> Result<regex_test::RegexTester<'_>> {
         regex_test::RegexTester::new(self.runner.as_ref())
     }
@@ -286,6 +315,7 @@ impl Fail2Ban {
     /// Returns an error only for fundamental failures (e.g. a broken runner).
     /// Individual check failures appear as [`report::Finding`] values in the
     /// report.
+    #[cfg(feature = "doctor")]
     pub fn doctor(
         &self,
         scope: doctor::DoctorScope,
@@ -310,6 +340,7 @@ impl Fail2Ban {
     /// # Errors
     ///
     /// Returns an error at the first failing step.
+    #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn ensure_jail(&self, spec: spec::JailSpec) -> Result<report::ApplyReport> {
         // 1. Validate.
         spec.validate()?;
@@ -370,6 +401,7 @@ impl Fail2Ban {
     ///
     /// Returns an error if the file is not managed, does not exist, or the
     /// reload fails.
+    #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn remove_jail(&self, name: &str) -> Result<report::ApplyReport> {
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
         let mut report = mgr.remove_jail(name)?;
@@ -405,6 +437,7 @@ impl Fail2Ban {
     /// Validate the current Fail2Ban configuration.
     ///
     /// Runs `fail2ban-client --test`.
+    #[cfg(feature = "client")]
     pub fn test_config(&self) -> Result<()> {
         self.client()?.test_config()
     }
@@ -412,6 +445,7 @@ impl Fail2Ban {
     /// Reload the entire Fail2Ban configuration.
     ///
     /// Runs `fail2ban-client reload`.
+    #[cfg(feature = "client")]
     pub fn reload(&self) -> Result<()> {
         self.client()?.reload()
     }
@@ -419,6 +453,7 @@ impl Fail2Ban {
     /// Reload a single jail.
     ///
     /// Runs `fail2ban-client reload <name>`.
+    #[cfg(feature = "client")]
     pub fn reload_jail(&self, name: &str) -> Result<()> {
         self.client()?.reload_jail(name)
     }
@@ -426,6 +461,7 @@ impl Fail2Ban {
     /// Manually ban an IP in the given jail.
     ///
     /// Runs `fail2ban-client set <jail> banip <ip>`.
+    #[cfg(feature = "client")]
     pub fn ban_ip(&self, jail: &str, ip: &str) -> Result<()> {
         self.client()?.ban_ip(jail, ip)
     }
@@ -433,6 +469,7 @@ impl Fail2Ban {
     /// Manually unban an IP in the given jail.
     ///
     /// Runs `fail2ban-client set <jail> unbanip <ip>`.
+    #[cfg(feature = "client")]
     pub fn unban_ip(&self, jail: &str, ip: &str) -> Result<()> {
         self.client()?.unban_ip(jail, ip)
     }
