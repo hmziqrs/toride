@@ -1,0 +1,11 @@
+# Managed by fail2ban-kit.
+# Do not edit manually unless you also disable this manager.
+[sshd]
+enabled = true
+filter = sshd
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd
+bantime = 10m
+findtime = 10m
+maxretry = 5
+action = nftables-multiport

@@ -1,0 +1,15 @@
+---
+source: crates/toride-fail2ban/src/render.test.rs
+assertion_line: 1006
+expression: out
+---
+# Managed by fail2ban-kit.
+# Do not edit manually unless you also disable this manager.
+
+[my-hook]
+actionstart = /usr/local/bin/f2b-hook start
+actionstop = /usr/local/bin/f2b-hook stop
+actioncheck = /usr/local/bin/f2b-hook check
+actionban = /usr/local/bin/f2b-hook ban <ip>
+actionunban = /usr/local/bin/f2b-hook unban <ip>
+timeout = 30

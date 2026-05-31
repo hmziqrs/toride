@@ -1,0 +1,8 @@
+# Managed by fail2ban-kit.
+# Do not edit manually unless you also disable this manager.
+[custom-notify]
+actionstart = /usr/bin/echo "Fail2Ban started for <jail>"
+actionstop = /usr/bin/echo "Fail2Ban stopped for <jail>"
+actioncheck =
+actionban = /usr/bin/curl -s -X POST https://example.com/notify -d ip=<ip>
+actionunban = /usr/bin/curl -s -X POST https://example.com/unnotify -d ip=<ip>

@@ -1,0 +1,7 @@
+# Managed by fail2ban-kit.
+# Do not edit manually unless you also disable this manager.
+[myapp-auth]
+prefregex = ^<F-MLFID>%(__prefix_line)s</F-MLFID>F-CONTENT>
+failregex = Authentication failure.*<HOST>
+ignoreregex =
+datepattern = {^LN-BEG}

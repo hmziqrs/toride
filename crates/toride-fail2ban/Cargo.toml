@@ -1,0 +1,67 @@
+[package]
+name = "toride-fail2ban"
+version = "0.1.0"
+edition = "2024"
+description = "Fail2Ban-style intrusion prevention library"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+
+# === Capability features ===
+
+## fail2ban-client wrapper, DuctRunner, service management, firewall diagnostics.
+client = ["dep:duct"]
+
+## Diagnostic engine for Fail2Ban installations.
+doctor = ["dep:regex", "dep:ipnet"]
+
+## Config parsing, jail engine, ban management, log detection, store.
+## Implies `client` because manager.rs uses DuctRunner.
+config = ["dep:regex", "client"]
+
+## fail2ban-regex wrapper for filter testing.
+regex-test = ["dep:regex"]
+
+## Jail spec, INI rendering, and config file management.
+jail-lifecycle = ["dep:typed-builder", "dep:indoc", "dep:fd-lock", "dep:fs-err", "dep:tempfile", "dep:ipnet"]
+
+## CLI argument parsing.
+cli = ["dep:clap"]
+
+# === Meta / downstream features ===
+
+serde = []
+firewall-nft = []
+firewall-iptables = []
+systemd-zbus = ["serde"]
+
+[dependencies]
+# --- Always required ---
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+which = { workspace = true }
+chrono = { version = "0.4", features = ["serde"] }
+humantime = "2"
+
+# --- Optional (feature-gated) ---
+duct = { version = "0.13", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+regex = { version = "1", optional = true }
+typed-builder = { version = "0.20", optional = true }
+ipnet = { version = "2", optional = true }
+indoc = { version = "2", optional = true }
+fd-lock = { version = "4", optional = true }
+fs-err = { version = "3", optional = true }
+tempfile = { version = "3", optional = true }
+
+[dev-dependencies]
+insta = "1"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true
