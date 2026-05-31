@@ -3,6 +3,8 @@
 //! Provides helpers for writing tests against ufw-kit without
 //! requiring a real UFW installation.
 
+pub mod fixtures;
+
 // Re-export command types
 pub use ufw_kit::command::{CommandLog, CommandRunner, FakeRunner};
 

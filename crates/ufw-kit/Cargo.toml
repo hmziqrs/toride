@@ -12,6 +12,10 @@ app-profile = []
 framework = []
 service = []
 serde = ["dep:serde"]
+systemd-zbus = []
+firewall-nft = []
+firewall-iptables = []
+tokio = []
 
 [dependencies]
 thiserror = { workspace = true }
