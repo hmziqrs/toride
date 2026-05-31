@@ -4,19 +4,40 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["ed25519", "rsa", "ecdsa", "agent", "doctor"]
+default = [
+    "ed25519", "rsa", "ecdsa",
+    "agent", "known-hosts", "authorized-keys",
+    "doctor", "forward",
+]
+
+# Crypto algorithm passthrough
 ed25519 = ["ssh-key/ed25519"]
 rsa = ["ssh-key/rsa"]
 ecdsa = ["ssh-key/p256"]
 ecdsa-full = ["ssh-key/p256", "ssh-key/p384", "ssh-key/p521"]
 dsa = ["ssh-key/dsa"]
 crypto = ["ssh-key/crypto"]
-fido = []
-native-client = ["dep:russh"]
+
+# Subsystem features
 agent = ["dep:ssh-agent-lib"]
-doctor = []
+known-hosts = []
+authorized-keys = []
+doctor = ["known-hosts"]
+forward = []
 certificate = ["dep:chrono"]
+
+# Convenience: enable everything
+full = [
+    "ed25519", "rsa", "ecdsa-full", "dsa", "crypto",
+    "agent", "known-hosts", "authorized-keys",
+    "doctor", "forward", "certificate",
+    "fido", "macos-keychain", "native-client",
+]
+
+# Platform/hardware (off by default — not useful on a Linux VPS)
+fido = []
 macos-keychain = []
+native-client = ["dep:russh"]
 
 [dependencies]
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }

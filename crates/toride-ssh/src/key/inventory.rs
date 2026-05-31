@@ -453,6 +453,7 @@ fn scan_standalone_pub_files(
 /// Keys from the agent whose fingerprint does not match any key already in the
 /// inventory are appended with [`KeySource::Agent`]. Agent connection failures
 /// are logged but non-fatal.
+#[cfg(feature = "agent")]
 async fn merge_agent_keys(keys: &mut Vec<SshKey>, runner: &dyn crate::CliRunner) {
     let agent_keys = match crate::agent::list_identities(runner).await {
         Ok(keys) => keys,
@@ -469,6 +470,7 @@ async fn merge_agent_keys(keys: &mut Vec<SshKey>, runner: &dyn crate::CliRunner)
 
 /// From a set of agent keys, return only those whose fingerprint does not
 /// appear among the existing (filesystem) keys.
+#[cfg(feature = "agent")]
 fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<SshKey> {
     let fs_fingerprints: HashSet<&str> = existing
         .iter()
@@ -706,6 +708,7 @@ pub async fn scan_keys(
     }
 
     // Phase 3: Agent key merging (async).
+    #[cfg(feature = "agent")]
     if let Some(runner) = runner {
         merge_agent_keys(&mut keys, runner).await;
     }

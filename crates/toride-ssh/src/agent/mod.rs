@@ -38,29 +38,17 @@ impl<'a> AgentService<'a> {
     /// Returns an error if the agent check command itself fails unexpectedly
     /// (not merely because the agent is unavailable).
     pub async fn status(&self) -> Result<bool> {
-        #[cfg(feature = "agent")]
-        {
-            // `connect()` already validates `SSH_AUTH_SOCK` and socket
-            // existence, so no need to duplicate those checks here.
-            match client::connect().await {
-                Ok(mut c) => {
-                    c.request_identities()
-                        .await
-                        .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
-                    Ok(true)
-                }
-                Err(Error::AgentNotAvailable) => Ok(false),
-                Err(e) => Err(e),
+        // `connect()` already validates `SSH_AUTH_SOCK` and socket
+        // existence, so no need to duplicate those checks here.
+        match client::connect().await {
+            Ok(mut c) => {
+                c.request_identities()
+                    .await
+                    .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
+                Ok(true)
             }
-        }
-
-        #[cfg(not(feature = "agent"))]
-        {
-            match self.runner.run("ssh-add", vec!["-l".to_owned()]).await {
-                Ok(_) => Ok(true),
-                Err(Error::CommandFailed(_)) => Ok(false),
-                Err(e) => Err(e),
-            }
+            Err(Error::AgentNotAvailable) => Ok(false),
+            Err(e) => Err(e),
         }
     }
 

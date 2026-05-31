@@ -37,27 +37,41 @@
 mod paths;
 mod types;
 
-/// SSH agent management (listing, adding, removing keys).
-pub mod agent;
-/// `authorized_keys` file parsing and management.
-pub mod authorized_keys;
-/// SSH certificate and CA operations.
-#[cfg(feature = "certificate")]
-pub mod certificate;
+// ---------------------------------------------------------------------------
+// Always-on core modules
+// ---------------------------------------------------------------------------
+
 /// SSH config file parsing, editing, and resolution.
 pub mod config;
-/// SSH diagnostic checks (local and remote).
-pub mod doctor;
-/// Port forwarding management via ControlMaster.
-pub mod forward;
 /// SSH key management (inventory, generation, repair).
 pub mod key;
-/// `known_hosts` file management and host key scanning.
-pub mod known_hosts;
 /// Helpers for running external SSH tools (`ssh-keygen`, `ssh-keyscan`, etc.).
 pub mod runner;
 /// Undo/restore mechanism for file mutations.
 pub mod undo;
+
+// ---------------------------------------------------------------------------
+// Feature-gated subsystem modules
+// ---------------------------------------------------------------------------
+
+/// SSH agent management (listing, adding, removing keys).
+#[cfg(feature = "agent")]
+pub mod agent;
+/// `authorized_keys` file parsing and management.
+#[cfg(feature = "authorized-keys")]
+pub mod authorized_keys;
+/// SSH certificate and CA operations.
+#[cfg(feature = "certificate")]
+pub mod certificate;
+/// SSH diagnostic checks (local and remote).
+#[cfg(feature = "doctor")]
+pub mod doctor;
+/// Port forwarding management via ControlMaster.
+#[cfg(feature = "forward")]
+pub mod forward;
+/// `known_hosts` file management and host key scanning.
+#[cfg(feature = "known-hosts")]
+pub mod known_hosts;
 pub use runner::cli_runner::{CliRunner, DefaultCliRunner, MockCliRunner};
 
 pub use paths::SshPaths;
@@ -125,33 +139,41 @@ pub enum Error {
 
     // Known hosts
     /// Failed to parse `known_hosts`.
+    #[cfg(feature = "known-hosts")]
     #[error("known_hosts parse failed: {0}")]
     KnownHostsParseFailed(String),
     /// Host not present in `known_hosts`.
+    #[cfg(feature = "known-hosts")]
     #[error("host not known: {0}")]
     HostNotKnown(String),
 
     // Authorized keys
     /// Failed to parse `authorized_keys`.
+    #[cfg(feature = "authorized-keys")]
     #[error("authorized_keys parse failed: {0}")]
     AuthorizedKeysParseFailed(String),
     /// Failed to write `authorized_keys`.
+    #[cfg(feature = "authorized-keys")]
     #[error("authorized_keys write failed: {0}")]
     AuthorizedKeysWriteFailed(String),
 
     // Agent subsystem
     /// SSH agent socket not found or unreachable.
+    #[cfg(feature = "agent")]
     #[error("SSH agent not available")]
     AgentNotAvailable,
     /// Agent rejected the operation.
+    #[cfg(feature = "agent")]
     #[error("agent operation failed: {0}")]
     AgentOperationFailed(String),
     /// Key not loaded in the agent.
+    #[cfg(feature = "agent")]
     #[error("agent key not found: {0}")]
     AgentKeyNotFound(String),
 
     // Doctor
     /// A diagnostic check itself failed.
+    #[cfg(feature = "doctor")]
     #[error("check failed: {0}")]
     CheckFailed(String),
 
@@ -175,9 +197,11 @@ pub enum Error {
 
     // Forward
     /// Port forwarding setup failed.
+    #[cfg(feature = "forward")]
     #[error("port forward failed: {0}")]
     ForwardFailed(String),
     /// No matching port forward found.
+    #[cfg(feature = "forward")]
     #[error("port forward not found: {0}")]
     ForwardNotFound(String),
 
@@ -302,21 +326,25 @@ impl SshManager {
     }
 
     /// SSH agent operations.
+    #[cfg(feature = "agent")]
     pub fn agent(&self) -> agent::AgentService<'_> {
         agent::AgentService::new(&self.paths, &*self.runner)
     }
 
     /// `authorized_keys` management (listing, adding, removing keys).
+    #[cfg(feature = "authorized-keys")]
     pub fn authorized_keys(&self) -> authorized_keys::AuthorizedKeysService<'_> {
         authorized_keys::AuthorizedKeysService::new(&self.paths)
     }
 
     /// Diagnostic checks.
+    #[cfg(feature = "doctor")]
     pub fn doctor(&self) -> doctor::DoctorService<'_> {
         doctor::DoctorService::new(&self.paths, &*self.runner)
     }
 
     /// Known hosts management (listing, scanning, adding, removing).
+    #[cfg(feature = "known-hosts")]
     pub fn known_hosts(&self) -> known_hosts::KnownHostsService<'_> {
         known_hosts::KnownHostsService::new(&self.paths, &*self.runner)
     }
@@ -328,6 +356,7 @@ impl SshManager {
     }
 
     /// Port forwarding management via ControlMaster.
+    #[cfg(feature = "forward")]
     pub fn forward(&self) -> forward::ForwardService<'_> {
         forward::ForwardService::new(&self.paths)
     }
