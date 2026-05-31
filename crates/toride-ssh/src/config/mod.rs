@@ -64,6 +64,17 @@ impl<'a> ConfigService<'a> {
         let path = self.paths.config_path();
         let content = ast.to_string_lossless();
 
+        // Create a backup of the existing config before overwriting.
+        if path.exists() {
+            let backup_path = path.with_extension("config.bak");
+            if let Err(e) = std::fs::copy(path, &backup_path) {
+                tracing::warn!(
+                    "failed to back up config to {}: {e}",
+                    backup_path.display()
+                );
+            }
+        }
+
         // Atomic write: write to temp file, then rename.
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         let tmp_path = parent.join(format!(

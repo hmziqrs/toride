@@ -78,7 +78,7 @@ pub async fn install_key_to_remote(
         ));
     }
 
-    install_via_manual_ssh(&pubkey_path, dest).await?;
+    install_via_manual_ssh(&pubkey_path, dest, runner).await?;
     Ok(InstallOutcome::Manual)
 }
 
@@ -88,17 +88,10 @@ pub async fn install_key_to_remote(
 /// ```sh
 /// ssh <dest> "mkdir -p ~/.ssh && echo '<key>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 /// ```
-async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str) -> Result<()> {
+async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str, runner: &dyn CliRunner) -> Result<()> {
     let pubkey_content = tokio::task::spawn_blocking({
         let path = pubkey_path.to_path_buf();
-        move || {
-            std::fs::read_to_string(&path).map_err(|e| {
-                Error::CommandFailed(format!(
-                    "failed to read public key {}: {e}",
-                    path.display()
-                ))
-            })
-        }
+        move || std::fs::read_to_string(&path).map_err(Error::Io)
     })
     .await
     .map_err(|e| Error::TaskFailed(e.to_string()))??;
@@ -112,14 +105,9 @@ async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str) -> Result<()> {
         "mkdir -p ~/.ssh && echo '{escaped_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     );
 
-    let dest = dest.to_owned();
-    tokio::task::spawn_blocking(move || {
-        duct::cmd("ssh", [&dest, &remote_cmd])
-            .read()
-            .map_err(|e| Error::CommandFailed(format!("manual key install failed: {e}")))
-    })
-    .await
-    .map_err(|e| Error::TaskFailed(e.to_string()))??;
+    runner
+        .run("ssh", vec![dest.to_owned(), remote_cmd])
+        .await?;
 
     Ok(())
 }

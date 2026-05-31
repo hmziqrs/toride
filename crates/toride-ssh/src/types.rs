@@ -100,6 +100,8 @@ pub struct SshKey {
     pub last_modified: Option<u64>,
     /// Host aliases in `~/.ssh/config` that reference this key via `IdentityFile`.
     pub used_by_hosts: Vec<String>,
+    /// Detected key format (PEM vs OpenSSH), if known.
+    pub key_format: Option<KeyFormat>,
 }
 
 /// Diagnostic severity level.
@@ -153,6 +155,72 @@ pub struct KeyCreateParams {
     pub touch_required: bool,
     /// Require user verification (biometric/PIN) on FIDO/security key.
     pub verify_required: bool,
+}
+
+impl KeyCreateParams {
+    /// Create parameters for an Ed25519 key with sensible defaults.
+    pub fn ed25519(name: String) -> Self {
+        Self {
+            key_type: KeyType::Ed25519,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for an RSA 4096-bit key with sensible defaults.
+    pub fn rsa_4096(name: String) -> Self {
+        Self {
+            key_type: KeyType::Rsa { bits: 4096 },
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for a FIDO2 Ed25519 security key with sensible defaults.
+    pub fn ed25519_sk(name: String) -> Self {
+        Self {
+            key_type: KeyType::SkEd25519,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for a FIDO2 ECDSA P-256 security key with sensible defaults.
+    pub fn ecdsa_sk(name: String) -> Self {
+        Self {
+            key_type: KeyType::SkEcdsaP256,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for KeyCreateParams {

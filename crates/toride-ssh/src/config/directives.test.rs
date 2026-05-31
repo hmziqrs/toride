@@ -99,7 +99,8 @@ Host *
 fn is_accumulative_known_directives() {
     assert!(is_accumulative("identityfile"));
     assert!(is_accumulative("certificatefile"));
-    assert!(is_accumulative("proxyjump"));
+    // ProxyJump uses first-match-wins per OpenSSH ssh_config(5), NOT accumulative.
+    assert!(!is_accumulative("proxyjump"));
     // ForwardAgent is first-match-wins per OpenSSH ssh_config(5).
     assert!(!is_accumulative("forwardagent"));
     assert!(!is_accumulative("hostname"));

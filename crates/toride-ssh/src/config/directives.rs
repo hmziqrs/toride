@@ -63,7 +63,7 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<S
 ///
 /// Uses first-match-wins semantics for most directives but **accumulates**
 /// values for multi-valued directives (`IdentityFile`, `CertificateFile`,
-/// `ProxyJump`, `SendEnv`, `SetEnv`, `DynamicForward`,
+/// `SendEnv`, `SetEnv`, `DynamicForward`,
 /// `LocalForward`, `RemoteForward`, `PermitLocalCommand`).
 pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
@@ -202,7 +202,6 @@ pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<Stri
 pub(crate) fn is_accumulative(keyword: &str) -> bool {
     keyword.eq_ignore_ascii_case("identityfile")
         || keyword.eq_ignore_ascii_case("certificatefile")
-        || keyword.eq_ignore_ascii_case("proxyjump")
         || keyword.eq_ignore_ascii_case("sendenv")
         || keyword.eq_ignore_ascii_case("setenv")
         || keyword.eq_ignore_ascii_case("dynamicforward")

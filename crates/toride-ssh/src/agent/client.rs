@@ -220,6 +220,7 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
             has_certificate: false,
             last_modified: None,
             used_by_hosts: Vec::new(),
+            key_format: None,
         });
     }
 
@@ -342,6 +343,7 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         has_certificate: false,
         last_modified: None,
         used_by_hosts: Vec::new(),
+        key_format: None,
     })
 }
 

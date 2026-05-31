@@ -1,5 +1,51 @@
 use super::*;
 
+/// Like [`expand_tokens`] but leaves `%i` sequences untouched.
+///
+/// Test-only helper, inlined here because the production code no longer
+/// needs it (the `%i` token now expands to the local username everywhere,
+/// matching OpenSSH behaviour).
+fn expand_tokens_skip_i(s: &str, ctx: &TokenContext<'_>) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            match chars.peek().copied() {
+                Some('%') => {
+                    result.push_str("%%");
+                    chars.next();
+                }
+                Some('i') => {
+                    result.push_str("%i");
+                    chars.next();
+                }
+                Some('C') => {
+                    chars.next();
+                    let hash_input = format!("{}:{}:{}", ctx.host, ctx.port, ctx.local_user);
+                    result.push_str(&simple_hash(&hash_input));
+                }
+                Some('d') => { chars.next(); result.push_str(ctx.home_dir); }
+                Some('H') => { chars.next(); result.push_str(ctx.canonical_host); }
+                Some('h' | 'n') => { chars.next(); result.push_str(ctx.host); }
+                Some('L') => {
+                    chars.next();
+                    result.push_str(ctx.local_hostname.split('.').next().unwrap_or(ctx.local_hostname));
+                }
+                Some('l') => { chars.next(); result.push_str(ctx.local_hostname); }
+                Some('p') => { chars.next(); result.push_str(ctx.port); }
+                Some('r' | 'T') => { chars.next(); result.push_str(ctx.remote_user); }
+                Some('u') => { chars.next(); result.push_str(ctx.local_user); }
+                _ => { result.push(ch); }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
 #[test]
 fn expand_env_vars_no_vars() {
     assert_eq!(expand_env_vars("hello"), "hello");
@@ -140,67 +186,67 @@ fn collapse_double_percent_multiple() {
 
 #[test]
 fn expand_tokens_no_tokens() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("hello", &ctx), "hello");
 }
 
 #[test]
 fn expand_tokens_host() {
-    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "example.com", identity_file: None };
+    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "example.com", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%h", &ctx), "example.com");
 }
 
 #[test]
 fn expand_tokens_user() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%u", &ctx), "alice");
 }
 
 #[test]
 fn expand_tokens_port() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "2222", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "2222", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%p", &ctx), "2222");
 }
 
 #[test]
 fn expand_tokens_home_dir() {
-    let ctx = TokenContext { host: "host", home_dir: "/home/alice", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home/alice", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%d", &ctx), "/home/alice");
 }
 
 #[test]
 fn expand_tokens_local_hostname() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "myhost", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "myhost", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%l", &ctx), "myhost");
 }
 
 #[test]
 fn expand_tokens_remote_user() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "deploy", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "deploy", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%r", &ctx), "deploy");
 }
 
 #[test]
 fn expand_tokens_unknown_token() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%z", &ctx), "%z");
 }
 
 #[test]
 fn expand_tokens_trailing_percent() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("hello%", &ctx), "hello%");
 }
 
 #[test]
 fn expand_tokens_double_percent() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%%", &ctx), "%%");
 }
 
 #[test]
 fn expand_tokens_mixed() {
-    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "example.com", identity_file: None };
+    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "example.com", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%h:%p", &ctx), "example.com:22");
 }
 
@@ -246,51 +292,51 @@ fn match_criteria_host_wildcard() {
 
 #[test]
 fn expand_tokens_consecutive_tokens() {
-    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%h%h%h", &ctx), "hhh");
 }
 
 #[test]
 fn expand_tokens_adjacent_different_tokens() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%h:%p:%u", &ctx), "host:22:user");
 }
 
 #[test]
 fn expand_tokens_percent_at_end() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("hello%", &ctx), "hello%");
 }
 
 #[test]
 fn expand_tokens_percent_at_start() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     // %h is a valid token (host), so %hello becomes "hostello"
     assert_eq!(expand_tokens("%h", &ctx), "host");
 }
 
 #[test]
 fn expand_tokens_only_percent() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%", &ctx), "%");
 }
 
 #[test]
 fn expand_tokens_escaped_percent_sequence() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     // %%h should produce %%h (collapse_double_percent handles %% → %)
     assert_eq!(expand_tokens("%%h", &ctx), "%%h");
 }
 
 #[test]
 fn expand_tokens_empty_string() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("", &ctx), "");
 }
 
 #[test]
 fn expand_tokens_no_tokens_complex() {
-    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None };
+    let ctx = TokenContext { host: "host", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "host", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("/usr/local/bin/ssh", &ctx), "/usr/local/bin/ssh");
 }
 
@@ -454,6 +500,9 @@ fn expand_tokens_all_tokens_combined() {
         port: "2222",
         canonical_host: "example.com",
         identity_file: None,
+        local_host_key: "",
+        jump_host: "",
+        remote_host_key: "",
     };
     let result = expand_tokens("%h:%p:%u:%d:%l:%r", &ctx);
     assert_eq!(result, "example.com:2222:alice:/home/alice:myhost:deploy");
@@ -461,20 +510,20 @@ fn expand_tokens_all_tokens_combined() {
 
 #[test]
 fn expand_tokens_with_path() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("/keys/%h/%u", &ctx), "/keys/h/u");
 }
 
 #[test]
 fn expand_tokens_with_env_var() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     // %d is home_dir, not an env var
     assert_eq!(expand_tokens("%d/.ssh", &ctx), "/home/.ssh");
 }
 
 #[test]
 fn expand_tokens_canonical_host() {
-    let ctx = TokenContext { host: "alias", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "real.host.com", identity_file: None };
+    let ctx = TokenContext { host: "alias", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "user", port: "22", canonical_host: "real.host.com", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%H", &ctx), "real.host.com");
 }
 
@@ -482,40 +531,40 @@ fn expand_tokens_canonical_host() {
 fn expand_tokens_identity_file_token() {
     // %i expands to local username (same as %u) to avoid circular reference
     // when %i is used inside an IdentityFile path.
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "h", identity_file: Some("~/.ssh/id_ed25519_work") };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "h", identity_file: Some("~/.ssh/id_ed25519_work"), local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%i", &ctx), "alice");
 }
 
 #[test]
 fn expand_tokens_identity_file_without_context() {
     // When no identity file context is set, %i also uses local username.
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "local", remote_user: "remote", local_user: "alice", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%i", &ctx), "alice");
 }
 
 #[test]
 fn expand_tokens_local_hostname_short() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "myhost.example.com", remote_user: "remote", local_user: "user", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "myhost.example.com", remote_user: "remote", local_user: "user", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     // %L should give short hostname (before first '.')
     assert_eq!(expand_tokens("%L", &ctx), "myhost");
 }
 
 #[test]
 fn expand_tokens_local_hostname_short_no_dot() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "myhost", remote_user: "remote", local_user: "user", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "myhost", remote_user: "remote", local_user: "user", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%L", &ctx), "myhost");
 }
 
 #[test]
 fn expand_tokens_remote_user_alias() {
     // %T is an alias for %r (remote user)
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "deploy", local_user: "u", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "deploy", local_user: "u", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%T", &ctx), "deploy");
 }
 
 #[test]
 fn expand_tokens_connection_hash() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "u", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     let hash = expand_tokens("%C", &ctx);
     // %C should produce a hex string
     assert!(!hash.is_empty());
@@ -524,7 +573,7 @@ fn expand_tokens_connection_hash() {
 
 #[test]
 fn expand_tokens_all_new_tokens() {
-    let ctx = TokenContext { host: "alias", home_dir: "/home/alice", local_hostname: "myhost.example.com", remote_user: "deploy", local_user: "alice", port: "2222", canonical_host: "real.com", identity_file: None };
+    let ctx = TokenContext { host: "alias", home_dir: "/home/alice", local_hostname: "myhost.example.com", remote_user: "deploy", local_user: "alice", port: "2222", canonical_host: "real.com", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     // Test all new tokens in one go
     let result = expand_tokens("%H:%i:%L:%T:%C", &ctx);
     let parts: Vec<&str> = result.split(':').collect();
@@ -617,19 +666,19 @@ fn expand_env_vars_no_braces_in_path() {
 
 #[test]
 fn expand_tokens_unknown_x() {
-    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%X", &ctx), "%X");
 }
 
 #[test]
 fn expand_tokens_double_percent_preserved() {
-    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("%%", &ctx), "%%");
 }
 
 #[test]
 fn expand_tokens_empty() {
-    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "d", local_hostname: "l", remote_user: "r", local_user: "u", port: "p", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens("", &ctx), "");
 }
 
@@ -639,19 +688,19 @@ fn expand_tokens_empty() {
 
 #[test]
 fn expand_tokens_skip_i_preserves_percent_i() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens_skip_i("~/.ssh/work/%i", &ctx), "~/.ssh/work/%i");
 }
 
 #[test]
 fn expand_tokens_skip_i_expands_other_tokens() {
-    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "example.com", identity_file: None };
+    let ctx = TokenContext { host: "example.com", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "example.com", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens_skip_i("~/.ssh/%h/%i", &ctx), "~/.ssh/example.com/%i");
 }
 
 #[test]
 fn expand_tokens_skip_i_expands_u_but_not_i() {
-    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "h", identity_file: None };
+    let ctx = TokenContext { host: "h", home_dir: "/home", local_hostname: "l", remote_user: "r", local_user: "alice", port: "22", canonical_host: "h", identity_file: None, local_host_key: "", jump_host: "", remote_host_key: "" };
     assert_eq!(expand_tokens_skip_i("%u/%i", &ctx), "alice/%i");
 }
 
@@ -815,7 +864,9 @@ fn is_canonicalize_enabled_yes() {
         dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "yes".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -842,7 +893,9 @@ fn is_canonicalize_enabled_always() {
         dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "always".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -869,7 +922,9 @@ fn is_canonicalize_enabled_no() {
         dynamic_forwards: vec![],
         directives: vec![("CanonicalizeHostname".into(), "no".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     assert!(!is_canonicalize_enabled(&resolved));
 }
@@ -896,7 +951,9 @@ fn is_canonicalize_enabled_missing() {
         dynamic_forwards: vec![],
         directives: vec![],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     assert!(!is_canonicalize_enabled(&resolved));
 }
@@ -923,7 +980,9 @@ fn is_canonicalize_enabled_case_insensitive() {
         dynamic_forwards: vec![],
         directives: vec![("canonicalizehostname".into(), "YES".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -954,7 +1013,9 @@ fn expand_resolved_certificate_file() {
         dynamic_forwards: vec![],
         directives: vec![("CertificateFile".into(), "%d/.ssh/%h-cert.pub".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
     // Certificate files should be expanded.
@@ -986,7 +1047,9 @@ fn expand_resolved_control_path() {
         dynamic_forwards: vec![],
         directives: vec![("ControlPath".into(), "/tmp/ssh-%h-%p".into())],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
     // ControlPath should be expanded.
@@ -1020,7 +1083,9 @@ fn expand_resolved_user_known_hosts_file() {
             "%d/.ssh/known_hosts_%h".into(),
         )],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "myhost", Path::new("/tmp"));
     let val = &resolved.directives[0].1;
@@ -1054,7 +1119,9 @@ fn expand_resolved_identity_agent() {
             "${SSH_AUTH_SOCK}".into(),
         )],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "h", Path::new("/tmp"));
     // IdentityAgent should be expanded.
@@ -1071,7 +1138,7 @@ fn resolve_pass_default_canonicalized_false() {
     // A resolved host from resolve_pass should have canonicalized = false.
     use super::ast;
     let ast = ast::parse("Host example\n  HostName example.com\n");
-    let resolved = resolve_pass(&ast, "example", "example", "user", Path::new("/tmp"));
+    let resolved = resolve_pass(&ast, "example", "example", "user");
     assert!(!resolved.canonicalized);
     assert_eq!(resolved.host_name.as_deref(), Some("example.com"));
 }
@@ -1259,7 +1326,7 @@ Host target
     .unwrap();
 
     let resolved = resolve(&ssh_dir, "target", None).await.unwrap();
-    // ProxyJump is an accumulative directive, so it appears in the directives list.
+    // ProxyJump uses first-match-wins semantics but still appears in the directives list.
     let pj = resolved
         .directives
         .iter()
@@ -1580,7 +1647,9 @@ fn expand_resolved_local_forwards_with_tokens() {
         dynamic_forwards: vec![],
         directives: vec![],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
     let lf = &resolved.local_forwards[0];
@@ -1610,7 +1679,9 @@ fn expand_resolved_remote_forwards_with_tokens() {
         dynamic_forwards: vec![],
         directives: vec![],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
     let rf = &resolved.remote_forwards[0];
@@ -1640,7 +1711,9 @@ fn expand_resolved_dynamic_forwards_with_tokens() {
         dynamic_forwards: vec!["%p".into()],
         directives: vec![],
         user_known_hosts_file: None,
+        identities_only: None,
         canonicalized: false,
+        unevaluated_match_warnings: vec![],
     };
     expand_resolved(&mut resolved, "h", Path::new("/tmp"));
     let df = &resolved.dynamic_forwards[0];

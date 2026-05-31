@@ -4,16 +4,16 @@ use base64::Engine;
 
 use crate::key::get_permissions;
 use crate::paths::SshPaths;
-use crate::{CliRunner, Error, Fingerprint, KeyCreateParams, KeySource, KeyType, Result, SshKey};
+use crate::{CliRunner, Error, Fingerprint, KeyCreateParams, KeyFormat, KeySource, KeyType, Result, SshKey};
 
 /// Minimum RSA key size accepted by OpenSSH.
 const MIN_RSA_BITS: u32 = 1024;
 
+/// Recommended RSA key size (doctor flags RSA-2048 as weak).
+const RECOMMENDED_RSA_BITS: u32 = 3072;
+
 /// Timeout for `ssh-add` to complete (e.g. waiting for passphrase prompt).
 const SSH_ADD_TIMEOUT_SECS: u64 = 30;
-
-/// Polling interval when waiting for `ssh-add` to finish.
-const SSH_ADD_POLL_INTERVAL_MS: u64 = 100;
 
 /// Convert our [`KeyType`] to the ssh-keygen `-t` argument value.
 fn key_type_to_cli_arg(kt: KeyType) -> &'static str {
@@ -55,6 +55,9 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
     }
 
     // ECDSA curve size (via -b flag)
+    if params.key_type == KeyType::EcdsaP256 {
+        args.extend(["-b".to_owned(), "256".to_owned()]);
+    }
     if params.key_type == KeyType::EcdsaP384 {
         args.extend(["-b".to_owned(), "384".to_owned()]);
     }
@@ -82,6 +85,7 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
 }
 
 /// Generate a new SSH key pair.
+#[expect(clippy::too_many_lines, reason = "orchestrates generation, permissions, agent, config")]
 pub async fn generate_key(
     paths: &SshPaths,
     params: KeyCreateParams,
@@ -106,6 +110,17 @@ pub async fn generate_key(
         return Err(Error::KeyGenerationFailed(format!(
             "RSA bit size {bits} is below minimum {MIN_RSA_BITS}"
         )));
+    }
+
+    // Warn (but do not error) when RSA bits are below the recommended size.
+    if let KeyType::Rsa { bits } = params.key_type
+        && bits > 0
+        && bits < RECOMMENDED_RSA_BITS
+    {
+        tracing::warn!(
+            "RSA key size {bits} is below the recommended {RECOMMENDED_RSA_BITS} bits; \
+             consider using at least {RECOMMENDED_RSA_BITS} bits or switching to Ed25519"
+        );
     }
 
     let passphrase_nonempty = params
@@ -167,7 +182,30 @@ pub async fn generate_key(
 
     // Add to agent if requested
     if params.add_to_agent {
-        add_key_to_agent(&private_path).await?;
+        add_key_to_agent(&private_path, runner).await?;
+    }
+
+    // Add to SSH config if requested.
+    if params.add_to_config {
+        let host_alias = params
+            .config_host
+            .as_deref()
+            .unwrap_or(&params.name)
+            .to_owned();
+        let identity_value = format!("~/.ssh/{}", params.name);
+        let config_service = crate::config::ConfigService::new(paths);
+        config_service
+            .edit(|ast| {
+                crate::config::ConfigService::add_host(
+                    ast,
+                    &host_alias,
+                    vec![
+                        ("HostName".to_owned(), host_alias.clone()),
+                        ("IdentityFile".to_owned(), identity_value),
+                    ],
+                )
+            })
+            .await?;
     }
 
     let public_key = pk.public_key();
@@ -196,59 +234,36 @@ pub async fn generate_key(
         has_certificate: false,
         last_modified: None,
         used_by_hosts: Vec::new(),
+        key_format: Some(KeyFormat::OpenSSH),
     })
 }
 
 /// Add a key to the SSH agent.
 ///
-/// Uses `duct::Expression::start()` and polls with `try_wait()` to enforce a
-/// 30-second timeout. If the agent is blocked waiting for a passphrase prompt
-/// that never arrives, the process is killed rather than hanging indefinitely.
-async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
+/// Delegates to [`CliRunner::run`] so the call is testable with
+/// [`MockCliRunner`].  A `tokio::time::timeout` wraps the call so that a
+/// stuck agent (e.g. waiting for a passphrase prompt that never arrives) does
+/// not hang indefinitely.
+async fn add_key_to_agent(private_path: &std::path::Path, runner: &dyn CliRunner) -> Result<()> {
     let path_str = private_path
         .to_str()
         .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
         .to_owned();
 
-    tokio::task::spawn_blocking(move || {
-        let child = duct::cmd("ssh-add", [path_str.as_str()])
-            .start()
-            .map_err(|e| Error::CommandFailed(format!("ssh-add failed to start: {e}")))?;
+    let args = vec![path_str];
 
-        let timeout = std::time::Duration::from_secs(SSH_ADD_TIMEOUT_SECS);
-        let start = std::time::Instant::now();
-
-        loop {
-            match child.try_wait() {
-                Ok(Some(output)) => {
-                    if output.status.success() {
-                        return Ok(());
-                    }
-                    return Err(Error::CommandFailed(format!(
-                        "ssh-add exited with status: {}",
-                        output.status
-                    )));
-                }
-                Ok(None) => {
-                    if start.elapsed() >= timeout {
-                        let _ = child.kill();
-                        return Err(Error::CommandFailed(
-                            "ssh-add timed out after {SSH_ADD_TIMEOUT_SECS} seconds".to_owned(),
-                        ));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(SSH_ADD_POLL_INTERVAL_MS));
-                }
-                Err(e) => {
-                    let _ = child.kill();
-                    return Err(Error::CommandFailed(format!(
-                        "ssh-add wait error: {e}"
-                    )));
-                }
-            }
-        }
-    })
+    tokio::time::timeout(
+        std::time::Duration::from_secs(SSH_ADD_TIMEOUT_SECS),
+        runner.run("ssh-add", args),
+    )
     .await
-    .map_err(|e| Error::TaskFailed(format!("ssh-add task failed: {e}")))?
+    .map_err(|_| {
+        Error::CommandFailed(format!(
+            "ssh-add timed out after {SSH_ADD_TIMEOUT_SECS} seconds"
+        ))
+    })??;
+
+    Ok(())
 }
 
 #[cfg(test)]

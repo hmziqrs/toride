@@ -83,6 +83,9 @@ pub enum Error {
     /// Key generation failed.
     #[error("key generation failed: {0}")]
     KeyGenerationFailed(String),
+    /// Key name validation failed (empty, path traversal, etc.).
+    #[error("invalid key name: {0}")]
+    InvalidKeyName(String),
     /// The key requires a passphrase but none was provided.
     #[error("passphrase required")]
     PassphraseRequired,

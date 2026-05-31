@@ -36,25 +36,25 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<crate::Permissi
 /// Maximum length is 255 bytes (typical filesystem limit).
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(Error::KeyGenerationFailed("key name must not be empty".to_owned()));
+        return Err(Error::InvalidKeyName("key name must not be empty".to_owned()));
     }
     if name.len() > MAX_KEY_NAME_LENGTH {
-        return Err(Error::KeyGenerationFailed(
+        return Err(Error::InvalidKeyName(
             format!("key name must not exceed {MAX_KEY_NAME_LENGTH} bytes"),
         ));
     }
     if name.contains('\0') {
-        return Err(Error::KeyGenerationFailed(
+        return Err(Error::InvalidKeyName(
             "key name must not contain null bytes".to_owned(),
         ));
     }
     if name.contains('/') || name.contains('\\') {
-        return Err(Error::KeyGenerationFailed(
+        return Err(Error::InvalidKeyName(
             "key name must not contain path separators".to_owned(),
         ));
     }
     if name.contains("..") {
-        return Err(Error::KeyGenerationFailed(
+        return Err(Error::InvalidKeyName(
             "key name must not contain '..'".to_owned(),
         ));
     }
@@ -109,7 +109,7 @@ impl<'a> KeyService<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::KeyGenerationFailed`] if the key name is invalid
+    /// Returns [`Error::InvalidKeyName`] if the key name is invalid
     /// (empty, contains path separators or null bytes, or exceeds 255 bytes),
     /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
     /// [`Error::CommandFailed`] if key generation fails.
@@ -123,7 +123,7 @@ impl<'a> KeyService<'a> {
     /// # Errors
     ///
     /// Returns [`Error::KeyNotFound`] if the key does not exist,
-    /// [`Error::KeyGenerationFailed`] if the key name is invalid,
+    /// [`Error::InvalidKeyName`] if the key name is invalid,
     /// [`Error::Io`] if file operations fail, [`Error::TaskFailed`] if
     /// the background deletion task panics, or
     /// [`Error::ConfigWriteFailed`] if config cleanup fails.
@@ -143,6 +143,13 @@ impl<'a> KeyService<'a> {
         let backup = params.backup;
         let remove_public = params.remove_public;
         let remove_certificate = params.remove_certificate;
+
+        // Remove from agent if requested (non-fatal).
+        // Must happen BEFORE the file is deleted/renamed so that ssh-add -d
+        // can still reference the original path.
+        if params.remove_from_agent {
+            remove_key_from_agent(&self.paths.ssh_dir().join(&params.name), self.runner).await;
+        }
 
         tokio::task::spawn_blocking(move || {
             // Backup if requested
@@ -187,11 +194,6 @@ impl<'a> KeyService<'a> {
         .await
         .map_err(|e| Error::TaskFailed(format!("delete task failed: {e}")))??;
 
-        // Remove from agent if requested (non-fatal)
-        if params.remove_from_agent {
-            remove_key_from_agent(&self.paths.ssh_dir().join(&params.name), self.runner).await;
-        }
-
         // Remove from config if requested
         if params.remove_from_config {
             remove_from_config(self.paths, &params.name).await?;
@@ -202,8 +204,9 @@ impl<'a> KeyService<'a> {
 
     /// Derive the `.pub` file from a private key.
     ///
-    /// Runs `ssh-keygen -y -f <path>` to extract the public key and
-    /// writes it to the corresponding `.pub` file.
+    /// First attempts an in-process parse. For encrypted keys, falls back to
+    /// `ssh-keygen -y -f <path>` to extract the public key and writes it to
+    /// the corresponding `.pub` file.
     ///
     /// # Errors
     ///
@@ -211,8 +214,12 @@ impl<'a> KeyService<'a> {
     /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
     /// [`Error::CommandFailed`] if public key extraction fails (e.g.
     /// the key is encrypted and no passphrase was provided).
-    pub async fn repair_public(&self, private_key_path: &std::path::Path) -> Result<()> {
-        repair::repair_public_key(private_key_path).await
+    pub async fn repair_public(
+        &self,
+        private_key_path: &std::path::Path,
+        passphrase: Option<&str>,
+    ) -> Result<()> {
+        repair::repair_public_key(private_key_path, passphrase, self.runner).await
     }
 
     /// Rename a key pair (private, public, certificate).
@@ -231,7 +238,7 @@ impl<'a> KeyService<'a> {
     ///
     /// Returns [`Error::KeyNotFound`] if the old key does not exist,
     /// [`Error::KeyExists`] if a key with the new name already exists,
-    /// [`Error::KeyGenerationFailed`] if either name is invalid, or
+    /// [`Error::InvalidKeyName`] if either name is invalid, or
     /// [`Error::Io`] if the private key rename fails.
     pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
         validate_key_name(old_name)?;
@@ -281,7 +288,7 @@ impl<'a> KeyService<'a> {
     /// # Errors
     ///
     /// Returns [`Error::KeyNotFound`] if the key does not exist,
-    /// [`Error::KeyGenerationFailed`] if the key name is invalid, or
+    /// [`Error::InvalidKeyName`] if the key name is invalid, or
     /// [`Error::Io`] if `chmod` fails.
     pub async fn chmod_fix(&self, key_name: &str) -> Result<()> {
         validate_key_name(key_name)?;
@@ -539,7 +546,14 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
         let key_pattern_tilde = format!("~/.ssh/{key_name_owned}");
         let key_pattern_abs = format!("{ssh_dir_str}/{key_name_owned}");
 
+        // Also match CertificateFile directives for the companion cert.
+        let cert_name = format!("{key_name_owned}-cert.pub");
+        let cert_pattern_tilde = format!("~/.ssh/{cert_name}");
+        let cert_pattern_abs = format!("{ssh_dir_str}/{cert_name}");
+
         let trailing_newline = content.ends_with('\n');
+        // Preserve the original line ending style (\r\n vs \n).
+        let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
 
         let new_content: String = content
             .lines()
@@ -549,21 +563,35 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
                 // compare case-insensitively.  This avoids matching directives
                 // like "IdentityFileSomething" or comments containing the word.
                 let keyword = trimmed.split_whitespace().next().unwrap_or("");
-                if !keyword.eq_ignore_ascii_case("IdentityFile") {
-                    return true;
+
+                if keyword.eq_ignore_ascii_case("IdentityFile") {
+                    // Extract the value (everything after the keyword).
+                    let value = trimmed[keyword.len()..].trim();
+                    // Remove quotes if present
+                    let value = value.trim_matches('"').trim_matches('\'');
+                    return value != key_pattern_tilde
+                        && value != key_pattern_abs
+                        && value != key_name_owned;
                 }
-                // Extract the value (everything after the keyword).
-                let value = trimmed[keyword.len()..].trim();
-                // Remove quotes if present
-                let value = value.trim_matches('"').trim_matches('\'');
-                value != key_pattern_tilde && value != key_pattern_abs && value != key_name_owned
+
+                if keyword.eq_ignore_ascii_case("CertificateFile") {
+                    // Extract the value (everything after the keyword).
+                    let value = trimmed[keyword.len()..].trim();
+                    // Remove quotes if present
+                    let value = value.trim_matches('"').trim_matches('\'');
+                    return value != cert_pattern_tilde
+                        && value != cert_pattern_abs
+                        && value != cert_name;
+                }
+
+                true
             })
             .collect::<Vec<&str>>()
-            .join("\n");
+            .join(line_ending);
 
         // Preserve trailing newline from the original file
         let final_content = if trailing_newline && !new_content.is_empty() {
-            format!("{new_content}\n")
+            format!("{new_content}{line_ending}")
         } else {
             new_content
         };

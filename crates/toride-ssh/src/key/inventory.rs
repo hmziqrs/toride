@@ -1,6 +1,5 @@
 //! SSH key file discovery and parsing.
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -9,7 +8,7 @@ use base64::Engine;
 
 use crate::key::get_permissions;
 use crate::paths::SshPaths;
-use crate::{Error, Fingerprint, KeySource, KeyType, Result, SshKey};
+use crate::{Error, Fingerprint, KeyFormat, KeySource, KeyType, Result, SshKey};
 
 /// Convert an [`ssh_key::Algorithm`] to our [`KeyType`].
 ///
@@ -65,6 +64,9 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     // reliable than parsing the error message string.
     let is_encrypted_from_content = is_likely_encrypted(&private_key_data);
 
+    // Detect key format from content (PEM vs OpenSSH).
+    let key_format = detect_key_format(&private_key_data);
+
     match ssh_key::PrivateKey::from_openssh(&private_key_data) {
         Ok(pk) => {
             // Explicit fallback: if we can't determine the algorithm, treat as
@@ -93,6 +95,10 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 Some(comment_str)
             };
 
+            // If format was not detected from content, default to OpenSSH for
+            // keys that parsed successfully via from_openssh.
+            let resolved_format = key_format.or(Some(KeyFormat::OpenSSH));
+
             Ok(SshKey {
                 path,
                 key_type,
@@ -105,6 +111,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 has_certificate,
                 last_modified,
                 used_by_hosts: Vec::new(),
+                key_format: resolved_format,
             })
         }
         Err(e) => {
@@ -119,7 +126,21 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 || err_str.contains("bcrypt");
 
             // For encrypted keys, try to infer key type from the filename
-            let key_type = guess_key_type_from_name(&filename);
+            let mut key_type = guess_key_type_from_name(&filename);
+
+            // FIX: If the filename guessed ECDSA, the curve size is unknown.
+            // Try to read the corresponding .pub file to determine the actual
+            // curve (P256, P384, or P521) from the public key.
+            if matches!(
+                key_type,
+                KeyType::EcdsaP256 | KeyType::EcdsaP384 | KeyType::EcdsaP521
+            ) && pub_path.exists()
+                && let Ok(pub_data) = std::fs::read_to_string(&pub_path)
+                && let Ok(pub_key) = ssh_key::PublicKey::from_openssh(&pub_data)
+                && let Some(actual) = algorithm_to_key_type(&pub_key.algorithm())
+            {
+                key_type = actual;
+            }
 
             Ok(SshKey {
                 path,
@@ -133,6 +154,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 has_certificate,
                 last_modified,
                 used_by_hosts: Vec::new(),
+                key_format,
             })
         }
     }
@@ -145,14 +167,43 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
 fn is_likely_encrypted(data: &str) -> bool {
     // OpenSSH format: encrypted keys contain "bcrypt" in the base64-encoded
     // header area (the KDF name).  PEM format: "Proc-Type: 4,ENCRYPTED".
+    let mut found = false;
     for line in data.lines().take(5) {
-        if line.contains("ENCRYPTED") || line.contains("encrypted") {
-            return true;
+        // Match only uppercase "ENCRYPTED" — the standard marker in OpenSSH
+        // and PEM proc-type headers.  Avoid matching lowercase "encrypted"
+        // which can appear in comments or other benign content.
+        if line.contains("ENCRYPTED") {
+            found = true;
+            break;
         }
     }
-    // Also check the full content for "bcrypt" which appears in OpenSSH
-    // encrypted key headers (base64-encoded KDF name).
-    data.contains("bcrypt")
+    // Also check the first 5 lines for "bcrypt" which appears in OpenSSH
+    // encrypted key headers (base64-encoded KDF name).  Only scan the header
+    // area to avoid false positives from the word "bcrypt" appearing in
+    // key comments or other metadata deeper in the file.
+    if !found {
+        found = data.lines().take(5).any(|line| line.contains("bcrypt"));
+    }
+    found
+}
+
+/// Detect whether key file content is in PEM format (legacy OpenSSL) vs OpenSSH format.
+///
+/// Returns `Some(KeyFormat::Pem)` if the content starts with a PEM marker like
+/// `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN EC PRIVATE KEY-----`.
+/// Returns `None` if the content is OpenSSH format or the format cannot be
+/// determined from the content alone.
+fn detect_key_format(data: &str) -> Option<KeyFormat> {
+    let first_line = data.lines().next().unwrap_or("");
+    if first_line.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
+        Some(KeyFormat::OpenSSH)
+    } else if first_line.starts_with("-----BEGIN ") && first_line.ends_with(" PRIVATE KEY-----")
+        && !first_line.contains("OPENSSH")
+    {
+        Some(KeyFormat::Pem)
+    } else {
+        None
+    }
 }
 
 /// Guess key type from a filename like `id_ed25519`, `id_rsa`, etc.
@@ -189,6 +240,8 @@ struct ConfigKeyScan {
     identity_paths: Vec<PathBuf>,
     /// `PKCS11Provider` values found in the config.
     pkcs11_providers: Vec<String>,
+    /// Maps expanded IdentityFile path -> host aliases that reference it.
+    identity_host_map: HashMap<PathBuf, Vec<String>>,
 }
 
 /// Parse `~/.ssh/config` and extract `IdentityFile` and `PKCS11Provider` directives.
@@ -196,12 +249,16 @@ struct ConfigKeyScan {
 /// Uses the lossless AST parser from the config module. Handles directives
 /// inside `Host`/`Match` blocks as well as standalone directives. `IdentityFile`
 /// paths are expanded (tilde and relative) via [`crate::config::expand_identity_path`].
+///
+/// Also tracks which host block referenced each `IdentityFile` path, so that
+/// [`scan_keys`] can populate [`SshKey::used_by_hosts`].
 fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let config_path = ssh_dir.join("config");
     let Ok(content) = std::fs::read_to_string(&config_path) else {
         return ConfigKeyScan {
             identity_paths: Vec::new(),
             pkcs11_providers: Vec::new(),
+            identity_host_map: HashMap::new(),
         };
     };
 
@@ -209,15 +266,25 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let mut identity_paths = Vec::new();
     let mut seen_identity = HashSet::new();
     let mut pkcs11_providers = Vec::new();
-    #[allow(clippy::zero_sized_map_values)]
-    let mut seen_pkcs11 = HashMap::new();
+    let mut seen_pkcs11 = HashSet::new();
+    let mut identity_host_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
     for node in &ast.nodes {
-        let nodes: &[crate::config::ast::ConfigNode] = match node {
-            crate::config::ast::ConfigNode::HostBlock(b) => &b.nodes,
-            crate::config::ast::ConfigNode::MatchBlock(b) => &b.nodes,
-            crate::config::ast::ConfigNode::Directive(_) => std::slice::from_ref(node),
-            _ => &[],
+        // Determine the host alias (if any) and the child nodes to scan.
+        let (host_alias, nodes): (Option<String>, &[crate::config::ast::ConfigNode]) = match node {
+            crate::config::ast::ConfigNode::HostBlock(b) => {
+                let alias = b.patterns.first().cloned().unwrap_or_default();
+                (Some(alias), &b.nodes)
+            }
+            crate::config::ast::ConfigNode::MatchBlock(b) => {
+                (None, &b.nodes)
+            }
+            crate::config::ast::ConfigNode::Directive(_) => {
+                (None, std::slice::from_ref(node))
+            }
+            _ => {
+                (None, &[])
+            }
         };
 
         for child in nodes {
@@ -227,12 +294,18 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
                     let trimmed = d.value.trim_matches('"').trim_matches('\'');
                     let expanded = crate::config::expand_identity_path(trimmed, ssh_dir);
                     if seen_identity.insert(expanded.clone()) {
-                        identity_paths.push(expanded);
+                        identity_paths.push(expanded.clone());
+                    }
+                    // Track which host referenced this key.
+                    if let Some(ref alias) = host_alias {
+                        identity_host_map
+                            .entry(expanded)
+                            .or_default()
+                            .push(alias.clone());
                     }
                 } else if d.keyword.eq_ignore_ascii_case("PKCS11Provider")
-                    && let Entry::Vacant(e) = seen_pkcs11.entry(d.value.clone())
+                    && seen_pkcs11.insert(d.value.clone())
                 {
-                    e.insert(());
                     pkcs11_providers.push(d.value.clone());
                 }
             }
@@ -242,6 +315,7 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     ConfigKeyScan {
         identity_paths,
         pkcs11_providers,
+        identity_host_map,
     }
 }
 
@@ -363,6 +437,7 @@ fn scan_standalone_pub_files(
             has_certificate: false,
             last_modified,
             used_by_hosts: Vec::new(),
+            key_format: None,
         });
     }
 
@@ -415,6 +490,59 @@ fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<Ss
 // Filesystem scanning
 // ---------------------------------------------------------------------------
 
+/// Query a PKCS#11 provider via `ssh-keygen -D` to get actual key metadata.
+///
+/// Returns the detected [`KeyType`] and [`Fingerprint`] if the provider can be
+/// queried. Falls back to `(KeyType::Ed25519, None)` with a warning if the
+/// query fails (e.g. the token is not inserted or `ssh-keygen` is unavailable).
+async fn query_pkcs11_provider(
+    provider: &str,
+    runner: &dyn crate::CliRunner,
+) -> (KeyType, Option<Fingerprint>) {
+    if !runner.tool_exists("ssh-keygen") {
+        tracing::warn!(
+            "ssh-keygen not found, cannot query PKCS#11 provider {provider}; \
+             defaulting to Ed25519"
+        );
+        return (KeyType::Ed25519, None);
+    }
+
+    let args = vec!["-D".to_owned(), provider.to_owned()];
+    let output = match runner.run("ssh-keygen", args).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::warn!(
+                "ssh-keygen -D {provider} failed: {e}; defaulting to Ed25519"
+            );
+            return (KeyType::Ed25519, None);
+        }
+    };
+
+    let Some(first_line) = output.lines().next() else {
+        tracing::warn!(
+            "ssh-keygen -D {provider} produced no output; defaulting to Ed25519"
+        );
+        return (KeyType::Ed25519, None);
+    };
+
+    if let Ok(pk) = ssh_key::PublicKey::from_openssh(first_line) {
+        let key_type = algorithm_to_key_type(&pk.algorithm())
+            .unwrap_or(KeyType::Ed25519);
+        let fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
+        let fingerprint = Some(Fingerprint {
+            hash: base64::engine::general_purpose::STANDARD_NO_PAD
+                .encode(fp.as_bytes()),
+            key_type,
+        });
+        (key_type, fingerprint)
+    } else {
+        tracing::warn!(
+            "failed to parse ssh-keygen -D output for {provider}; defaulting to Ed25519"
+        );
+        (KeyType::Ed25519, None)
+    }
+}
+
 /// Perform all filesystem-based key scanning.
 ///
 /// Discovers keys from:
@@ -422,10 +550,16 @@ fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<Ss
 /// 2. Default key names (`id_rsa`, `id_ed25519`, etc.).
 /// 3. `IdentityFile` directives parsed from `~/.ssh/config`.
 /// 4. Standalone `.pub` files without matching private keys.
-/// 5. PKCS#11 providers detected via `PKCS11Provider` config directives.
 ///
 /// Also emits warnings for SSH v1 key files (`~/.ssh/identity`).
-fn scan_filesystem_keys(ssh_dir: &Path, default_names: &[&str]) -> Result<Vec<SshKey>> {
+///
+/// PKCS#11 providers are **not** queried here; they require async CLI access
+/// and are handled separately in [`scan_keys`].
+fn scan_filesystem_keys(
+    ssh_dir: &Path,
+    default_names: &[&str],
+    config_scan: &ConfigKeyScan,
+) -> Result<Vec<SshKey>> {
     let mut keys = Vec::new();
     let mut seen_paths = HashSet::<PathBuf>::new();
     let mut private_key_paths: Vec<PathBuf> = Vec::new();
@@ -471,7 +605,6 @@ fn scan_filesystem_keys(ssh_dir: &Path, default_names: &[&str]) -> Result<Vec<Ss
     }
 
     // --- Config-sourced IdentityFile discovery ---
-    let config_scan = scan_ssh_config(ssh_dir);
     for identity_path in &config_scan.identity_paths {
         if identity_path.is_file() && seen_paths.insert(identity_path.clone()) {
             private_key_paths.push(identity_path.clone());
@@ -484,7 +617,13 @@ fn scan_filesystem_keys(ssh_dir: &Path, default_names: &[&str]) -> Result<Vec<Ss
     // Inspect each private key.
     for path in &private_key_paths {
         match inspect_private_key(path) {
-            Ok(key) => keys.push(key),
+            Ok(mut key) => {
+                // Populate used_by_hosts from the config host map.
+                if let Some(hosts) = config_scan.identity_host_map.get(path) {
+                    key.used_by_hosts.clone_from(hosts);
+                }
+                keys.push(key);
+            }
             Err(e) => {
                 tracing::warn!("skipping key {}: {}", path.display(), e);
             }
@@ -497,25 +636,6 @@ fn scan_filesystem_keys(ssh_dir: &Path, default_names: &[&str]) -> Result<Vec<Ss
     // --- Standalone .pub file scanning ---
     let standalone = scan_standalone_pub_files(ssh_dir, &seen_paths);
     keys.extend(standalone);
-
-    // --- PKCS#11 detection ---
-    for provider in &config_scan.pkcs11_providers {
-        tracing::info!("PKCS#11 provider detected in SSH config: {}", provider);
-        keys.push(SshKey {
-            path: PathBuf::from(format!("pkcs11:{provider}")),
-            // Actual type is unknown until the token is queried.
-            key_type: KeyType::Ed25519,
-            fingerprint: None,
-            comment: Some(format!("PKCS#11 provider: {provider}")),
-            encrypted: false,
-            source: KeySource::Pkcs11,
-            permissions: None,
-            has_public_pair: false,
-            has_certificate: false,
-            last_modified: None,
-            used_by_hosts: Vec::new(),
-        });
-    }
 
     Ok(keys)
 }
@@ -549,13 +669,43 @@ pub async fn scan_keys(
     let default_names = SshPaths::default_key_names();
 
     // Phase 1: Filesystem-based scanning (blocking I/O).
-    let mut keys = tokio::task::spawn_blocking(move || {
-        scan_filesystem_keys(&ssh_dir, default_names)
+    // Scan the SSH config first (also blocking I/O), then pass the results
+    // into the filesystem scan so used_by_hosts can be populated.
+    let config_scan = tokio::task::spawn_blocking(move || {
+        let config_scan = scan_ssh_config(&ssh_dir);
+        let keys = scan_filesystem_keys(&ssh_dir, default_names, &config_scan)?;
+        Ok::<_, Error>((keys, config_scan))
     })
     .await
     .map_err(|e| Error::TaskFailed(format!("scan_keys task failed: {e}")))??;
 
-    // Phase 2: Agent key merging (async).
+    let (mut keys, config_scan) = (config_scan.0, config_scan.1);
+
+    // Phase 2: PKCS#11 provider querying (async, requires CliRunner).
+    for provider in &config_scan.pkcs11_providers {
+        tracing::info!("PKCS#11 provider detected in SSH config: {}", provider);
+        let (key_type, fingerprint) = if let Some(r) = runner {
+            query_pkcs11_provider(provider, r).await
+        } else {
+            (KeyType::Ed25519, None)
+        };
+        keys.push(SshKey {
+            path: PathBuf::from(format!("pkcs11:{provider}")),
+            key_type,
+            fingerprint,
+            comment: Some(format!("PKCS#11 provider: {provider}")),
+            encrypted: false,
+            source: KeySource::Pkcs11,
+            permissions: None,
+            has_public_pair: false,
+            has_certificate: false,
+            last_modified: None,
+            used_by_hosts: Vec::new(),
+            key_format: None,
+        });
+    }
+
+    // Phase 3: Agent key merging (async).
     if let Some(runner) = runner {
         merge_agent_keys(&mut keys, runner).await;
     }
@@ -687,10 +837,11 @@ mod tests {
     // Edge cases for is_likely_encrypted
 
     #[test]
-    fn is_likely_encrypted_case_sensitive() {
-        // "encrypted" (lowercase) in header
+    fn is_likely_encrypted_lowercase_not_matched() {
+        // "encrypted" (lowercase) in header should NOT match — only uppercase
+        // "ENCRYPTED" is a reliable marker.
         let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nencrypted\n";
-        assert!(is_likely_encrypted(data));
+        assert!(!is_likely_encrypted(data));
     }
 
     #[test]
@@ -1061,6 +1212,7 @@ Host hsm2
             has_certificate: false,
             last_modified: None,
             used_by_hosts: Vec::new(),
+            key_format: None,
         }
     }
 
@@ -1078,6 +1230,7 @@ Host hsm2
             has_certificate: false,
             last_modified: None,
             used_by_hosts: Vec::new(),
+            key_format: None,
         }
     }
 
