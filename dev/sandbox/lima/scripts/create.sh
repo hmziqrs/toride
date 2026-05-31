@@ -165,12 +165,13 @@ else
   BUILTIN_TEMPLATE="template:${DISTRO}"
   info "No local images. Trying built-in template: $BUILTIN_TEMPLATE"
 
-  if limactl start --list-templates 2>/dev/null | grep -q "$DISTRO"; then
+  # Check for exact distro name in Lima's template list.
+  # Use grep -x for exact line match to avoid partial hits
+  # (e.g. "debian" matching "debian-12").
+  if limactl start --list-templates 2>/dev/null | grep -qx "$DISTRO"; then
     limactl start --tty=false --name="$INSTANCE" --mount-none "$BUILTIN_TEMPLATE"
   else
-    # Last resort: use the custom template and let Lima download from the URL
-    warn "Built-in template '$DISTRO' not found. Using custom template (Lima will download image)."
-    limactl create --tty=false --name="$INSTANCE" --mount-none "$TEMPLATE"
+    error "Built-in template '$DISTRO' not found in Lima and no local images available. Install a Lima template for $DISTRO or provide images under $IMAGE_DIR"
   fi
 fi
 
