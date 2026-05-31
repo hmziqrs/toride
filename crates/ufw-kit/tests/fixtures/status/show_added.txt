@@ -1,0 +1,5 @@
+Added user rules (see 'ufw status'):
+allow 22/tcp
+allow 80/tcp
+allow 443/tcp
+allow in on eth0 proto tcp from any to any port 8080 comment managed:app

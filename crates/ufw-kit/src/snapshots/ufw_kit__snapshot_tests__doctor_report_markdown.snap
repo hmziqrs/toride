@@ -1,0 +1,34 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: render_findings_markdown(&findings)
+---
+# UFW Doctor Report
+
+| Severity | Count |
+|----------|-------|
+| Critical | 1 |
+| Error    | 0 |
+| Warning  | 1 |
+| Info     | 0 |
+| OK       | 1 |
+| **Total** | **3** |
+
+## Critical / Errors
+
+### `CRITICAL `No SSH allow rule found`
+- **ID:** `ssh:no-rule`
+- **Detail:** UFW is active but no SSH allow rule exists.
+- **Fix:** Add SSH allow rule: ufw allow 22/tcp
+
+## Warnings
+
+### `WARNING `Port 5432 (Postgres) is exposed`
+- **ID:** `rule:dangerous:5432`
+- **Detail:** Rule exposes port 5432.
+- **Fix:** Restrict access to trusted IPs only.
+
+## Info / OK
+
+### `OK `UFW binary found`
+- **ID:** `bin:ufw:exists`
+- **Detail:** The ufw binary is available.

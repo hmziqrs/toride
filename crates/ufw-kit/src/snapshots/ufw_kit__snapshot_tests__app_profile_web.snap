@@ -1,0 +1,11 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: render_profile(&spec)
+---
+# Managed by ufw-kit.
+# Do not edit manually unless you also disable this manager.
+
+[MyWebApp]
+title=My Web Application
+description=Web server with HTTPS
+ports=80/tcp|443/tcp

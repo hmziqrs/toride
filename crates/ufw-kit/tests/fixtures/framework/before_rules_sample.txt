@@ -1,0 +1,3 @@
+# Managed by ufw-kit: custom-ping begin
+-A ufw-before-input -p icmp --icmp-type echo-request -j ACCEPT
+# Managed by ufw-kit: custom-ping end

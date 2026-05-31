@@ -1,0 +1,5 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: "format!(\"{args:?}\")"
+---
+["route", "allow", "in", "on", "wg0", "out", "on", "eth0", "proto", "udp", "from", "10.0.0.0/24", "to", "8.8.8.8", "port", "53", "comment", "dns-forward"]

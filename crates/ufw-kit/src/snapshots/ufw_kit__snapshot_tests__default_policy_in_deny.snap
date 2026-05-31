@@ -1,0 +1,5 @@
+---
+source: crates/ufw-kit/src/snapshots.test.rs
+expression: "format!(\"{args:?}\")"
+---
+["default", "in", "deny"]

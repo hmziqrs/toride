@@ -1,0 +1,1 @@
+dry-run: ufw allow 22/tcp

@@ -1,0 +1,38 @@
+[package]
+name = "ufw-kit"
+version = "0.1.0"
+edition = "2024"
+description = "Safely manage, inspect, validate, and diagnose UFW firewall installations"
+
+[features]
+default = ["client", "doctor", "app-profile"]
+client = []
+doctor = ["service"]
+app-profile = []
+framework = []
+service = []
+serde = ["dep:serde"]
+systemd-zbus = []
+firewall-nft = []
+firewall-iptables = []
+tokio = ["dep:tokio"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+serde = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+duct = { version = "1", features = ["timeout"] }
+ipnet = "2"
+tempfile = "3"
+similar = "2"
+fs2 = "0.4"
+
+[dev-dependencies]
+insta = { version = "1", features = ["serde"] }
+tempfile = "3"
+proptest = "1"
+
+[lints]
+workspace = true
