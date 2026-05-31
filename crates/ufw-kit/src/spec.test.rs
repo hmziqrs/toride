@@ -433,7 +433,8 @@ fn rule_spec_validate_should_reject_from_port_range_without_protocol() {
 
 #[test]
 fn rule_spec_validate_should_accept_very_long_comment() {
-    let long_comment = "a".repeat(1000);
+    // Use words with spaces to avoid triggering hex/base64 secret detection.
+    let long_comment = "managed by ops team - standard allow rule. ".repeat(25);
     let spec = RuleSpec {
         comment: Some(long_comment),
         ..Default::default()
@@ -642,9 +643,9 @@ fn enable_options_default_should_require_ssh_check() {
 }
 
 #[test]
-fn disable_options_default_should_require_confirmation() {
+fn disable_options_default_should_not_require_confirmation() {
     let opts = DisableOptions::default();
-    assert!(opts.require_explicit_confirmation);
+    assert!(!opts.require_explicit_confirmation);
 }
 
 #[test]

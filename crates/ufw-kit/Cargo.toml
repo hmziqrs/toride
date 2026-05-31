@@ -7,7 +7,7 @@ description = "Safely manage, inspect, validate, and diagnose UFW firewall insta
 [features]
 default = ["client", "doctor", "app-profile"]
 client = []
-doctor = []
+doctor = ["service"]
 app-profile = []
 framework = []
 service = []
@@ -18,7 +18,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
 serde = { workspace = true, optional = true }
-duct = "1"
+duct = { version = "1", features = ["timeout"] }
 ipnet = "2"
 tempfile = "3"
 similar = "2"

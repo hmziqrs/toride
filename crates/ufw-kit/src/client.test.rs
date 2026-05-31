@@ -152,13 +152,13 @@ fn force_enable_should_succeed_when_already_active() {
 fn disable_should_fail_without_confirmation() {
     let ufw = make_ufw("");
     let opts = DisableOptions {
-        require_explicit_confirmation: true,
+        require_explicit_confirmation: false,
     };
     let result = ufw.disable(&opts);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        Error::DisableRequiresConfirmation
+        Error::Validation(msg) if msg.contains("explicit confirmation")
     ));
 }
 
@@ -167,9 +167,17 @@ fn disable_should_succeed_with_confirmation() {
     let runner = FakeRunner::new().respond_ok("ufw", &["disable"], "Firewall stopped and disabled on system startup\n");
     let ufw = Ufw::with_runner(runner);
     let opts = DisableOptions {
-        require_explicit_confirmation: false,
+        require_explicit_confirmation: true,
     };
     assert!(ufw.disable(&opts).is_ok());
+}
+
+#[test]
+fn disable_should_fail_with_default_options() {
+    let ufw = make_ufw("");
+    let opts = DisableOptions::default();
+    let result = ufw.disable(&opts);
+    assert!(result.is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -205,9 +213,47 @@ fn reset_should_succeed_with_force() {
 
 #[test]
 fn set_default_policy_should_call_ufw() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["default", "in", "deny"], "Default incoming policy changed\n");
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n")
+        .respond_ok("ufw", &["default", "in", "deny"], "Default incoming policy changed\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.set_default_policy(Direction::In, Policy::Deny).is_ok());
+}
+
+#[test]
+fn set_default_policy_should_reject_deny_incoming_without_ssh() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n443/tcp                     ALLOW       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.set_default_policy(Direction::In, Policy::Deny);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), Error::SshLockoutRisk(_)));
+}
+
+#[test]
+fn set_default_policy_should_reject_reject_incoming_without_ssh() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n443/tcp                     ALLOW       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.set_default_policy(Direction::In, Policy::Reject);
+    assert!(result.is_err());
+    assert!(matches!(result.unwrap_err(), Error::SshLockoutRisk(_)));
+}
+
+#[test]
+fn set_default_policy_should_allow_deny_outgoing_without_ssh_check() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["default", "out", "deny"], "Default outgoing policy changed\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.set_default_policy(Direction::Out, Policy::Deny).is_ok());
+}
+
+#[test]
+fn set_default_policy_should_allow_allow_incoming_without_ssh_check() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["default", "in", "allow"], "Default incoming policy changed\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.set_default_policy(Direction::In, Policy::Allow).is_ok());
 }
 
 // ---------------------------------------------------------------------------
@@ -484,4 +530,213 @@ fn ensure_rule_should_add_when_no_comment() {
         .unwrap();
     let report = ufw.ensure_rule(&spec).unwrap();
     assert!(report.success);
+}
+
+#[test]
+fn ensure_rule_should_replace_when_comment_matches_but_rule_differs() {
+    // Existing rule allows port 80 with comment "managed:web",
+    // but we want port 443. Should delete old and add new.
+    let runner = FakeRunner::new()
+        // status numbered — one existing rule with port 80
+        .respond_ok("ufw", &["status", "numbered"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 80/tcp ALLOW IN Anywhere comment managed:web\n")
+        // delete rule 1
+        .respond_ok("ufw", &["delete", "1"], "Deleting:\n allow 80/tcp\nRule deleted\n")
+        // dry-run + add new rule
+        .respond_ok("ufw", &[], "Rule added\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .comment("managed:web")
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(report.success);
+    assert!(report.action.contains("replaced rule"));
+}
+
+// ---------------------------------------------------------------------------
+// delete_rules_by_comment tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn delete_rules_by_comment_should_delete_matching_rules_bottom_to_top() {
+    // Three rules, two with comment "managed:staging"
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n\
+             [ 1] 22/tcp ALLOW IN Anywhere comment managed:ssh\n\
+             [ 2] 80/tcp ALLOW IN Anywhere comment managed:staging\n\
+             [ 3] 443/tcp ALLOW IN Anywhere comment managed:staging\n")
+        // Delete rule 3 first (highest number)
+        .respond_ok("ufw", &["delete", "3"], "Deleting:\n allow 443/tcp\nRule deleted\n")
+        // Then delete rule 2
+        .respond_ok("ufw", &["delete", "2"], "Deleting:\n allow 80/tcp\nRule deleted\n");
+    let ufw = Ufw::with_runner(runner);
+    let count = ufw.delete_rules_by_comment("managed:staging").unwrap();
+    assert_eq!(count, 2);
+}
+
+#[test]
+fn delete_rules_by_comment_should_return_zero_when_no_matches() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n\
+             [ 1] 22/tcp ALLOW IN Anywhere comment managed:ssh\n");
+    let ufw = Ufw::with_runner(runner);
+    let count = ufw.delete_rules_by_comment("managed:nonexistent").unwrap();
+    assert_eq!(count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// check_ssh_lockout_structured tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_ssh_structured_should_find_incoming_ssh_allow() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(result.has_incoming_ssh_allow);
+    assert_eq!(result.matching_rules.len(), 1);
+    assert_eq!(result.checked_ports, vec![22]);
+}
+
+#[test]
+fn check_ssh_structured_should_not_match_outgoing_ssh() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW OUT   Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    // OUT direction should not count as incoming SSH
+    assert!(!result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_match_limit_action() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     LIMIT       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_match_ssh_service_name() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\nssh                        ALLOW       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_not_match_deny_action() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     DENY        Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(!result.has_incoming_ssh_allow);
+}
+
+#[test]
+fn check_ssh_structured_should_detect_interface_scope() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp on eth0             ALLOW       Anywhere\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(result.has_incoming_ssh_allow);
+    assert!(result.interface_scoped);
+}
+
+#[test]
+fn check_ssh_structured_should_return_empty_on_status_failure() {
+    struct FailRunner;
+    impl CommandRunner for FailRunner {
+        fn run(&self, _: &CommandSpec) -> Result<CommandResult> {
+            Err(Error::UfwNotFound("not found".into()))
+        }
+        fn binary_exists(&self, _: &str) -> bool {
+            false
+        }
+    }
+    let ufw = Ufw::with_runner(FailRunner);
+    let result = ufw.check_ssh_lockout_structured(&[22]);
+    assert!(!result.has_incoming_ssh_allow);
+    assert!(result.matching_rules.is_empty());
+    assert_eq!(result.checked_ports, vec![22]);
+}
+
+// ---------------------------------------------------------------------------
+// insert_rule tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn insert_rule_should_call_ufw_with_insert_position() {
+    let runner = FakeRunner::new().respond_ok("ufw", &[], "Rule inserted\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(80)
+        .proto(Protocol::Tcp)
+        .build()
+        .unwrap();
+    assert!(ufw.insert_rule(1, &spec).is_ok());
+}
+
+#[test]
+fn insert_rule_should_set_position_to_insert_n() {
+    let runner = FakeRunner::new().respond_ok("ufw", &[], "Rule inserted\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .build()
+        .unwrap();
+    assert!(ufw.insert_rule(3, &spec).is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// app_update tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn app_update_should_call_ufw_with_app_update_name() {
+    let runner = FakeRunner::new().respond_ok("ufw", &["app", "update", "OpenSSH"], "Profile updated\n");
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.app_update("OpenSSH").is_ok());
+}
+
+#[test]
+fn app_update_should_fail_on_error() {
+    let runner = FakeRunner::new().respond_err("ufw", &["app", "update", "NonExistent"], "ERROR: profile not found", 1);
+    let ufw = Ufw::with_runner(runner);
+    assert!(ufw.app_update("NonExistent").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// status_numbered tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn status_numbered_should_parse_numbered_output() {
+    let output = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 22/tcp                     ALLOW IN    Anywhere\n[ 2] 443/tcp                    ALLOW IN    Anywhere\n";
+    let runner = FakeRunner::new().respond_ok("ufw", &["status", "numbered"], output);
+    let ufw = Ufw::with_runner(runner);
+    let status = ufw.status_numbered().unwrap();
+    assert!(status.active);
+    assert_eq!(status.rules.len(), 2);
+    assert_eq!(status.rules[0].number, Some(1));
+    assert_eq!(status.rules[1].number, Some(2));
+}
+
+#[test]
+fn status_numbered_should_parse_empty_numbered_output() {
+    let output = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n";
+    let runner = FakeRunner::new().respond_ok("ufw", &["status", "numbered"], output);
+    let ufw = Ufw::with_runner(runner);
+    let status = ufw.status_numbered().unwrap();
+    assert!(status.active);
+    assert!(status.rules.is_empty());
 }

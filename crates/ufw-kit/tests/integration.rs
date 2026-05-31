@@ -68,3 +68,10 @@ fn framework_fixture_has_managed_block() {
     let raw = fixture("framework/before_rules_sample.txt");
     assert!(raw.contains("Managed by ufw-kit: custom-ping"));
 }
+
+#[test]
+fn parse_app_profile_range_fixture() {
+    let raw = fixture("app_profiles/range.txt");
+    let profile = ufw_kit::app_profile::parse_profile("PassiveFTP", &raw).expect("should parse");
+    assert_eq!(profile.name, "PassiveFTP");
+}

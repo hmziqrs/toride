@@ -528,6 +528,57 @@ impl RuleSpec {
             }
         }
 
+        // Validate protocol + address consistency
+        if let ProtocolFilter::Specific(proto) = &self.protocol {
+            match proto {
+                Protocol::Ipv6 => {
+                    // All addresses must be IPv6
+                    for (label, addr) in [
+                        ("from", &self.from_addr),
+                        ("to", &self.to_addr),
+                    ] {
+                        if let Address::Ip(ip) = addr {
+                            if ip.is_ipv4() {
+                                return Err(Error::Validation(format!(
+                                    "protocol ipv6 requires IPv6 addresses, but {label} address {ip} is IPv4"
+                                )));
+                            }
+                        }
+                        if let Address::Net(net) = addr {
+                            if matches!(net, ipnet::IpNet::V4(_)) {
+                                return Err(Error::Validation(format!(
+                                    "protocol ipv6 requires IPv6 networks, but {label} network {net} is IPv4"
+                                )));
+                            }
+                        }
+                    }
+                }
+                Protocol::Igmp => {
+                    // All addresses must be IPv4
+                    for (label, addr) in [
+                        ("from", &self.from_addr),
+                        ("to", &self.to_addr),
+                    ] {
+                        if let Address::Ip(ip) = addr {
+                            if ip.is_ipv6() {
+                                return Err(Error::Validation(format!(
+                                    "protocol igmp requires IPv4 addresses, but {label} address {ip} is IPv6"
+                                )));
+                            }
+                        }
+                        if let Address::Net(net) = addr {
+                            if matches!(net, ipnet::IpNet::V6(_)) {
+                                return Err(Error::Validation(format!(
+                                    "protocol igmp requires IPv4 networks, but {label} network {net} is IPv6"
+                                )));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
         // Validate interface name
         if let Some(iface) = &self.interface {
             validate_interface(iface)?;
@@ -869,6 +920,13 @@ pub struct CommandSpec {
     pub requires_root: bool,
     /// Force `LC_ALL=C` for stable output parsing.
     pub force_c_locale: bool,
+    /// Whether to redact potentially sensitive values in logged args.
+    ///
+    /// When `true`, command runners should apply redaction rules to arguments
+    /// before writing them to logs or traces.
+    // TODO: implement redaction rules that mask values following flags like
+    // --password, --token, --key, etc.
+    pub redact_logs: bool,
 }
 
 impl CommandSpec {
@@ -880,6 +938,7 @@ impl CommandSpec {
             timeout: Some(std::time::Duration::from_secs(30)),
             requires_root: false,
             force_c_locale: true,
+            redact_logs: false,
         }
     }
 
@@ -1038,6 +1097,34 @@ pub struct UfwConfig {
     pub manage_builtins: Option<bool>,
 }
 
+/// UFW configuration from `/etc/ufw/ufw.conf`.
+///
+/// This file has a simpler format than `/etc/default/ufw` with only two
+/// keys: `ENABLED` and `LOGLEVEL`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UfwConf {
+    /// Whether UFW is enabled (`ENABLED=yes`).
+    pub enabled: Option<bool>,
+    /// Logging level (`LOGLEVEL=low`, etc.).
+    pub loglevel: Option<String>,
+}
+
+/// Result of an SSH lockout safety check.
+///
+/// Returned by [`crate::client::Ufw::check_ssh_lockout_structured`] to provide
+/// structured information about which SSH rules were found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SshCheckResult {
+    /// Whether an incoming SSH allow rule was found.
+    pub has_incoming_ssh_allow: bool,
+    /// Parsed rules that match SSH (port 22 or service name "ssh").
+    pub matching_rules: Vec<ParsedRule>,
+    /// Whether any matching rule is scoped to a specific interface.
+    pub interface_scoped: bool,
+    /// Ports that were checked.
+    pub checked_ports: Vec<u16>,
+}
+
 // ============================================================================
 // Structs — Options
 // ============================================================================
@@ -1068,18 +1155,12 @@ impl Default for EnableOptions {
 
 /// Options for disabling UFW.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct DisableOptions {
     /// Require explicit confirmation.
     pub require_explicit_confirmation: bool,
 }
 
-impl Default for DisableOptions {
-    fn default() -> Self {
-        Self {
-            require_explicit_confirmation: true,
-        }
-    }
-}
 
 /// Options for resetting UFW.
 #[derive(Debug, Clone)]
@@ -1201,6 +1282,70 @@ fn validate_comment(comment: &str) -> Result<()> {
             "comment must not contain newline".into(),
         ));
     }
+    check_comment_for_secrets(comment)?;
+    Ok(())
+}
+
+/// Check whether a comment contains patterns that look like secrets.
+fn check_comment_for_secrets(comment: &str) -> Result<()> {
+    let lower = comment.to_ascii_lowercase();
+
+    // Check for key=value patterns where value is non-whitespace
+    for pattern in &[
+        "password=", "passwd=", "secret=", "token=", "key=", "api_key=",
+    ] {
+        if let Some(pos) = lower.find(pattern) {
+            let after = &comment[pos + pattern.len()..];
+            // If there is a non-empty run of non-whitespace after the =, reject
+            let value_part = after.split_whitespace().next().unwrap_or("");
+            if !value_part.is_empty() {
+                return Err(Error::InvalidComment(
+                    "comment contains what appears to be a secret (key=value pattern)".into(),
+                ));
+            }
+        }
+    }
+
+    // Check for base64-looking strings of 20+ chars
+    let mut base64_run = 0usize;
+    for ch in comment.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=' {
+            base64_run += 1;
+        } else {
+            if base64_run >= 20 {
+                return Err(Error::InvalidComment(
+                    "comment contains what appears to be a base64-encoded secret".into(),
+                ));
+            }
+            base64_run = 0;
+        }
+    }
+    if base64_run >= 20 {
+        return Err(Error::InvalidComment(
+            "comment contains what appears to be a base64-encoded secret".into(),
+        ));
+    }
+
+    // Check for long hex strings (32+ hex chars in a row)
+    let mut hex_run = 0usize;
+    for ch in comment.chars() {
+        if ch.is_ascii_hexdigit() {
+            hex_run += 1;
+        } else {
+            if hex_run >= 32 {
+                return Err(Error::InvalidComment(
+                    "comment contains what appears to be a hex-encoded secret".into(),
+                ));
+            }
+            hex_run = 0;
+        }
+    }
+    if hex_run >= 32 {
+        return Err(Error::InvalidComment(
+            "comment contains what appears to be a hex-encoded secret".into(),
+        ));
+    }
+
     Ok(())
 }
 

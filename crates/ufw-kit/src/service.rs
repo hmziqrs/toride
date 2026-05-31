@@ -54,6 +54,32 @@ pub fn restart(runner: &dyn CommandRunner) -> Result<()> {
     Ok(())
 }
 
+/// Reload the UFW service via systemctl.
+pub fn reload(runner: &dyn CommandRunner) -> Result<()> {
+    let result = run_systemctl_root(runner, &["reload", "ufw"])?;
+    if result.exit_code != Some(0) {
+        return Err(Error::Other(format!(
+            "failed to reload ufw: {}",
+            result.stderr
+        )));
+    }
+    Ok(())
+}
+
+/// Tail recent UFW journal entries.
+///
+/// Runs: `journalctl -u ufw --no-pager -n {lines}`
+pub fn journal_tail(runner: &dyn CommandRunner, lines: u32) -> Result<String> {
+    let result = run_journalctl(runner, lines)?;
+    if result.exit_code != Some(0) {
+        return Err(Error::Other(format!(
+            "failed to read ufw journal: {}",
+            result.stderr
+        )));
+    }
+    Ok(result.stdout)
+}
+
 fn run_systemctl(runner: &dyn CommandRunner, args: &[&str]) -> Result<CommandResult> {
     let spec = crate::spec::CommandSpec {
         program: "systemctl".into(),
@@ -61,6 +87,7 @@ fn run_systemctl(runner: &dyn CommandRunner, args: &[&str]) -> Result<CommandRes
         timeout: Some(std::time::Duration::from_secs(10)),
         requires_root: false,
         force_c_locale: true,
+        redact_logs: false,
     };
     runner.run(&spec)
 }
@@ -72,6 +99,25 @@ fn run_systemctl_root(runner: &dyn CommandRunner, args: &[&str]) -> Result<Comma
         timeout: Some(std::time::Duration::from_secs(30)),
         requires_root: true,
         force_c_locale: true,
+        redact_logs: false,
+    };
+    runner.run(&spec)
+}
+
+fn run_journalctl(runner: &dyn CommandRunner, lines: u32) -> Result<CommandResult> {
+    let spec = crate::spec::CommandSpec {
+        program: "journalctl".into(),
+        args: vec![
+            "-u".into(),
+            "ufw".into(),
+            "--no-pager".into(),
+            "-n".into(),
+            lines.to_string(),
+        ],
+        timeout: Some(std::time::Duration::from_secs(10)),
+        requires_root: false,
+        force_c_locale: true,
+        redact_logs: false,
     };
     runner.run(&spec)
 }

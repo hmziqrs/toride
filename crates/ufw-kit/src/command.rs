@@ -44,15 +44,33 @@ impl CommandRunner for DuctRunner {
             cmd = cmd.env("LC_ALL", "C").env("LANG", "C");
         }
 
-        let _timeout = spec.timeout.unwrap_or(Duration::from_secs(30));
+        let timeout = spec.timeout.unwrap_or(Duration::from_secs(30));
 
-        let output = cmd
+        let handle = cmd
             .stdout_capture()
             .stderr_capture()
             .unchecked()
-            .run()
+            .start()
             .map_err(|e| Error::CommandSpawnFailed(format!("{}: {e}", spec.program)))?;
 
+        let output_result = match handle.wait_timeout(timeout) {
+            Ok(Some(output)) => Ok(output.clone()),
+            Ok(None) => {
+                // Timeout expired — kill the process tree.
+                let _ = handle.kill();
+                let _ = handle.wait();
+                return Err(Error::CommandTimeout {
+                    program: spec.program.clone(),
+                    timeout_secs: timeout.as_secs(),
+                });
+            }
+            Err(e) => Err(Error::CommandSpawnFailed(format!(
+                "{}: {e}",
+                spec.program
+            ))),
+        };
+
+        let output = output_result?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         let exit_code = output.status.code();
@@ -209,7 +227,7 @@ impl CommandRunner for FakeRunner {
 
     fn binary_exists(&self, name: &str) -> bool {
         // By default, pretend ufw and common tools exist
-        matches!(name, "ufw" | "iptables" | "ip6tables" | "systemctl" | "nft")
+        matches!(name, "ufw" | "iptables" | "ip6tables" | "systemctl" | "journalctl" | "nft")
     }
 }
 

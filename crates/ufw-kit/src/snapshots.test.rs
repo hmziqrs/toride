@@ -3,11 +3,13 @@
 //! These tests verify that the output of key functions remains stable
 //! across code changes. Run `cargo insta review` to accept new snapshots.
 
-use crate::app_profile::{render_profile};
 use crate::report::render_findings;
 use crate::rule::*;
 use crate::spec::*;
 use crate::status::*;
+
+#[cfg(feature = "app-profile")]
+use crate::app_profile::render_profile;
 
 // ---------------------------------------------------------------------------
 // Rule rendering snapshots
@@ -84,6 +86,7 @@ fn snapshot_logging_args() {
 // App profile snapshots
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "app-profile")]
 #[test]
 fn snapshot_app_profile_web() {
     let spec = AppProfileSpec {
@@ -104,6 +107,7 @@ fn snapshot_app_profile_web() {
     insta::assert_snapshot!("app_profile_web", render_profile(&spec));
 }
 
+#[cfg(feature = "app-profile")]
 #[test]
 fn snapshot_app_profile_range() {
     let spec = AppProfileSpec {

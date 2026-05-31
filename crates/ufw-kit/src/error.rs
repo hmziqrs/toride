@@ -43,7 +43,7 @@ pub enum Error {
 
     // ── Validation ────────────────────────────────────────────────────
     /// Port number out of valid range.
-    #[error("invalid port: {0} (must be 1..=65535)")]
+    #[error("invalid port: {0} (port 0 is not valid)")]
     InvalidPort(u16),
 
     /// Port range has start > end.

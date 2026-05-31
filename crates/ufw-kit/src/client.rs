@@ -8,7 +8,7 @@ use crate::command::{CommandRunner, DuctRunner};
 use crate::error::{Error, Result};
 use crate::rule;
 use crate::spec::{
-    AppDefaultPolicy, CommandSpec, DeleteOptions, Direction, DisableOptions, EnableOptions,
+    Action, AppDefaultPolicy, CommandSpec, DeleteOptions, Direction, DisableOptions, EnableOptions,
     LoggingLevel, Policy, ResetOptions, RouteRuleSpec, RuleSpec, UfwReport, UfwStatus,
 };
 use crate::status;
@@ -121,8 +121,10 @@ impl Ufw {
 
     /// Disable UFW.
     pub fn disable(&self, opts: &DisableOptions) -> Result<()> {
-        if opts.require_explicit_confirmation {
-            return Err(Error::DisableRequiresConfirmation);
+        if !opts.require_explicit_confirmation {
+            return Err(Error::Validation(
+                "disable requires explicit confirmation. Set require_explicit_confirmation: true to proceed.".into(),
+            ));
         }
 
         let result = self.run_ufw_root(&["disable"])?;
@@ -184,7 +186,25 @@ impl Ufw {
     }
 
     /// Set default policy for a direction.
+    ///
+    /// When changing the incoming policy to `Deny` or `Reject`, an SSH lockout
+    /// safety check is performed first. If no incoming SSH allow rule exists,
+    /// the operation is rejected to prevent accidental lockout.
     pub fn set_default_policy(&self, direction: Direction, policy: Policy) -> Result<()> {
+        // SSH lockout safety check: if we are about to set incoming to deny/reject,
+        // make sure there is an SSH allow rule.
+        if direction == Direction::In
+            && matches!(policy, Policy::Deny | Policy::Reject)
+        {
+            let check = self.check_ssh_lockout_structured(&[22]);
+            if !check.has_incoming_ssh_allow {
+                return Err(Error::SshLockoutRisk(
+                    "no incoming SSH allow rule found; refusing to set incoming policy to deny/reject \
+                     without an SSH rule. Add an allow rule for port 22 first.".into(),
+                ));
+            }
+        }
+
         let args = rule::render_default_policy_args(direction, policy);
         let args_str: Vec<&str> = args.iter().map(String::as_str).collect();
         let result = self.run_ufw_root(&args_str)?;
@@ -241,6 +261,42 @@ impl Ufw {
             return Err(Error::RuleDeleteFailed(result.stderr));
         }
         Ok(())
+    }
+
+    /// Delete all rules matching a comment, from bottom to top.
+    ///
+    /// Deletes rules whose comment contains the given string, starting from the
+    /// highest-numbered rule to avoid index shifting during deletion.
+    /// Returns the number of rules deleted.
+    pub fn delete_rules_by_comment(&self, comment: &str) -> Result<u32> {
+        let status = self.status_numbered()?;
+
+        // Filter rules whose comment contains the search string
+        let mut matching: Vec<u32> = status
+            .rules
+            .iter()
+            .filter(|r| {
+                r.comment
+                    .as_deref()
+                    .is_some_and(|c| c.contains(comment))
+            })
+            .filter_map(|r| r.number)
+            .collect();
+
+        // Sort descending (highest first) to avoid number shifting
+        matching.sort_by(|a, b| b.cmp(a));
+
+        let delete_opts = DeleteOptions {
+            allow_numbered_delete: true,
+        };
+
+        let mut deleted = 0u32;
+        for num in &matching {
+            self.delete_rule_number(*num, &delete_opts)?;
+            deleted += 1;
+        }
+
+        Ok(deleted)
     }
 
     /// Insert a rule at a specific position.
@@ -385,16 +441,67 @@ impl Ufw {
             return self.apply_rule(spec);
         }
 
-        // Check if the existing rule matches exactly
-        // For now, if a rule with the same comment exists, assume it's the same
-        // (exact match would require re-rendering the existing rule's args)
+        // Render the expected args for the new rule. We compare key structural
+        // tokens against the existing rule's raw text to detect changes.
+        // UFW output format differs from rendered args format, so we check
+        // that the essential parts (action, direction, proto, port, addresses)
+        // are all consistent.
+        let matches = existing.iter().any(|r| rule_matches_spec(r, spec));
+
+        if matches {
+            return Ok(crate::spec::ApplyReport {
+                success: true,
+                action: format!("rule already exists (comment: {comment})"),
+                dry_run_output: None,
+                verification: None,
+                warnings: Vec::new(),
+            });
+        }
+
+        // Rules with the same comment exist but differ — replace them.
+        // Delete old rules from bottom to top (highest number first) to avoid
+        // number shifting during deletion.
+        let mut numbers: Vec<u32> = existing
+            .iter()
+            .filter_map(|r| r.number)
+            .collect();
+        numbers.sort_by(|a, b| b.cmp(a)); // descending order
+
+        let delete_opts = crate::spec::DeleteOptions {
+            allow_numbered_delete: true,
+        };
+
+        for num in &numbers {
+            self.delete_rule_number(*num, &delete_opts)?;
+        }
+
+        // If there were only un-numbered matches, fall back to delete by spec
+        if numbers.is_empty() {
+            self.delete_rule(spec)?;
+        }
+
+        // Add the new rule
+        let report = self.apply_rule(spec)?;
         Ok(crate::spec::ApplyReport {
             success: true,
-            action: format!("rule already exists (comment: {comment})"),
-            dry_run_output: None,
-            verification: None,
-            warnings: Vec::new(),
+            action: format!(
+                "replaced rule (comment: {comment}): {}",
+                report.action
+            ),
+            dry_run_output: report.dry_run_output,
+            verification: report.verification,
+            warnings: report.warnings,
         })
+    }
+
+    // ── Runner access ────────────────────────────────────────────────
+
+    /// Get a reference to the underlying command runner.
+    ///
+    /// This is useful for doctor checks and other diagnostics that need
+    /// to query binary existence or service status directly.
+    pub fn runner(&self) -> &dyn CommandRunner {
+        self.runner.as_ref()
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
@@ -413,29 +520,237 @@ impl Ufw {
 
     /// Check for SSH lockout risk before enabling.
     fn check_ssh_lockout(&self, opts: &EnableOptions) -> Result<()> {
-        // Get current status to see if SSH rules exist
-        let current = self.status()?;
-
         for &port in &opts.ssh_ports {
-            let has_allow = current.rules.iter().any(|rule| {
-                // Check if any rule allows the SSH port
-                let raw = rule.raw.to_lowercase();
-                raw.contains(&format!("{port}"))
-                    || raw.contains("ssh")
-                    || raw.contains("22/tcp")
-                    || raw.contains("22")
-            });
-
-            if !has_allow {
+            let result = self.check_ssh_lockout_structured(&[port]);
+            if !result.has_incoming_ssh_allow {
                 return Err(Error::SshLockoutRisk(format!(
                     "SSH port {port} is not allowed. \
                      Add an allow rule first or pass explicit override."
                 )));
             }
         }
-
         Ok(())
     }
+
+    /// Perform a structured SSH lockout check using parsed rules.
+    ///
+    /// Instead of searching raw rule text, this checks the structured
+    /// `ParsedRule` fields for direction, action, and port.
+    ///
+    /// A rule is considered an incoming SSH allow if:
+    /// - Its direction is `In` (or direction is not specified, which UFW
+    ///   treats as inbound for simple rules).
+    /// - Its action is `Allow` or `Limit`.
+    /// - It targets port 22, port `ssh`, or matches any of the given ports.
+    pub fn check_ssh_lockout_structured(&self, ssh_ports: &[u16]) -> crate::spec::SshCheckResult {
+        // Silently return a negative result if status cannot be fetched.
+        let Ok(status) = self.status() else {
+            return crate::spec::SshCheckResult {
+                has_incoming_ssh_allow: false,
+                matching_rules: Vec::new(),
+                interface_scoped: false,
+                checked_ports: ssh_ports.to_vec(),
+            };
+        };
+
+        let mut matching_rules = Vec::new();
+        let mut interface_scoped = false;
+
+        for rule in &status.rules {
+            // Must be an Allow or Limit action
+            let is_allow = matches!(rule.action, Some(Action::Allow | Action::Limit));
+            if !is_allow {
+                // Fall back to raw text check if action wasn't parsed
+                let raw_lower = rule.raw.to_lowercase();
+                if !raw_lower.contains("allow") && !raw_lower.contains("limit") {
+                    continue;
+                }
+            }
+
+            // Must be incoming direction. When direction is `None` (not parsed),
+            // we check the raw text for explicit "OUT" to avoid false positives.
+            // UFW's default for simple rules is inbound, so None without "OUT"
+            // in raw text is treated as incoming.
+            let is_incoming = match rule.direction {
+                Some(Direction::In) => true,
+                Some(Direction::Out | Direction::Routed) => false,
+                None => {
+                    // Not parsed — check raw text for direction markers
+                    let raw_lower = rule.raw.to_lowercase();
+                    !raw_lower.contains(" out ")
+                        && !raw_lower.contains(" out\t")
+                        && !raw_lower.contains("out on")
+                }
+            };
+            if !is_incoming {
+                continue;
+            }
+
+            // Must target SSH port
+            let targets_ssh = rule_targets_ssh(rule, ssh_ports);
+            if !targets_ssh {
+                continue;
+            }
+
+            // Check interface scope from raw text (ParsedRule doesn't have an
+            // interface field, so we inspect the raw text for "on <iface>" patterns).
+            let raw_lower = rule.raw.to_lowercase();
+            if raw_lower.contains(" in on ") || raw_lower.contains(" on ") {
+                interface_scoped = true;
+            }
+
+            matching_rules.push(rule.clone());
+        }
+
+        let has_incoming_ssh_allow = !matching_rules.is_empty();
+
+        crate::spec::SshCheckResult {
+            has_incoming_ssh_allow,
+            matching_rules,
+            interface_scoped,
+            checked_ports: ssh_ports.to_vec(),
+        }
+    }
+}
+
+/// Check whether a parsed rule targets an SSH port.
+///
+/// A rule targets SSH if its raw text contains any of the specified port numbers,
+/// the string "ssh", or "22/tcp"/"22" patterns.
+fn rule_targets_ssh(rule: &crate::spec::ParsedRule, ssh_ports: &[u16]) -> bool {
+    let raw_lower = rule.raw.to_lowercase();
+
+    // Check for the "ssh" service name
+    if raw_lower.contains("ssh") {
+        return true;
+    }
+
+    // Check for each specified port number
+    for &port in ssh_ports {
+        // Exact port patterns: "22/tcp", "22/udp", "22 " (with space after),
+        // or "22" at end of a token boundary. We check common variants.
+        if raw_lower.contains(&format!("{port}/tcp"))
+            || raw_lower.contains(&format!("{port}/udp"))
+        {
+            return true;
+        }
+
+        // Check for bare port number with word boundaries. The port typically
+        // appears at the start of the rule line in "To" column, e.g. "22   ALLOW IN".
+        // We look for the port number followed by whitespace or at end of line.
+        for token in raw_lower.split_whitespace() {
+            if token == port.to_string() {
+                return true;
+            }
+            // Also handle "22/tcp", "22/udp" (already checked above, but be thorough)
+            if let Some(slash_pos) = token.find('/') {
+                if token[..slash_pos] == port.to_string() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
+
+/// Check whether a parsed rule from `ufw status numbered` matches a `RuleSpec`.
+///
+/// Compares key structural fields (action, direction, protocol, port, addresses)
+/// rather than raw text, because UFW's status output format differs from the
+/// argument format we render.
+#[allow(clippy::unnested_or_patterns)]
+fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool {
+    use crate::spec::{Address, PortSpec, ProtocolFilter};
+
+    // Action must match. In numbered output the action may appear mid-line
+    // (e.g. "443/tcp ALLOW IN ...") so when parsed.action is None we fall
+    // back to a substring check on the raw text.
+    let action_matches = if let Some(a) = parsed.action { a == spec.action } else {
+        let lower = parsed.raw.to_lowercase();
+        lower.contains(&spec.action.to_string())
+    };
+    if !action_matches {
+        return false;
+    }
+
+    // Direction must match. Similarly, fall back to raw text when not parsed.
+    let dir_matches = match (parsed.direction, spec.direction) {
+        (Some(d), Some(sd)) => d == sd,
+        (None, None) | (Some(_), None) => true,
+        (None, Some(sd)) => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&sd.to_string())
+        }
+    };
+    if !dir_matches {
+        return false;
+    }
+
+    // Protocol must match — check that the raw text contains the expected proto
+    let proto_matches = match &spec.protocol {
+        ProtocolFilter::Any => true, // no proto filter
+        ProtocolFilter::Specific(proto) => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&proto.to_string())
+        }
+    };
+    if !proto_matches {
+        return false;
+    }
+
+    // Destination port must be present in the raw text
+    let port_matches = match &spec.to_port {
+        PortSpec::Any => true,
+        PortSpec::Single(p) => {
+            let lower = parsed.raw.to_lowercase();
+            // Check for "NNNN/tcp" or "NNNN/udp" or bare "NNNN"
+            lower.contains(&format!("{p}/tcp"))
+                || lower.contains(&format!("{p}/udp"))
+                || lower.contains(&format!("{p}"))
+        }
+        PortSpec::Range { start, end } => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&format!("{start}:{end}"))
+        }
+        PortSpec::List(ports) => {
+            let lower = parsed.raw.to_lowercase();
+            ports.iter().all(|p| lower.contains(&p.to_string()))
+        }
+        PortSpec::ServiceName(name) => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&name.to_lowercase())
+        }
+    };
+    if !port_matches {
+        return false;
+    }
+
+    // Source address check — if spec specifies a non-any source, it should appear
+    let from_matches = match &spec.from_addr {
+        Address::Any => true,
+        addr => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&addr.to_string().to_lowercase())
+        }
+    };
+    if !from_matches {
+        return false;
+    }
+
+    // Destination address check
+    let to_matches = match &spec.to_addr {
+        Address::Any => true,
+        addr => {
+            let lower = parsed.raw.to_lowercase();
+            lower.contains(&addr.to_string().to_lowercase())
+        }
+    };
+    if !to_matches {
+        return false;
+    }
+
+    true
 }
 
 #[cfg(test)]

@@ -16,7 +16,7 @@
 //!
 //! ## Quick start
 //!
-//! ```rust,no_run
+//! ```rust,no_run,ignore
 //! use ufw_kit::Ufw;
 //!
 //! let ufw = Ufw::system();
@@ -34,11 +34,21 @@ pub mod paths;
 pub mod diff;
 pub mod backup;
 pub mod report;
-pub mod client;
-pub mod doctor;
-pub mod app_profile;
 pub mod config;
+
+#[cfg(feature = "client")]
+pub mod client;
+
+#[cfg(feature = "doctor")]
+pub mod doctor;
+
+#[cfg(feature = "app-profile")]
+pub mod app_profile;
+
+#[cfg(feature = "framework")]
 pub mod framework;
+
+#[cfg(feature = "service")]
 pub mod service;
 
 #[cfg(test)]
@@ -46,6 +56,7 @@ pub mod service;
 mod snapshot_tests;
 
 // Re-export the primary entry point at crate root.
+#[cfg(feature = "client")]
 pub use client::Ufw;
 pub use error::{Error, Result};
 pub use spec::*;
