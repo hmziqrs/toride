@@ -25,6 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
+use regex::Regex;
+
 use crate::command::{CommandOutput, Runner};
 use crate::report::RegexTestResult;
 use crate::Result;
@@ -217,58 +219,29 @@ fn combine_output(output: &CommandOutput) -> String {
 /// summary line is not present. Returns `(0, 0)` when nothing is recognised.
 fn parse_match_stats(text: &str) -> (usize, usize) {
     // Primary pattern: "Lines: X lines, Y matched, Z missed [...]"
+    // Use a regex to capture total and matched directly from the summary line.
+    let re = Regex::new(r"(?i)Lines:\s*(\d+)\s+lines,\s*(\d+)\s+matched")
+        .expect("hardcoded regex should always compile");
+
     for line in text.lines() {
         let trimmed = line.trim();
-        if let Some(rest) = trimmed.strip_prefix("Lines:") {
-            return parse_lines_summary(rest);
+        if let Some(caps) = re.captures(trimmed) {
+            let total: usize = caps[1].parse().unwrap_or(0);
+            let matched: usize = caps[2].parse().unwrap_or(0);
+            return (matched, total);
         }
     }
 
-    // Fallback: count individual match indicators.
+    // "Sorry, no match" / "No match found" -> no matches, one line processed.
+    if text.contains("Sorry, no match") || text.contains("No match found") {
+        return (0, 1);
+    }
+
+    // Fallback: count individual "Found a match" lines.
     let lines_matched = count_matches(text);
     let lines_processed = count_processed(text).unwrap_or(lines_matched);
 
     (lines_matched, lines_processed)
-}
-
-/// Parse the "Lines: X lines, Y matched, Z missed [...]" summary line.
-fn parse_lines_summary(rest: &str) -> (usize, usize) {
-    let rest = rest.trim_start();
-
-    let total = extract_leading_digits(rest).unwrap_or(0);
-
-    let matched = extract_field_value(rest, "matched")
-        .or_else(|| extract_field_value(rest, "Matched"))
-        .unwrap_or(0);
-
-    // When the "matched" field is 0 but we see "Found a match" occurrences,
-    // use those instead (some versions of fail2ban-regex only report the
-    // summary differently).
-    let matched = if matched == 0 {
-        let fallback = count_matches(rest);
-        fallback.max(matched)
-    } else {
-        matched
-    };
-
-    (matched, total)
-}
-
-/// Extract the leading decimal number from a string slice.
-fn extract_leading_digits(s: &str) -> Option<usize> {
-    let digits: String = s.chars().take_while(|c| c.is_ascii_digit()).collect();
-    digits.parse().ok()
-}
-
-/// Extract a numeric value following a field label like "matched" or "missed".
-///
-/// Looks for the pattern `{label}[,:=] {digits}` (case-sensitive on the label).
-fn extract_field_value(text: &str, label: &str) -> Option<usize> {
-    let lower = text.to_ascii_lowercase();
-    let search = format!("{},", label.to_ascii_lowercase());
-    let idx = lower.find(&search)?;
-    let after_label = &text[idx + search.len()..].trim_start();
-    extract_leading_digits(after_label)
 }
 
 /// Count occurrences of "Found a match" indicators in the output.
@@ -301,3 +274,7 @@ fn count_processed(text: &str) -> Option<usize> {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "regex_test.test.rs"]
+mod tests;

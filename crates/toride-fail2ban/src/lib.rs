@@ -75,95 +75,10 @@ pub mod service;
 pub mod spec;
 
 // ---------------------------------------------------------------------------
-// Legacy error types (kept for backward compatibility with existing modules)
-//
-// The new `error` module is the source of truth for future code. Existing
-// modules and the Fail2Ban struct below use these legacy types so that all
-// sub-modules interoperate without conversion. Both Error types carry the
-// same semantic variants; migration will happen gradually.
+// Error types -- re-exported from the `error` module (unified source of truth)
 // ---------------------------------------------------------------------------
 
-use std::io;
-use std::result;
-
-/// Crate-level error enum covering all subsystems.
-///
-/// **Deprecated**: new code should use [`error::Error`] which is the source of
-/// truth going forward. Existing modules reference this type via `crate::Error`
-/// and will be migrated gradually.
-#[derive(Debug, thiserror::Error)]
-#[deprecated(note = "use crate::error::Error")]
-pub enum Error {
-    // -- I/O subsystem --
-    /// I/O error occurred.
-    #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
-
-    // -- Serialization subsystem --
-    /// JSON serialization/deserialization error.
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    // -- Config subsystem --
-    /// Configuration file missing at expected path.
-    #[error("Config file not found: {0}")]
-    ConfigNotFound(String),
-
-    /// Invalid configuration value.
-    #[error("Invalid config value: {0}")]
-    InvalidConfig(String),
-
-    // -- Ban subsystem --
-    /// Invalid IP address or CIDR notation.
-    #[error("Invalid IP or CIDR: {0}")]
-    InvalidIp(String),
-
-    /// IP address is already banned.
-    #[error("IP already banned: {0}")]
-    AlreadyBanned(String),
-
-    /// IP address is not currently banned.
-    #[error("IP not banned: {0}")]
-    NotBanned(String),
-
-    // -- Log parsing subsystem --
-    /// Invalid regular expression pattern.
-    #[error("Invalid regex pattern: {0}")]
-    InvalidRegex(String),
-
-    /// Log file could not be read.
-    #[error("Log file error: {0}")]
-    LogFileError(String),
-
-    // -- Action subsystem --
-    /// Command execution failed.
-    #[error("Command execution failed: {0}")]
-    CommandFailed(String),
-
-    // -- Jail subsystem --
-    /// Jail with the given name already exists.
-    #[error("Jail already exists: {0}")]
-    JailAlreadyExists(String),
-
-    /// Jail with the given name not found.
-    #[error("Jail not found: {0}")]
-    JailNotFound(String),
-
-    // -- Command subsystem --
-    /// Required binary not found on `$PATH`.
-    #[error("Binary not found: {0}")]
-    NotFound(String),
-
-    /// Command execution timed out.
-    #[error("Command timed out after {0:?}")]
-    CommandTimeout(std::time::Duration),
-}
-
-/// Crate-level result alias.
-///
-/// **Deprecated**: new code should use [`error::Result`].
-#[deprecated(note = "use crate::error::Result")]
-pub type Result<T> = result::Result<T, Error>;
+pub use error::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // SystemPaths -- Fail2Ban system directory layout
@@ -194,7 +109,6 @@ impl SystemPaths {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`] if the config directory does not exist.
-    #[allow(deprecated)]
     pub fn default() -> Result<Self> {
         Self::with_config_dir(PathBuf::from("/etc/fail2ban"))
     }
@@ -204,7 +118,6 @@ impl SystemPaths {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`] if `dir` does not exist on disk.
-    #[allow(deprecated)]
     pub fn with_config_dir(dir: PathBuf) -> Result<Self> {
         if !dir.is_dir() {
             return Err(Error::InvalidConfig(format!(
@@ -269,7 +182,6 @@ pub struct Fail2Ban {
     dry_run: bool,
 }
 
-#[allow(deprecated)]
 impl Fail2Ban {
     // -----------------------------------------------------------------------
     // Constructors

@@ -127,6 +127,7 @@ pub struct ManagedFile {
 #[derive(Debug)]
 pub struct IniManager {
     /// Root Fail2Ban config directory (e.g. `/etc/fail2ban`).
+    #[allow(dead_code, reason = "retained for future use and Debug output")]
     config_dir: PathBuf,
     /// Jail drop-in directory: `{config_dir}/jail.d`.
     jail_d: PathBuf,

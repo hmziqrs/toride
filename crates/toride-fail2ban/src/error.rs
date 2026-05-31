@@ -1,11 +1,29 @@
-//! Centralized error types for the fail2ban-kit library.
+//! Unified error types for the `toride-fail2ban` crate.
 //!
-//! All subsystems return [`Error`] through the crate-level [`Result`] alias.
-//! The enum is [`non_exhaustive`](#) so new variants can be added without a
-//! semver break.
+//! Every subsystem returns [`Error`] through the crate-level [`Result`] alias.
+//! The enum is marked `#[non_exhaustive]` so new variants can be added without
+//! a semver break.
+//!
+//! # Variant naming convention
+//!
+//! Simple string-based errors use tuple variants (e.g. `Config(String)`).
+//! Structured errors that carry multiple fields use struct variants
+//! (e.g. `Command { program, code, stderr }`).
+//!
+//! # Serialization
+//!
+//! When the `serde` feature is enabled, errors serialize as a two-field map:
+//!
+//! ```json
+//! {"type": "config", "detail": "missing bantime"}
+//! ```
 
 #[cfg(feature = "serde")]
 use std::fmt;
+
+// ---------------------------------------------------------------------------
+// Error enum -- single source of truth for the entire crate
+// ---------------------------------------------------------------------------
 
 /// Crate-level error type covering all subsystems.
 ///
@@ -13,26 +31,88 @@ use std::fmt;
 /// Marked `#[non_exhaustive]` so downstream crates must handle future
 /// variants with a wildcard match arm.
 ///
-/// # Serialization
-///
-/// When the `serde` feature is enabled, errors serialize as a two-field map:
-///
-/// ```json
-/// {"type": "config", "detail": "missing bantime"}
-/// ```
+/// This enum is the *unified* source of truth: it merges the legacy
+/// variants that were previously defined in `lib.rs` with the newer
+/// structured variants, so all existing `crate::Error::SomeVariant`
+/// references throughout the codebase compile without changes.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    // -- I/O subsystem --
+    // =======================================================================
+    // I/O subsystem
+    // =======================================================================
 
     /// An I/O error propagated from `std::io` or `fs-err`.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 
-    // -- Command subsystem --
+    // =======================================================================
+    // Serialization subsystem
+    // =======================================================================
+
+    /// A JSON serialization or deserialization error.
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
+    // =======================================================================
+    // Configuration subsystem
+    // =======================================================================
+
+    /// Configuration file missing at expected path.
+    #[error("Config file not found: {0}")]
+    ConfigNotFound(String),
+
+    /// A configuration value is missing, malformed, or otherwise invalid.
+    #[error("Invalid config value: {0}")]
+    InvalidConfig(String),
+
+    /// A generic configuration error (used by newer subsystems).
+    #[error("config error: {0}")]
+    Config(String),
+
+    // =======================================================================
+    // Ban subsystem
+    // =======================================================================
+
+    /// Invalid IP address or CIDR notation.
+    #[error("Invalid IP or CIDR: {0}")]
+    InvalidIp(String),
+
+    /// IP address is already banned.
+    #[error("IP already banned: {0}")]
+    AlreadyBanned(String),
+
+    /// IP address is not currently banned.
+    #[error("IP not banned: {0}")]
+    NotBanned(String),
+
+    // =======================================================================
+    // Log parsing subsystem
+    // =======================================================================
+
+    /// Invalid regular expression pattern.
+    #[error("Invalid regex pattern: {0}")]
+    InvalidRegex(String),
+
+    /// A regular expression pattern is invalid or incompatible with Fail2Ban
+    /// (structured variant used by newer subsystems).
+    #[error("regex error: {0}")]
+    Regex(String),
+
+    /// Log file could not be read.
+    #[error("Log file error: {0}")]
+    LogFileError(String),
+
+    // =======================================================================
+    // Command / action subsystem
+    // =======================================================================
+
+    /// Command execution failed (string-based variant).
+    #[error("Command execution failed: {0}")]
+    CommandFailed(String),
 
     /// An external command exited with a non-zero status or could not be
-    /// spawned.
+    /// spawned (structured variant).
     #[error("{msg}", msg = format_command_error(program, *code, stderr))]
     Command {
         /// The program that was invoked (e.g. `fail2ban-client`).
@@ -43,39 +123,11 @@ pub enum Error {
         stderr: String,
     },
 
-    // -- Configuration subsystem --
+    /// Command execution timed out (duration-only variant).
+    #[error("Command timed out after {0:?}")]
+    CommandTimeout(std::time::Duration),
 
-    /// A configuration value is missing, malformed, or otherwise invalid.
-    #[error("config error: {0}")]
-    Config(String),
-
-    // -- Validation subsystem --
-
-    /// A spec or input value failed validation rules.
-    #[error("validation error: {0}")]
-    Validation(String),
-
-    // -- Regex subsystem --
-
-    /// A regular expression pattern is invalid or incompatible with Fail2Ban.
-    #[error("regex error: {0}")]
-    Regex(String),
-
-    // -- Doctor subsystem --
-
-    /// A doctor check produced an error (distinct from a *finding*).
-    #[error("doctor error: {0}")]
-    Doctor(String),
-
-    // -- Lookup subsystem --
-
-    /// A requested resource (jail, filter, action, file) was not found.
-    #[error("not found: {0}")]
-    NotFound(String),
-
-    // -- Timeout subsystem --
-
-    /// A command timed out before completing.
+    /// A command timed out before completing (structured variant).
     #[error("command `{program}` timed out after {}", humantime::format_duration(*duration))]
     Timeout {
         /// The program that was invoked.
@@ -84,24 +136,63 @@ pub enum Error {
         duration: std::time::Duration,
     },
 
-    // -- Permission subsystem --
+    // =======================================================================
+    // Jail subsystem
+    // =======================================================================
+
+    /// Jail with the given name already exists.
+    #[error("Jail already exists: {0}")]
+    JailAlreadyExists(String),
+
+    /// Jail with the given name not found.
+    #[error("Jail not found: {0}")]
+    JailNotFound(String),
+
+    // =======================================================================
+    // Lookup subsystem
+    // =======================================================================
+
+    /// Required binary not found on `$PATH`, or a requested resource was not
+    /// found.
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    // =======================================================================
+    // Validation subsystem
+    // =======================================================================
+
+    /// A spec or input value failed validation rules.
+    #[error("validation error: {0}")]
+    Validation(String),
+
+    // =======================================================================
+    // Doctor subsystem
+    // =======================================================================
+
+    /// A doctor check produced an error (distinct from a *finding*).
+    #[error("doctor error: {0}")]
+    Doctor(String),
+
+    // =======================================================================
+    // Permission subsystem
+    // =======================================================================
 
     /// A permission check failed (file mode, ownership, or OS capability).
     #[error("permission denied: {0}")]
     PermissionDenied(String),
 
-    // -- Serialization subsystem --
-
-    /// A JSON serialization or deserialization error.
-    #[error("JSON error: {0}")]
-    Json(#[from] serde_json::Error),
-
-    // -- Parsing subsystem --
+    // =======================================================================
+    // Parsing subsystem
+    // =======================================================================
 
     /// A string could not be parsed into the expected type.
     #[error("parse error: {0}")]
     Parse(String),
 }
+
+// ---------------------------------------------------------------------------
+// Crate-level result alias
+// ---------------------------------------------------------------------------
 
 /// Crate-level result alias used throughout the library.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -132,15 +223,26 @@ impl Error {
     fn tag(&self) -> &'static str {
         match self {
             Self::Io(_) => "io",
-            Self::Command { .. } => "command",
-            Self::Config(_) => "config",
-            Self::Validation(_) => "validation",
-            Self::Regex(_) => "regex",
-            Self::Doctor(_) => "doctor",
-            Self::NotFound(_) => "not_found",
-            Self::Timeout { .. } => "timeout",
-            Self::PermissionDenied(_) => "permission_denied",
             Self::Json(_) => "json",
+            Self::ConfigNotFound(_) => "config_not_found",
+            Self::InvalidConfig(_) => "invalid_config",
+            Self::Config(_) => "config",
+            Self::InvalidIp(_) => "invalid_ip",
+            Self::AlreadyBanned(_) => "already_banned",
+            Self::NotBanned(_) => "not_banned",
+            Self::InvalidRegex(_) => "invalid_regex",
+            Self::Regex(_) => "regex",
+            Self::LogFileError(_) => "log_file_error",
+            Self::CommandFailed(_) => "command_failed",
+            Self::Command { .. } => "command",
+            Self::CommandTimeout(_) => "command_timeout",
+            Self::Timeout { .. } => "timeout",
+            Self::JailAlreadyExists(_) => "jail_already_exists",
+            Self::JailNotFound(_) => "jail_not_found",
+            Self::NotFound(_) => "not_found",
+            Self::Validation(_) => "validation",
+            Self::Doctor(_) => "doctor",
+            Self::PermissionDenied(_) => "permission_denied",
             Self::Parse(_) => "parse",
             // NOTE: `_` is unreachable while the enum is `non_exhaustive`
             // within this crate, but the wildcard is required for forward
@@ -163,7 +265,7 @@ fn format_command_error(program: &str, code: Option<i32>, stderr: &str) -> Strin
     let suffix = if stderr.is_empty() {
         String::new()
     } else {
-        format!(" — {}", stderr.trim())
+        format!(" \u{2014} {}", stderr.trim())
     };
     format!("command `{program}` failed: {status}{suffix}")
 }

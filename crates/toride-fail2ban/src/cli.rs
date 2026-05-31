@@ -23,6 +23,7 @@ pub struct Cli {
     #[arg(long)]
     pub dry_run: bool,
 
+    /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
 }

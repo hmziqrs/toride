@@ -7,7 +7,6 @@
 use super::*;
 use crate::command::{CommandOutput, FakeRunner};
 
-#[expect(deprecated, reason = "service module uses legacy Error type")]
 use crate::Error;
 
 // ---------------------------------------------------------------------------
