@@ -39,6 +39,32 @@ info()  { printf '\033[1;34m[create]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[create]\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31m[create]\033[0m %s\n' "$*" >&2; exit 1; }
 
+# Verify guest /etc/os-release matches expected distro.
+# Usage: verify_distro <instance> <distro>
+# e.g. verify_distro toride-u2404 ubuntu-24.04
+verify_distro() {
+  local instance="$1" distro="$2"
+  local os_release guest_id guest_ver expected_id expected_ver
+
+  os_release="$(limactl shell "$instance" -- cat /etc/os-release 2>/dev/null || true)"
+  if [[ -z "$os_release" ]]; then
+    error "Could not read /etc/os-release from '$instance'. VM may be broken."
+  fi
+
+  guest_id="$(echo "$os_release" | grep '^ID=' | head -1 | cut -d= -f2)"
+  guest_ver="$(echo "$os_release" | grep '^VERSION_ID=' | head -1 | cut -d= -f2 | tr -d '"')"
+
+  # ubuntu-24.04 -> ubuntu, 24.04  |  rocky-9 -> rocky, 9
+  expected_id="${distro%%-*}"
+  expected_ver="${distro#*-}"
+
+  if [[ "$guest_id" != "$expected_id" || "$guest_ver" != "$expected_ver" ]]; then
+    error "Guest distro mismatch: expected '$expected_id $expected_ver' but got '$guest_id $guest_ver' (instance '$instance'). Consider delete-and-recreate."
+  fi
+
+  info "Guest identity confirmed: $guest_id $guest_ver"
+}
+
 # ── Arg parsing ────────────────────────────────────────────────────────────────
 
 DISTRO=""
@@ -83,12 +109,14 @@ if [[ -z "$LIMA_VERSION" ]]; then
 fi
 
 # Simple version comparison (major.minor.patch)
+# Avoids bash 4.0+ features (<<<, ${!arr[@]}) for macOS bash 3.2 compat.
 version_gte() {
   local v1="$1" v2="$2"
   local IFS=.
-  read -ra a <<< "$v1"
-  read -ra b <<< "$v2"
-  for i in "${!b[@]}"; do
+  # shellcheck disable=SC2206
+  local a=($v1) b=($v2)
+  local i len=${#b[@]}
+  for (( i=0; i<len; i++ )); do
     local ai="${a[$i]:-0}"
     local bi="${b[$i]:-0}"
     (( ai > bi )) && return 0
@@ -105,11 +133,22 @@ info "Lima $LIMA_VERSION detected (>= $MINIMUM_LIMA_VERSION)"
 
 # ── Validate Lima features ────────────────────────────────────────────────────
 
-# Check that Lima supports the commands we need by looking at help output.
-# This is a best-effort check; Lima subcommand flags change between versions.
+# Check that Lima supports the commands/flags we need.
 if ! limactl snapshot --help &>/dev/null; then
   warn "Lima snapshot subcommand not found. Snapshots may not be supported."
   warn "Delete-and-recreate will be the only reset path for $DISTRO."
+fi
+
+if ! limactl copy --help &>/dev/null; then
+  error "Lima 'copy' subcommand not found. Upgrade Lima: brew upgrade lima"
+fi
+
+if ! limactl start --list-templates &>/dev/null; then
+  error "Lima 'start --list-templates' not supported. Upgrade Lima: brew upgrade lima"
+fi
+
+if ! limactl start --help 2>&1 | grep -q -- '--mount-none'; then
+  error "Lima 'start --mount-none' not supported. Upgrade Lima: brew upgrade lima"
 fi
 
 # ── Validate template ─────────────────────────────────────────────────────────
@@ -119,8 +158,9 @@ if [[ ! -f "$TEMPLATE" ]]; then
 fi
 
 info "Validating template: $TEMPLATE"
-if ! limactl validate "$TEMPLATE" 2>/dev/null; then
-  error "Template validation failed: $TEMPLATE"
+VALIDATE_ERR=""
+if ! VALIDATE_ERR="$(limactl validate "$TEMPLATE" 2>&1)"; then
+  error "Template validation failed: $TEMPLATE"$'\n'"$VALIDATE_ERR"
 fi
 
 # ── Validate local image checksums (when present) ─────────────────────────────
@@ -147,8 +187,8 @@ if limactl list --format '{{.Name}}' 2>/dev/null | grep -qxF "$INSTANCE"; then
     error "Instance '$INSTANCE' already exists. Use --recreate to delete and recreate."
   fi
   info "Instance '$INSTANCE' exists. Recreating (--recreate)..."
-  limactl stop "$INSTANCE" 2>/dev/null || true
-  limactl delete -f "$INSTANCE" 2>/dev/null || true
+  limactl stop "$INSTANCE" 2>&1 || warn "limactl stop $INSTANCE failed (may already be stopped)"
+  limactl delete -f "$INSTANCE" 2>&1 || warn "limactl delete $INSTANCE failed"
 fi
 
 # ── Create instance ───────────────────────────────────────────────────────────
@@ -205,11 +245,16 @@ limactl shell "$INSTANCE" -- bash -c '
 # ── Verify guest identity ────────────────────────────────────────────────────
 
 info "Verifying guest identity..."
-limactl shell "$INSTANCE" -- cat /etc/os-release
+verify_distro "$INSTANCE" "$DISTRO"
 limactl shell "$INSTANCE" -- uname -a
 
 SYSTEMD_STATUS="$(limactl shell "$INSTANCE" -- systemctl is-system-running 2>/dev/null || echo 'unknown')"
 info "systemd status: $SYSTEMD_STATUS"
+
+if [[ "$SYSTEMD_STATUS" == "degraded" ]]; then
+  warn "systemd is degraded. Listing failed units:"
+  limactl shell "$INSTANCE" -- systemctl --failed --no-pager 2>/dev/null || true
+fi
 
 if [[ "$SYSTEMD_STATUS" == "offline" || "$SYSTEMD_STATUS" == "unknown" ]]; then
   warn "systemd is not operational ($SYSTEMD_STATUS). May not be suitable for integration testing."

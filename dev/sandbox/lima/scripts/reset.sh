@@ -36,6 +36,27 @@ info()  { printf '\033[1;34m[reset]\033[0m %s\n' "$*"; }
 warn()  { printf '\033[1;33m[reset]\033[0m %s\n' "$*" >&2; }
 error() { printf '\033[1;31m[reset]\033[0m %s\n' "$*" >&2; exit 1; }
 
+verify_distro() {
+  local instance="$1" distro="$2"
+  local os_release guest_id guest_ver expected_id expected_ver
+
+  os_release="$(limactl shell "$instance" -- cat /etc/os-release 2>/dev/null || true)"
+  if [[ -z "$os_release" ]]; then
+    error "Could not read /etc/os-release from '$instance'. VM may be broken."
+  fi
+
+  guest_id="$(echo "$os_release" | grep '^ID=' | head -1 | cut -d= -f2)"
+  guest_ver="$(echo "$os_release" | grep '^VERSION_ID=' | head -1 | cut -d= -f2 | tr -d '"')"
+  expected_id="${distro%%-*}"
+  expected_ver="${distro#*-}"
+
+  if [[ "$guest_id" != "$expected_id" || "$guest_ver" != "$expected_ver" ]]; then
+    error "Guest distro mismatch: expected '$expected_id $expected_ver' but got '$guest_id $guest_ver' (instance '$instance'). Consider delete-and-recreate."
+  fi
+
+  info "Guest identity confirmed: $guest_id $guest_ver"
+}
+
 # ── Arg parsing ────────────────────────────────────────────────────────────────
 
 DISTRO=""
@@ -106,18 +127,22 @@ limactl start "$INSTANCE"
 # ── Verify guest state ───────────────────────────────────────────────────────
 
 info "Verifying guest identity..."
-
-OS_RELEASE="$(limactl shell "$INSTANCE" -- cat /etc/os-release 2>/dev/null || true)"
-if [[ -z "$OS_RELEASE" ]]; then
-  error "Could not read /etc/os-release from '$INSTANCE'. VM may be broken."
-fi
-info "$OS_RELEASE"
+verify_distro "$INSTANCE" "$DISTRO"
 
 SYSTEMD_STATUS="$(limactl shell "$INSTANCE" -- systemctl is-system-running 2>/dev/null || echo 'unknown')"
 info "systemd status: $SYSTEMD_STATUS"
 
+if [[ "$SYSTEMD_STATUS" == "degraded" ]]; then
+  warn "systemd is degraded. Listing failed units:"
+  limactl shell "$INSTANCE" -- systemctl --failed --no-pager 2>/dev/null || true
+fi
+
 if [[ "$SYSTEMD_STATUS" == "offline" || "$SYSTEMD_STATUS" == "unknown" ]]; then
-  warn "systemd is not operational ($SYSTEMD_STATUS). Consider delete-and-recreate."
+  warn "systemd is not operational ($SYSTEMD_STATUS). Falling back to delete-and-recreate."
+  limactl stop "$INSTANCE" 2>&1 || true
+  limactl delete -f "$INSTANCE" 2>&1 || true
+  "$SCRIPT_DIR/create.sh" "$DISTRO" --recreate
+  exit 0
 fi
 
 info "'$INSTANCE' ($DISTRO) reset to 'clean' snapshot and ready."
