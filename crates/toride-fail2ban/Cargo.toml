@@ -5,8 +5,20 @@ edition = "2024"
 description = "Fail2Ban-style intrusion prevention library"
 license = "MIT"
 
+[features]
+default = ["client", "config", "doctor"]
+client = []
+config = []
+doctor = []
+regex-test = []
+systemd = []
+firewall-nft = []
+firewall-iptables = []
+serde = []
+tokio = []
+
 [dependencies]
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -15,9 +27,21 @@ which = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 regex = "1"
+duct = "0.13"
+typed-builder = "0.20"
+ipnet = "2"
+humantime = "2"
+fd-lock = "4"
+fs-err = "3"
+walkdir = "2"
+globset = "0.4"
+indoc = "2"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
+insta = "1"
+assert_fs = "1"
+proptest = "1"
 
 [lints]
 workspace = true

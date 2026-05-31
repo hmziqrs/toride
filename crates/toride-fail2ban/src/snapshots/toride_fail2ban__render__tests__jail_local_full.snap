@@ -1,0 +1,28 @@
+---
+source: crates/toride-fail2ban/src/render.test.rs
+assertion_line: 125
+expression: out
+---
+# Managed by fail2ban-kit.
+# Do not edit manually unless you also disable this manager.
+
+[ssh]
+enabled = false
+filter = sshd[mode=aggressive]
+backend = systemd
+logpath = /var/log/auth.log
+        /var/log/auth.log.1
+journalmatch = _SYSTEMD_UNIT=sshd.service
+               _SYSTEMD_UNIT=sshd-extra.service
+port = 22, 80
+protocol = both
+bantime = 1h
+findtime = 10m
+maxretry = 3
+usedns = warn
+ignoreip = 127.0.0.1/8 ::1/128
+maxlines = 10
+action = nftables-multiport
+        iptables-multiport[name=ssh, port=ssh]
+aa_custom = value
+zz_custom = value
