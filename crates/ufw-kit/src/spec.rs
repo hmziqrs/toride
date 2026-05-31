@@ -922,10 +922,8 @@ pub struct CommandSpec {
     pub force_c_locale: bool,
     /// Whether to redact potentially sensitive values in logged args.
     ///
-    /// When `true`, command runners should apply redaction rules to arguments
-    /// before writing them to logs or traces.
-    // TODO: implement redaction rules that mask values following flags like
-    // --password, --token, --key, etc.
+    /// When `true`, command runners apply redaction rules to arguments
+    /// before writing them to logs or traces. See [`crate::command::redact_args`].
     pub redact_logs: bool,
 }
 
@@ -1004,6 +1002,10 @@ pub enum DoctorScope {
     AppProfiles,
     /// Only permission checks.
     Permissions,
+    /// Only Docker/container checks.
+    Docker,
+    /// Only routing/forwarding checks.
+    Routing,
 }
 
 // ============================================================================

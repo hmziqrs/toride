@@ -37,6 +37,8 @@ pub mod report;
 pub mod config;
 pub mod firewall;
 pub mod presets;
+pub mod nat;
+pub mod docker;
 
 #[cfg(feature = "client")]
 pub mod client;
@@ -52,6 +54,18 @@ pub mod framework;
 
 #[cfg(feature = "service")]
 pub mod service;
+
+#[cfg(feature = "firewall-nft")]
+pub mod nft;
+
+#[cfg(feature = "firewall-iptables")]
+pub mod iptables;
+
+#[cfg(feature = "systemd-zbus")]
+pub mod systemd_zbus;
+
+#[cfg(feature = "tokio")]
+pub mod async_client;
 
 #[cfg(test)]
 #[path = "snapshots.test.rs"]

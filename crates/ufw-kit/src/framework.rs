@@ -211,6 +211,148 @@ pub fn rollback_framework_file(path: &Path, previous: Option<&str>) -> Result<()
     Ok(())
 }
 
+// ============================================================================
+// Rollback manager
+// ============================================================================
+
+/// A recorded framework operation for rollback purposes.
+#[derive(Debug, Clone)]
+struct RollbackEntry {
+    /// Path that was modified.
+    path: std::path::PathBuf,
+    /// Previous content (None if file didn't exist).
+    previous_content: Option<String>,
+}
+
+/// A rollback manager that records framework changes and can undo them.
+///
+/// # Example
+///
+/// ```rust,no_run,ignore
+/// use ufw_kit::framework::RollbackManager;
+/// use ufw_kit::spec::FrameworkRuleBlock;
+/// use std::path::Path;
+///
+/// let mut mgr = RollbackManager::new();
+/// let path = Path::new("/etc/ufw/before.rules");
+/// let block = FrameworkRuleBlock {
+///     id: "my-nat".into(),
+///     content: "*nat\n:POSTROUTING ACCEPT [0:0]\nCOMMIT".into(),
+///     ipv6: false,
+/// };
+///
+/// // Apply with rollback tracking
+/// mgr.upsert_tracked(path, &block, None).unwrap();
+///
+/// // If something goes wrong, rollback all tracked operations
+/// mgr.rollback_all().unwrap();
+/// ```
+#[derive(Debug, Default)]
+pub struct RollbackManager {
+    entries: Vec<RollbackEntry>,
+}
+
+impl RollbackManager {
+    /// Create a new empty rollback manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Upsert a managed block and record the previous state for rollback.
+    ///
+    /// If `backup_dir` is provided, a backup copy is also written.
+    pub fn upsert_tracked(
+        &mut self,
+        path: &Path,
+        block: &crate::spec::FrameworkRuleBlock,
+        backup_dir: Option<&Path>,
+    ) -> Result<()> {
+        let content = read_framework_file(path)?;
+        let new_content = upsert_block(&content, block)?;
+        let previous = write_framework_file(path, &new_content, backup_dir)?;
+
+        self.entries.push(RollbackEntry {
+            path: path.to_path_buf(),
+            previous_content: previous,
+        });
+
+        Ok(())
+    }
+
+    /// Remove a managed block and record the previous state for rollback.
+    pub fn remove_tracked(
+        &mut self,
+        path: &Path,
+        id: &str,
+        backup_dir: Option<&Path>,
+    ) -> Result<()> {
+        let content = read_framework_file(path)?;
+        let new_content = remove_block(&content, id)?;
+
+        if is_identical(&content, &new_content) {
+            // Nothing changed — no rollback entry needed
+            return Ok(());
+        }
+
+        let previous = write_framework_file(path, &new_content, backup_dir)?;
+
+        self.entries.push(RollbackEntry {
+            path: path.to_path_buf(),
+            previous_content: previous,
+        });
+
+        Ok(())
+    }
+
+    /// Rollback all tracked operations in reverse order (LIFO).
+    ///
+    /// Returns the number of files restored.
+    pub fn rollback_all(&self) -> Result<usize> {
+        let mut count = 0;
+
+        // Rollback in reverse order
+        for entry in self.entries.iter().rev() {
+            rollback_framework_file(&entry.path, entry.previous_content.as_deref())?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Rollback only the last N operations.
+    pub fn rollback_last(&self, n: usize) -> Result<usize> {
+        let start = self.entries.len().saturating_sub(n);
+        let to_rollback = &self.entries[start..];
+        let mut count = 0;
+
+        for entry in to_rollback.iter().rev() {
+            rollback_framework_file(&entry.path, entry.previous_content.as_deref())?;
+            count += 1;
+        }
+
+        Ok(count)
+    }
+
+    /// Get the number of tracked operations.
+    #[must_use]
+    pub fn tracked_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Discard all tracked rollback entries without performing rollback.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// Check if two strings are identical (shared with diff module, inlined here).
+fn is_identical(a: &str, b: &str) -> bool {
+    a == b
+}
+
 #[cfg(test)]
 #[path = "framework.test.rs"]
 mod tests;

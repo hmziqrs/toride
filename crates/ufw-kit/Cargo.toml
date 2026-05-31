@@ -15,13 +15,14 @@ serde = ["dep:serde"]
 systemd-zbus = []
 firewall-nft = []
 firewall-iptables = []
-tokio = []
+tokio = ["dep:tokio"]
 
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
 serde = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
 duct = { version = "1", features = ["timeout"] }
 ipnet = "2"
 tempfile = "3"

@@ -4,7 +4,7 @@
 //! Each preset returns a [`Preset`] containing a list of [`RuleSpec`](crate::spec::RuleSpec)
 //! values that can be applied via the client.
 
-use crate::spec::{Action, Direction, Protocol, RuleSpec};
+use crate::spec::{Action, Address, Direction, Protocol, RuleSpec};
 
 /// A named preset with a description and list of rules.
 #[derive(Debug, Clone)]
@@ -219,6 +219,236 @@ pub fn monitoring() -> Preset {
     }
 }
 
+/// Tailscale interface preset: allow SSH via `tailscale0` interface and
+/// Tailscale UDP port (41641).
+///
+/// Unlike [`tailscale()`], this preset scopes SSH to the Tailscale interface,
+/// restricting SSH access to VPN peers only.
+pub fn tailscale_interface() -> Preset {
+    Preset {
+        id: "tailscale-interface",
+        name: "Tailscale Interface (SSH scoped)",
+        description: "Allow SSH only via tailscale0 interface and Tailscale UDP (41641). \
+            Restricts SSH to Tailscale VPN peers."
+            .into(),
+        rules: vec![
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .on_interface("tailscale0")
+                .proto(Protocol::Tcp)
+                .to_port(22)
+                .comment("preset:ts-iface:ssh")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .proto(Protocol::Udp)
+                .to_port(41641)
+                .comment("preset:ts-iface:udp")
+                .build()
+                .expect("preset rule should validate"),
+        ],
+    }
+}
+
+/// `WireGuard` interface preset: allow SSH via `wg0` interface and
+/// `WireGuard` UDP port (51820).
+///
+/// Unlike [`wireguard()`], this preset scopes SSH to the `WireGuard` interface,
+/// restricting SSH access to VPN peers only.
+pub fn wireguard_interface() -> Preset {
+    Preset {
+        id: "wireguard-interface",
+        name: "WireGuard Interface (SSH scoped)",
+        description: "Allow SSH only via wg0 interface and WireGuard UDP (51820). \
+            Restricts SSH to WireGuard VPN peers."
+            .into(),
+        rules: vec![
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .on_interface("wg0")
+                .proto(Protocol::Tcp)
+                .to_port(22)
+                .comment("preset:wg-iface:ssh")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .proto(Protocol::Udp)
+                .to_port(51820)
+                .comment("preset:wg-iface:vpn")
+                .build()
+                .expect("preset rule should validate"),
+        ],
+    }
+}
+
+/// Cloudflare IP allowlist preset: allow SSH + HTTP + HTTPS from Cloudflare IP ranges.
+///
+/// Designed for servers behind Cloudflare proxy. Only Cloudflare's IP ranges
+/// are allowed on ports 80/443, and SSH is allowed with rate limiting.
+/// This protects the origin server by only accepting traffic from Cloudflare.
+pub fn cloudflare_allowlist() -> Preset {
+    // Cloudflare IPv4 ranges (as of 2024)
+    let cf_ranges = [
+        "173.245.48.0/20",
+        "103.21.244.0/22",
+        "103.22.200.0/22",
+        "103.31.4.0/22",
+        "141.101.64.0/18",
+        "108.162.192.0/18",
+        "190.93.240.0/20",
+        "188.114.96.0/20",
+        "197.234.240.0/22",
+        "198.41.128.0/17",
+        "162.158.0.0/15",
+        "104.16.0.0/13",
+        "104.24.0.0/14",
+        "172.64.0.0/13",
+        "131.0.72.0/22",
+    ];
+
+    let mut rules = Vec::new();
+
+    // SSH with rate limiting from anywhere (admin access)
+    rules.push(
+        RuleSpec::builder(Action::Limit)
+            .direction(Direction::In)
+            .proto(Protocol::Tcp)
+            .to_port(22)
+            .comment("preset:cf:ssh")
+            .build()
+            .expect("preset rule should validate"),
+    );
+
+    // HTTP/HTTPS from each Cloudflare range
+    for (idx, range) in cf_ranges.iter().enumerate() {
+        let net = range.parse::<ipnet::IpNet>().expect("valid CIDR");
+        rules.push(
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .from(Address::Net(net))
+                .proto(Protocol::Tcp)
+                .to_port(80)
+                .comment(format!("preset:cf:http:{idx}"))
+                .build()
+                .expect("preset rule should validate"),
+        );
+        rules.push(
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .from(Address::Net(
+                    range.parse::<ipnet::IpNet>().expect("valid CIDR"),
+                ))
+                .proto(Protocol::Tcp)
+                .to_port(443)
+                .comment(format!("preset:cf:https:{idx}"))
+                .build()
+                .expect("preset rule should validate"),
+        );
+    }
+
+    Preset {
+        id: "cloudflare-allowlist",
+        name: "Cloudflare Allowlist",
+        description: "Allow SSH with rate limiting and HTTP/HTTPS only from Cloudflare IP ranges. \
+            Designed for origin servers behind Cloudflare proxy."
+            .into(),
+        rules,
+    }
+}
+
+/// Traefik/Dokploy preset: allow SSH + HTTP + HTTPS with internal app ports.
+///
+/// Designed for servers running Traefik as reverse proxy (e.g., Dokploy).
+/// Only exposes SSH (rate-limited), HTTP (80), and HTTPS (443) publicly.
+/// Application containers should be bound to Docker internal networks or
+/// localhost — this preset does NOT open application ports.
+pub fn traefik_dokploy() -> Preset {
+    Preset {
+        id: "traefik-dokploy",
+        name: "Traefik / Dokploy",
+        description: "Allow SSH with rate limiting, HTTP, and HTTPS for Traefik/Dokploy \
+            reverse proxy setups. App containers should bind to internal Docker networks."
+            .into(),
+        rules: vec![
+            RuleSpec::builder(Action::Limit)
+                .direction(Direction::In)
+                .proto(Protocol::Tcp)
+                .to_port(22)
+                .comment("preset:td:ssh")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .proto(Protocol::Tcp)
+                .to_port(80)
+                .comment("preset:td:http")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .proto(Protocol::Tcp)
+                .to_port(443)
+                .comment("preset:td:https")
+                .build()
+                .expect("preset rule should validate"),
+        ],
+    }
+}
+
+/// Monitoring private preset: allow SSH + monitoring ports from trusted CIDR only.
+///
+/// Prometheus (9090), Grafana (3000), and Node Exporter (9100) are restricted
+/// to a trusted CIDR. SSH is rate-limited from anywhere.
+pub fn monitoring_private(trusted_cidr: &str) -> Preset {
+    let net = trusted_cidr
+        .parse::<ipnet::IpNet>()
+        .expect("invalid trusted CIDR");
+
+    Preset {
+        id: "monitoring-private",
+        name: "Monitoring Server (Private)",
+        description: format!(
+            "Allow SSH with rate limiting, and Prometheus/Grafana/Node Exporter \
+             only from trusted CIDR {trusted_cidr}."
+        ),
+        rules: vec![
+            RuleSpec::builder(Action::Limit)
+                .direction(Direction::In)
+                .proto(Protocol::Tcp)
+                .to_port(22)
+                .comment("preset:mon-pvt:ssh")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .from(Address::Net(net))
+                .proto(Protocol::Tcp)
+                .to_port(3000)
+                .comment("preset:mon-pvt:grafana")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .from(Address::Net(net))
+                .proto(Protocol::Tcp)
+                .to_port(9090)
+                .comment("preset:mon-pvt:prometheus")
+                .build()
+                .expect("preset rule should validate"),
+            RuleSpec::builder(Action::Allow)
+                .direction(Direction::In)
+                .from(Address::Net(net))
+                .proto(Protocol::Tcp)
+                .to_port(9100)
+                .comment("preset:mon-pvt:node-exporter")
+                .build()
+                .expect("preset rule should validate"),
+        ],
+    }
+}
+
 /// List all available presets with their default parameters.
 pub fn all_default_presets() -> Vec<Preset> {
     vec![
@@ -229,6 +459,11 @@ pub fn all_default_presets() -> Vec<Preset> {
         wireguard(),
         database(5432), // PostgreSQL default
         monitoring(),
+        tailscale_interface(),
+        wireguard_interface(),
+        cloudflare_allowlist(),
+        traefik_dokploy(),
+        monitoring_private("10.0.0.0/8"),
     ]
 }
 

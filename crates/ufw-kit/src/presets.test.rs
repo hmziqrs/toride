@@ -98,9 +98,9 @@ fn monitoring_preset_has_four_rules() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn all_default_presets_returns_seven_presets() {
+fn all_default_presets_returns_twelve_presets() {
     let presets = all_default_presets();
-    assert_eq!(presets.len(), 7);
+    assert_eq!(presets.len(), 12);
 }
 
 // ---------------------------------------------------------------------------
@@ -153,4 +153,109 @@ fn database_preset_with_custom_port_validates() {
     for rule in &p.rules {
         assert!(rule.validate().is_ok());
     }
+}
+
+// ---------------------------------------------------------------------------
+// tailscale_interface preset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tailscale_interface_preset_has_ssh_scoped_to_iface() {
+    let p = tailscale_interface();
+    assert_eq!(p.id, "tailscale-interface");
+    assert_eq!(p.rules.len(), 2);
+
+    let ssh_rule = p
+        .rules
+        .iter()
+        .find(|r| matches!(r.to_port, PortSpec::Single(22)))
+        .expect("should have SSH rule");
+    assert_eq!(
+        ssh_rule.interface.as_deref(),
+        Some("tailscale0"),
+        "SSH should be scoped to tailscale0 interface"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// wireguard_interface preset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wireguard_interface_preset_has_ssh_scoped_to_wg0() {
+    let p = wireguard_interface();
+    assert_eq!(p.id, "wireguard-interface");
+    assert_eq!(p.rules.len(), 2);
+
+    let ssh_rule = p
+        .rules
+        .iter()
+        .find(|r| matches!(r.to_port, PortSpec::Single(22)))
+        .expect("should have SSH rule");
+    assert_eq!(
+        ssh_rule.interface.as_deref(),
+        Some("wg0"),
+        "SSH should be scoped to wg0 interface"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// cloudflare_allowlist preset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cloudflare_allowlist_has_ssh_and_http_per_cf_range() {
+    let p = cloudflare_allowlist();
+    assert_eq!(p.id, "cloudflare-allowlist");
+
+    // 1 SSH rule + 15 CF ranges * 2 (http + https) = 31 rules
+    assert_eq!(p.rules.len(), 31);
+
+    // First rule should be SSH
+    assert!(matches!(p.rules[0].action, Action::Limit));
+}
+
+// ---------------------------------------------------------------------------
+// traefik_dokploy preset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn traefik_dokploy_has_ssh_http_https() {
+    let p = traefik_dokploy();
+    assert_eq!(p.id, "traefik-dokploy");
+    assert_eq!(p.rules.len(), 3); // SSH + HTTP + HTTPS
+
+    let ports: Vec<u16> = p
+        .rules
+        .iter()
+        .filter_map(|r| match r.to_port {
+            PortSpec::Single(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert!(ports.contains(&22));
+    assert!(ports.contains(&80));
+    assert!(ports.contains(&443));
+}
+
+// ---------------------------------------------------------------------------
+// monitoring_private preset
+// ---------------------------------------------------------------------------
+
+#[test]
+fn monitoring_private_restricts_to_trusted_cidr() {
+    let p = monitoring_private("10.0.0.0/8");
+    assert_eq!(p.id, "monitoring-private");
+    assert_eq!(p.rules.len(), 4); // SSH + Grafana + Prometheus + Node Exporter
+
+    // Monitoring rules should have source address restrictions
+    let grafana = p
+        .rules
+        .iter()
+        .find(|r| matches!(r.to_port, PortSpec::Single(3000)))
+        .expect("should have Grafana rule");
+    assert!(
+        !matches!(grafana.from_addr, crate::spec::Address::Any),
+        "Grafana should be restricted to trusted CIDR"
+    );
 }

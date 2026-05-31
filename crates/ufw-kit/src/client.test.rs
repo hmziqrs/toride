@@ -378,7 +378,7 @@ fn find_ufw_should_error_when_not_found() {
     struct NoBinaryRunner;
     impl CommandRunner for NoBinaryRunner {
         fn run(&self, _: &CommandSpec) -> Result<CommandResult> {
-            unimplemented!()
+            panic!("NoBinaryRunner::run should not be called")
         }
         fn binary_exists(&self, _: &str) -> bool {
             false

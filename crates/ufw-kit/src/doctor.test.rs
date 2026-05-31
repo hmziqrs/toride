@@ -283,7 +283,7 @@ fn check_binaries_should_handle_missing_ufw() {
     struct NoBinaryRunner;
     impl crate::command::CommandRunner for NoBinaryRunner {
         fn run(&self, _: &CommandSpec) -> crate::error::Result<CommandResult> {
-            unimplemented!()
+            panic!("NoBinaryRunner::run should not be called")
         }
         fn binary_exists(&self, _: &str) -> bool {
             false

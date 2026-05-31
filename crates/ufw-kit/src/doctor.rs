@@ -23,6 +23,11 @@ pub fn doctor(ufw: &Ufw, scope: DoctorScope) -> Result<Vec<Finding>> {
             findings.extend(check_logging(ufw));
             findings.extend(check_app_profiles(ufw));
             findings.extend(check_permissions(ufw));
+            findings.extend(check_docker(ufw));
+            findings.extend(check_reverse_proxy(ufw));
+            findings.extend(check_routing(ufw));
+            #[cfg(feature = "framework")]
+            findings.extend(check_framework(ufw));
         }
         DoctorScope::Binaries => findings.extend(check_binaries(ufw)),
         DoctorScope::Service => findings.extend(check_service(ufw)),
@@ -33,6 +38,8 @@ pub fn doctor(ufw: &Ufw, scope: DoctorScope) -> Result<Vec<Finding>> {
         DoctorScope::Logging => findings.extend(check_logging(ufw)),
         DoctorScope::AppProfiles => findings.extend(check_app_profiles(ufw)),
         DoctorScope::Permissions => findings.extend(check_permissions(ufw)),
+        DoctorScope::Docker => findings.extend(check_docker(ufw)),
+        DoctorScope::Routing => findings.extend(check_routing(ufw)),
     }
 
     Ok(findings)
@@ -656,6 +663,19 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
 fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
+    // Check if running over an active SSH connection
+    if is_active_ssh_session() {
+        findings.push(Finding {
+            id: "ssh:active-session",
+            severity: Severity::Info,
+            title: "Active SSH session detected".into(),
+            detail: "An active SSH connection was detected (SSH_CONNECTION env var is set). \
+                     Be careful when modifying firewall rules — an incorrect change could \
+                     lock you out of this session.".into(),
+            fix: None,
+        });
+    }
+
     if let Ok(status) = ufw.status() {
         let ssh_rules: Vec<_> = status.rules.iter().filter(|rule| {
             let raw = rule.raw.to_lowercase();
@@ -1186,6 +1206,51 @@ fn read_ipv6_enabled_from_config() -> bool {
     read_default_ufw_config().ipv6.unwrap_or(false)
 }
 
+/// Check if the current process is running over an SSH connection.
+///
+/// Detects SSH by checking the `SSH_CONNECTION` environment variable,
+/// which is set by the SSH daemon for interactive sessions.
+fn is_active_ssh_session() -> bool {
+    std::env::var("SSH_CONNECTION").is_ok()
+}
+
+/// Detect SSH listening port from `ss` output or common defaults.
+///
+/// Returns a list of ports that SSH appears to be listening on.
+#[allow(dead_code)]
+fn detect_ssh_ports(runner: &dyn crate::command::CommandRunner) -> Vec<u16> {
+    let mut ports = vec![22]; // Default
+
+    let spec = crate::spec::CommandSpec {
+        program: "ss".into(),
+        args: vec!["-tlnp".into()],
+        timeout: Some(std::time::Duration::from_secs(5)),
+        requires_root: false,
+        force_c_locale: true,
+        redact_logs: false,
+    };
+
+    if let Ok(result) = runner.run(&spec) {
+        if result.exit_code == Some(0) {
+            for line in result.stdout.lines() {
+                let lower = line.to_ascii_lowercase();
+                if lower.contains("ssh") {
+                    // Extract port from address like "0.0.0.0:22" or "[::]:22"
+                    if let Some(addr_part) = lower.rsplit(':').next() {
+                        if let Ok(port) = addr_part.trim().parse::<u16>() {
+                            if !ports.contains(&port) {
+                                ports.push(port);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ports
+}
+
 /// Read and parse /etc/default/ufw using the config module.
 fn read_default_ufw_config() -> crate::spec::UfwConfig {
     std::fs::read_to_string("/etc/default/ufw")
@@ -1597,6 +1662,202 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
                 });
             }
         }
+    }
+}
+
+// ── Docker checks ──────────────────────────────────────────────────
+
+/// Check Docker-related firewall issues.
+fn check_docker(ufw: &Ufw) -> Vec<Finding> {
+    crate::docker::check_docker(ufw.runner())
+}
+
+// ── Reverse proxy checks ───────────────────────────────────────────
+
+/// Check reverse proxy configuration.
+fn check_reverse_proxy(ufw: &Ufw) -> Vec<Finding> {
+    crate::docker::check_reverse_proxy(ufw.runner())
+}
+
+// ── Routing/forwarding checks ──────────────────────────────────────
+
+/// Check routing/forwarding configuration.
+fn check_routing(ufw: &Ufw) -> Vec<Finding> {
+    crate::docker::check_routing(ufw.runner())
+}
+
+// ── Framework checks ───────────────────────────────────────────────
+
+/// Check framework files for issues (managed blocks, COMMIT lines, etc.).
+///
+/// Only runs when the `framework` feature is enabled. Validates managed
+/// blocks, COMMIT lines, IPv4/IPv6 separation, and NAT block placement.
+#[cfg(feature = "framework")]
+fn check_framework(ufw: &Ufw) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let paths = crate::paths::UfwPaths::default();
+
+    // Check before.rules
+    check_framework_file(&paths.before_rules, "before.rules", false, &mut findings);
+    // Check after.rules
+    check_framework_file(&paths.after_rules, "after.rules", false, &mut findings);
+
+    // Check IPv6 files if IPv6 is enabled
+    let ipv6_enabled = read_ipv6_enabled_from_config();
+    if ipv6_enabled {
+        check_framework_file(&paths.before6_rules, "before6.rules", true, &mut findings);
+        check_framework_file(&paths.after6_rules, "after6.rules", true, &mut findings);
+    }
+
+    let _ = ufw; // Runner not needed for file checks
+    findings
+}
+
+#[cfg(feature = "framework")]
+#[allow(clippy::too_many_lines)]
+fn check_framework_file(
+    path: &std::path::Path,
+    name: &str,
+    is_ipv6: bool,
+    findings: &mut Vec<Finding>,
+) {
+    let content = match crate::framework::read_framework_file(path) {
+        Ok(c) if c.is_empty() => {
+            findings.push(Finding {
+                id: Box::leak(format!("fw:{name}:empty").into_boxed_str()),
+                severity: Severity::Warning,
+                title: format!("{name} is empty or missing"),
+                detail: format!("Framework file {name} is empty or does not exist."),
+                fix: Some(format!("Restore {name} from a backup or reinstall ufw.")),
+            });
+            return;
+        }
+        Ok(c) => c,
+        Err(e) => {
+            findings.push(Finding {
+                id: Box::leak(format!("fw:{name}:read-error").into_boxed_str()),
+                severity: Severity::Warning,
+                title: format!("Cannot read {name}"),
+                detail: format!("Failed to read {name}: {e}"),
+                fix: None,
+            });
+            return;
+        }
+    };
+
+    // Check for COMMIT lines in *filter and *nat tables
+    if content.contains("*filter") && !content.contains("COMMIT") {
+        findings.push(Finding {
+            id: Box::leak(format!("fw:{name}:no-commit-filter").into_boxed_str()),
+            severity: Severity::Error,
+            title: format!("{name} filter table missing COMMIT"),
+            detail: format!(
+                "{name} has a *filter table but no COMMIT line. \
+                 This will cause iptables-restore to fail."
+            ),
+            fix: Some(format!("Add a COMMIT line at the end of the *filter table in {name}.")),
+        });
+    }
+
+    if content.contains("*nat") && !content.matches("COMMIT").count() >= 2 {
+        // *nat table should have its own COMMIT
+        let has_nat_commit = content
+            .split("*nat")
+            .nth(1)
+            .is_some_and(|after_nat| after_nat.contains("COMMIT"));
+        if !has_nat_commit {
+            findings.push(Finding {
+                id: Box::leak(format!("fw:{name}:no-commit-nat").into_boxed_str()),
+                severity: Severity::Error,
+                title: format!("{name} NAT table missing COMMIT"),
+                detail: format!(
+                    "{name} has a *nat table but no COMMIT line after it. \
+                     This will cause iptables-restore to fail."
+                ),
+                fix: Some(format!(
+                    "Add a COMMIT line at the end of the *nat table in {name}."
+                )),
+            });
+        }
+    }
+
+    // Check for managed blocks
+    let blocks = crate::framework::list_blocks(&content);
+    if !blocks.is_empty() {
+        findings.push(Finding {
+            id: Box::leak(format!("fw:{name}:managed-blocks").into_boxed_str()),
+            severity: Severity::Info,
+            title: format!("{name} has {} managed block(s)", blocks.len()),
+            detail: format!(
+                "Found managed blocks in {name}: {}",
+                blocks.join(", ")
+            ),
+            fix: None,
+        });
+
+        // Check for duplicate block IDs (should never happen, but validate)
+        let mut seen = std::collections::HashSet::new();
+        for block_id in &blocks {
+            if !seen.insert(block_id.clone()) {
+                findings.push(Finding {
+                    id: Box::leak(format!("fw:{name}:duplicate-block").into_boxed_str()),
+                    severity: Severity::Error,
+                    title: format!("Duplicate managed block '{block_id}' in {name}"),
+                    detail: format!(
+                        "Managed block '{block_id}' appears more than once in {name}. \
+                         This indicates corruption or a write race."
+                    ),
+                    fix: Some("Remove the duplicate block and keep only one.".into()),
+                });
+            }
+        }
+    }
+
+    // Check IPv4/IPv6 consistency
+    if !is_ipv6 && content.contains("ip6tables") {
+        findings.push(Finding {
+            id: Box::leak(format!("fw:{name}:ipv6-in-ipv4").into_boxed_str()),
+            severity: Severity::Warning,
+            title: format!("{name} contains ip6tables rules but is an IPv4 file"),
+            detail: format!(
+                "{name} is an IPv4 framework file but contains ip6tables rules. \
+                 These should be in the corresponding IPv6 file (before6.rules/after6.rules)."
+            ),
+            fix: Some("Move ip6tables rules to the IPv6 framework file.".into()),
+        });
+    }
+
+    // NAT block placement check
+    if content.contains("*nat") {
+        let lines: Vec<&str> = content.lines().collect();
+        let nat_start = lines.iter().position(|l| l.trim() == "*nat");
+        let commit_after_nat = nat_start.is_some_and(|start| {
+            lines[start..].iter().any(|l| l.trim() == "COMMIT")
+        });
+
+        if commit_after_nat {
+            findings.push(Finding {
+                id: Box::leak(format!("fw:{name}:nat-block").into_boxed_str()),
+                severity: Severity::Info,
+                title: format!("{name} has a NAT table"),
+                detail: format!(
+                    "{name} contains a *nat table. Ensure the NAT rules are correct \
+                     and DEFAULT_FORWARD_POLICY is appropriate."
+                ),
+                fix: None,
+            });
+        }
+    }
+
+    // Log a generic OK if no issues
+    if !findings.iter().any(|f| f.id.starts_with("fw:") && f.severity >= Severity::Warning) {
+        findings.push(Finding {
+            id: Box::leak(format!("fw:{name}:ok").into_boxed_str()),
+            severity: Severity::Ok,
+            title: format!("{name} looks valid"),
+            detail: format!("Framework file {name} passed all validation checks."),
+            fix: None,
+        });
     }
 }
 

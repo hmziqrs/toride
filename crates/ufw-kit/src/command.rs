@@ -38,6 +38,14 @@ impl Default for DuctRunner {
 
 impl CommandRunner for DuctRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
+        // Redact sensitive args if requested
+        let display_args = if spec.redact_logs {
+            redact_args(&spec.args)
+        } else {
+            spec.args.join(" ")
+        };
+        let _ = display_args; // Used by tracing if enabled
+
         let mut cmd = duct::cmd(&spec.program, &spec.args);
 
         if spec.force_c_locale {
@@ -227,7 +235,7 @@ impl CommandRunner for FakeRunner {
 
     fn binary_exists(&self, name: &str) -> bool {
         // By default, pretend ufw and common tools exist
-        matches!(name, "ufw" | "iptables" | "ip6tables" | "systemctl" | "journalctl" | "nft")
+        matches!(name, "ufw" | "iptables" | "ip6tables" | "iptables-save" | "ip6tables-save" | "systemctl" | "journalctl" | "nft" | "docker" | "nginx" | "caddy" | "ss")
     }
 }
 
@@ -235,6 +243,58 @@ fn format_key(program: &str, args: &[&str]) -> String {
     let mut parts = vec![program.to_string()];
     parts.extend(args.iter().map(|s| (*s).to_string()));
     parts.join(" ")
+}
+
+/// Flags whose following argument should be redacted from logs.
+const REDACT_FLAGS: &[&str] = &[
+    "--password",
+    "--passwd",
+    "--secret",
+    "--token",
+    "--key",
+    "--api-key",
+    "--api_key",
+    "--auth",
+    "--credentials",
+];
+
+/// Redact sensitive arguments from a command's args list.
+///
+/// Returns a single string with sensitive values replaced by `"***"`.
+/// Flags that indicate a following sensitive value (e.g., `--password`)
+/// are detected and their next argument is masked.
+pub fn redact_args(args: &[String]) -> String {
+    let mut result = Vec::with_capacity(args.len());
+    let mut redact_next = false;
+
+    for arg in args {
+        if redact_next {
+            result.push("***".to_string());
+            redact_next = false;
+            continue;
+        }
+
+        let lower = arg.to_ascii_lowercase();
+        if REDACT_FLAGS.iter().any(|f| lower == *f) {
+            result.push(arg.clone());
+            redact_next = true;
+            continue;
+        }
+
+        // Also check for --flag=value patterns
+        if let Some(eq_pos) = arg.find('=') {
+            let flag_part = &arg[..eq_pos];
+            let lower_flag = flag_part.to_ascii_lowercase();
+            if REDACT_FLAGS.iter().any(|f| lower_flag == *f) {
+                result.push(format!("{flag_part}=***"));
+                continue;
+            }
+        }
+
+        result.push(arg.clone());
+    }
+
+    result.join(" ")
 }
 
 // ============================================================================

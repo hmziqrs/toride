@@ -3,7 +3,7 @@
 //! These tests verify that the output of key functions remains stable
 //! across code changes. Run `cargo insta review` to accept new snapshots.
 
-use crate::report::render_findings;
+use crate::report::{render_findings, render_findings_json, render_findings_markdown};
 use crate::rule::*;
 use crate::spec::*;
 use crate::status::*;
@@ -213,4 +213,66 @@ fn snapshot_doctor_report() {
     ];
 
     insta::assert_snapshot!("doctor_report", render_findings(&findings));
+}
+
+// ---------------------------------------------------------------------------
+// JSON and Markdown report snapshots
+// ---------------------------------------------------------------------------
+
+#[test]
+fn snapshot_doctor_report_json() {
+    let findings = vec![
+        Finding {
+            id: "bin:ufw:exists",
+            severity: Severity::Ok,
+            title: "UFW binary found".into(),
+            detail: "The ufw binary is available.".into(),
+            fix: None,
+        },
+        Finding {
+            id: "ssh:no-rule",
+            severity: Severity::Critical,
+            title: "No SSH allow rule found".into(),
+            detail: "UFW is active but no SSH allow rule exists.".into(),
+            fix: Some("Add SSH allow rule: ufw allow 22/tcp".into()),
+        },
+        Finding {
+            id: "rule:dangerous:5432",
+            severity: Severity::Warning,
+            title: "Port 5432 (Postgres) is exposed".into(),
+            detail: "Rule exposes port 5432.".into(),
+            fix: Some("Restrict access to trusted IPs only.".into()),
+        },
+    ];
+
+    insta::assert_snapshot!("doctor_report_json", render_findings_json(&findings));
+}
+
+#[test]
+fn snapshot_doctor_report_markdown() {
+    let findings = vec![
+        Finding {
+            id: "bin:ufw:exists",
+            severity: Severity::Ok,
+            title: "UFW binary found".into(),
+            detail: "The ufw binary is available.".into(),
+            fix: None,
+        },
+        Finding {
+            id: "ssh:no-rule",
+            severity: Severity::Critical,
+            title: "No SSH allow rule found".into(),
+            detail: "UFW is active but no SSH allow rule exists.".into(),
+            fix: Some("Add SSH allow rule: ufw allow 22/tcp".into()),
+        },
+        Finding {
+            id: "rule:dangerous:5432",
+            severity: Severity::Warning,
+            title: "Port 5432 (Postgres) is exposed".into(),
+            detail: "Rule exposes port 5432.".into(),
+            fix: Some("Restrict access to trusted IPs only.".into()),
+        },
+    ];
+
+    insta::assert_snapshot!("doctor_report_markdown", render_findings_markdown(&findings));
 }

@@ -5,4 +5,4 @@ edition = "2024"
 description = "Test utilities for ufw-kit"
 
 [dependencies]
-ufw-kit = { path = "../ufw-kit" }
+ufw-kit = { path = "../ufw-kit", features = ["client", "doctor", "app-profile", "framework", "service", "firewall-nft", "firewall-iptables"] }
