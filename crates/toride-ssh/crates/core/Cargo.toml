@@ -1,0 +1,25 @@
+[package]
+name = "toride-ssh-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
+tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+which = { workspace = true }
+async-trait = { workspace = true }
+duct = "1"
+libc = "0.2"
+base64 = "0.22"
+gethostname = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

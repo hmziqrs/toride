@@ -1,0 +1,25 @@
+[package]
+name = "toride-ssh-doctor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+toride-ssh-core = { path = "../core" }
+toride-ssh-config = { path = "../config" }
+tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+dirs = { workspace = true }
+duct = "1"
+libc = "0.2"
+base64 = "0.22"
+ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

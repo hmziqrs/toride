@@ -1,0 +1,20 @@
+[package]
+name = "toride-ssh-config"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+toride-ssh-core = { path = "../core" }
+tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+ssh2-config-rs = "0.7"
+dirs = { workspace = true }
+gethostname = "0.5"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
