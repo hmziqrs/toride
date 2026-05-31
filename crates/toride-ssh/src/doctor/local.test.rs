@@ -1670,3 +1670,462 @@ Host mac-host
         assert!(matches.iter().all(|d| d.severity == Severity::Warning));
     }
 }
+
+// ---------------------------------------------------------------------------
+// GssapiConfigCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn gssapi_config_no_directives() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host example\n    HostName example.com\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert_eq!(matches.len(), 1, "expected exactly one diagnostic");
+    assert_eq!(matches[0].severity, Severity::Ok);
+    assert!(
+        matches[0].message.contains("No GSSAPI directives"),
+        "message should mention no GSSAPI directives, got: {}",
+        matches[0].message,
+    );
+}
+
+#[tokio::test]
+async fn gssapi_config_no_config_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert!(!matches.is_empty());
+    assert!(matches.iter().all(|d| d.severity == Severity::Info));
+}
+
+#[tokio::test]
+async fn gssapi_config_authentication_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host kerb-host
+    HostName kdc.example.com
+    GSSAPIAuthentication yes
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Info
+            && d.message.contains("GSSAPIAuthentication yes")),
+        "expected Info diagnostic listing GSSAPIAuthentication yes, got: {:?}",
+        matches,
+    );
+}
+
+#[tokio::test]
+async fn gssapi_config_all_directives_in_host_block() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host kerb-host
+    HostName kdc.example.com
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials yes
+    GSSAPIServerIdentity example.com
+    GSSAPIClientIdentity alice@EXAMPLE.COM
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    let info = matches.iter().find(|d| d.severity == Severity::Info).unwrap();
+    assert!(info.message.contains("GSSAPIAuthentication yes"));
+    assert!(info.message.contains("GSSAPIDelegateCredentials yes"));
+    assert!(info.message.contains("GSSAPIServerIdentity example.com"));
+    assert!(info.message.contains("GSSAPIClientIdentity alice@EXAMPLE.COM"));
+    assert!(info.message.contains("Host kerb-host"), "should mention the Host block context");
+}
+
+#[tokio::test]
+async fn gssapi_config_top_level_directive() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "GSSAPIAuthentication yes\nHost example\n    HostName example.com\n",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    let info = matches.iter().find(|d| d.severity == Severity::Info).unwrap();
+    assert!(info.message.contains("top-level"), "should report top-level context");
+}
+
+#[tokio::test]
+async fn gssapi_config_warns_gssapi_only_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host kerb-only
+    HostName kdc.example.com
+    GSSAPIAuthentication yes
+    PreferredAuthentications gssapi-with-mic
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert!(
+        matches.iter().any(|d| d.severity == Severity::Warning
+            && d.message.contains("publickey authentication is excluded")),
+        "should warn when GSSAPI is the only authentication method, got: {:?}",
+        matches,
+    );
+}
+
+#[tokio::test]
+async fn gssapi_config_no_warning_when_pubkey_included() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host kerb-plus-pubkey
+    HostName kdc.example.com
+    GSSAPIAuthentication yes
+    PreferredAuthentications gssapi-with-mic,publickey
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert!(
+        !matches.iter().any(|d| d.severity == Severity::Warning),
+        "should not warn when publickey is included in PreferredAuthentications, got: {:?}",
+        matches,
+    );
+}
+
+#[tokio::test]
+async fn gssapi_config_no_warning_when_gssapi_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "\
+Host kerb-off
+    HostName kdc.example.com
+    GSSAPIAuthentication no
+    PreferredAuthentications gssapi-with-mic
+",
+    )
+    .unwrap();
+
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "gssapi_config");
+    assert!(
+        !matches.iter().any(|d| d.severity == Severity::Warning),
+        "should not warn when GSSAPIAuthentication is no, got: {:?}",
+        matches,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NfsHomeCheck
+// ---------------------------------------------------------------------------
+
+/// Run `NfsHomeCheck` directly against the current environment.
+async fn run_nfs_home_check() -> Vec<crate::types::Diagnostic> {
+    NfsHomeCheck.run().await.unwrap()
+}
+
+#[tokio::test]
+async fn nfs_home_returns_valid_diagnostic() {
+    let diags = run_nfs_home_check().await;
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].id, "nfs_home");
+    assert_eq!(diags[0].module, "local");
+
+    if cfg!(target_os = "linux") {
+        // On Linux the check reads /proc/mounts. The severity depends on
+        // whether the home directory is actually on NFS. Accept any valid
+        // severity.
+        assert!(
+            matches!(
+                diags[0].severity,
+                Severity::Ok | Severity::Warning | Severity::Info
+            ),
+            "unexpected severity on Linux: {:?}",
+            diags[0].severity,
+        );
+    } else {
+        // On non-Linux the check should report Info (not applicable).
+        assert_eq!(
+            diags[0].severity,
+            Severity::Info,
+            "expected Info on non-Linux, got: {:?} — {}",
+            diags[0].severity,
+            diags[0].message,
+        );
+        assert!(
+            diags[0].message.contains("not applicable"),
+            "expected 'not applicable' in message, got: {}",
+            diags[0].message,
+        );
+    }
+}
+
+#[tokio::test]
+async fn nfs_home_info_when_home_unknown() {
+    // Save and remove $HOME so dirs::home_dir() returns None (or falls back
+    // to the passwd database, which may still succeed).
+    let orig = std::env::var("HOME").ok();
+    unsafe {
+        std::env::remove_var("HOME");
+    }
+
+    let diags = run_nfs_home_check().await;
+
+    if let Some(ref val) = orig {
+        unsafe {
+            std::env::set_var("HOME", val);
+        }
+    }
+
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].id, "nfs_home");
+    // Either Info (no home) or the normal Linux/non-Linux result (passwd fallback).
+    assert!(
+        matches!(
+            diags[0].severity,
+            Severity::Ok | Severity::Warning | Severity::Info
+        ),
+        "unexpected severity: {:?}",
+        diags[0].severity,
+    );
+}
+
+#[tokio::test]
+async fn nfs_home_registered_in_run_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "nfs_home");
+    assert!(
+        !matches.is_empty(),
+        "nfs_home check should be registered in run_all"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SELinuxContextCheck
+// ---------------------------------------------------------------------------
+
+/// Run `SELinuxContextCheck` directly against the given SSH directory.
+async fn run_selinux_context_check(
+    ssh_dir: &std::path::Path,
+) -> Vec<crate::types::Diagnostic> {
+    let paths = SshPaths::with_dir(ssh_dir);
+    let check = SELinuxContextCheck { paths: &paths };
+    check.run().await.unwrap()
+}
+
+#[tokio::test]
+async fn selinux_context_skipped_on_non_linux() {
+    if cfg!(target_os = "linux") {
+        // On Linux the check actually runs restorecon; accept any outcome.
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_selinux_context_check(dir.path()).await;
+    // On non-Linux, the check returns no diagnostics (skipped entirely).
+    assert!(
+        diags.is_empty(),
+        "SELinux check should produce no diagnostics on non-Linux, got: {:?}",
+        diags,
+    );
+}
+
+#[tokio::test]
+async fn selinux_context_registered_in_run_all() {
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+
+    if cfg!(target_os = "linux") {
+        // On Linux the check runs and produces a diagnostic.
+        let matches = find(&diags, "selinux_context");
+        assert!(
+            !matches.is_empty(),
+            "selinux_context check should be registered in run_all on Linux"
+        );
+    } else {
+        // On non-Linux the check returns empty diagnostics (skipped).
+        let matches = find(&diags, "selinux_context");
+        assert!(
+            matches.is_empty(),
+            "selinux_context check should produce no diagnostics on non-Linux"
+        );
+    }
+}
+
+#[tokio::test]
+async fn selinux_context_returns_valid_severity_on_linux() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_selinux_context_check(dir.path()).await;
+    assert_eq!(diags.len(), 1);
+    assert_eq!(diags[0].id, "selinux_context");
+    assert_eq!(diags[0].module, "local");
+
+    // restorecon may or may not be available on the test system.
+    match diags[0].severity {
+        Severity::Info => {
+            // restorecon not available or SELinux not enabled.
+            assert!(
+                diags[0].message.contains("restorecon")
+                    || diags[0].message.contains("SELinux"),
+                "Info message should mention restorecon or SELinux, got: {}",
+                diags[0].message,
+            );
+        }
+        Severity::Ok => {
+            assert!(
+                diags[0].message.contains("correct"),
+                "Ok message should say contexts are correct, got: {}",
+                diags[0].message,
+            );
+            assert!(diags[0].hint.is_none());
+        }
+        Severity::Warning => {
+            assert!(
+                diags[0].message.contains("fixing"),
+                "Warning message should mention fixing, got: {}",
+                diags[0].message,
+            );
+            assert!(
+                diags[0].hint.is_some(),
+                "Warning should include a remediation hint"
+            );
+            let hint = diags[0].hint.as_ref().unwrap();
+            assert!(
+                hint.contains("restorecon -Rv"),
+                "hint should suggest restorecon -Rv, got: {}",
+                hint,
+            );
+        }
+        other => panic!("unexpected severity: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VerifyHostKeyDnsCheck
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn verify_host_key_dns_info_when_no_config() {
+    let dir = tempfile::tempdir().unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(!matches.is_empty());
+    assert!(
+        matches.iter().all(|d| d.severity == Severity::Info),
+        "expected Info when config is absent, got: {:?}",
+        matches
+    );
+    // When no config file exists, the check reports that it cannot check.
+    assert!(
+        matches[0].message.contains("does not exist"),
+        "expected 'does not exist' in message, got: {}",
+        matches[0].message,
+    );
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_unknown_when_config_present_but_no_directive() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "Host example.com\n    User alice\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(!matches.is_empty());
+    assert!(
+        matches[0].message.contains("not configured"),
+        "expected 'not configured' in message, got: {}",
+        matches[0].message,
+    );
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS yes\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(!matches.is_empty());
+    // At least one diagnostic should say VerifyHostKeyDNS is enabled.
+    assert!(
+        matches.iter().any(|d| d.message.contains("set to 'yes'")),
+        "expected 'set to yes' in diagnostics, got: {:?}",
+        matches
+    );
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_disabled() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS no\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(!matches.is_empty());
+    assert!(
+        matches[0].message.contains("set to 'no'"),
+        "expected 'set to no' in message, got: {}",
+        matches[0].message,
+    );
+    assert_eq!(matches[0].severity, Severity::Ok);
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_ask() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS ask\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    assert!(!matches.is_empty());
+    assert!(
+        matches[0].message.contains("ask"),
+        "expected 'ask' in message, got: {}",
+        matches[0].message,
+    );
+}
+
+#[tokio::test]
+async fn verify_host_key_dns_enabled_reports_dns_check() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS yes\n").unwrap();
+    let diags = run_checks_with_dir(dir.path()).await;
+    let matches = find(&diags, "verify_host_key_dns");
+    // When enabled, the check should produce multiple diagnostics:
+    // one for the mode, one for DNS availability, and one SSHFP warning.
+    assert!(
+        matches.len() >= 2,
+        "expected at least 2 diagnostics when enabled, got {}",
+        matches.len()
+    );
+    // Should include an SSHFP hint.
+    assert!(
+        matches.iter().any(|d| d.message.contains("SSHFP")),
+        "expected an SSHFP-related diagnostic, got: {:?}",
+        matches
+    );
+}

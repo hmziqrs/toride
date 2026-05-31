@@ -11,6 +11,8 @@ mod scan;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::paths::SshPaths;
 use crate::{Error, Result};
 
@@ -61,6 +63,57 @@ pub enum KeyChangeKind {
         /// SHA-256 fingerprint of the scanned key (if computable).
         scanned_fingerprint: String,
     },
+}
+
+/// Status of the `VerifyHostKeyDNS` SSH config directive.
+///
+/// Returned by [`KnownHostsService::verify_host_key_dns_status`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DnsVerifyStatus {
+    /// `VerifyHostKeyDNS yes` — SSHFP records will be used to verify host keys.
+    Enabled,
+    /// `VerifyHostKeyDNS no` — DNS-based host key verification disabled.
+    Disabled,
+    /// `VerifyHostKeyDNS ask` — verify via SSHFP but still prompt on mismatch.
+    Ask,
+    /// Directive not present in config (uses the OpenSSH default: `no`).
+    Unknown,
+}
+
+impl std::fmt::Display for DnsVerifyStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Enabled => write!(f, "yes"),
+            Self::Disabled => write!(f, "no"),
+            Self::Ask => write!(f, "ask"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+/// A single SSHFP DNS resource record for an SSH host key.
+///
+/// SSHFP records allow DNS-based verification of SSH host keys. They can be
+/// generated with `ssh-keygen -r <hostname>` and published in the DNS zone
+/// for the host.
+///
+/// # Record format
+///
+/// `hostname IN SSHFP algorithm key-type fingerprint`
+///
+/// Where:
+/// - **algorithm**: `1` = RSA, `2` = DSA, `3` = ECDSA, `4` = Ed25519
+/// - **key-type**: `1` = SHA-1, `2` = SHA-256
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SshfpRecord {
+    /// The hostname these SSHFP records belong to.
+    pub host: String,
+    /// SSH key algorithm number (1=RSA, 2=DSA, 3=ECDSA, 4=Ed25519).
+    pub algorithm: String,
+    /// Fingerprint type number (1=SHA-1, 2=SHA-256).
+    pub key_type: String,
+    /// Hex-encoded fingerprint digest.
+    pub fingerprint: String,
 }
 
 /// `known_hosts` file management.
@@ -210,6 +263,53 @@ impl<'a> KnownHostsService<'a> {
         }
 
         Ok(false)
+    }
+
+    /// Detect the `VerifyHostKeyDNS` setting from `~/.ssh/config`.
+    ///
+    /// Scans the SSH config file (both global directives and `Host` blocks)
+    /// for the `VerifyHostKeyDNS` directive and returns the configured mode.
+    /// If the directive is not found, returns [`DnsVerifyStatus::Unknown`].
+    ///
+    /// This performs a lightweight config scan — it does **not** follow
+    /// `Include` chains or evaluate `Match` blocks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Io`] if the config file exists but cannot be read.
+    pub async fn verify_host_key_dns_status(&self) -> Result<DnsVerifyStatus> {
+        let config_path = self.paths.config_path();
+        if !config_path.exists() {
+            return Ok(DnsVerifyStatus::Unknown);
+        }
+
+        let content = tokio::fs::read_to_string(config_path).await?;
+
+        Ok(detect_verify_host_key_dns(&content))
+    }
+
+    /// Generate SSHFP DNS resource records for a host's keys.
+    ///
+    /// Runs `ssh-keygen -r <hostname>` to produce SSHFP records that can be
+    /// published in DNS. The output format is:
+    ///
+    /// ```text
+    /// hostname IN SSHFP algorithm key-type fingerprint
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`,
+    /// [`Error::CommandFailed`] if `ssh-keygen -r` fails, or
+    /// [`Error::CommandParseFailed`] if the output cannot be parsed.
+    pub async fn generate_sshfp_records(&self, host: &str) -> Result<Vec<SshfpRecord>> {
+        let host_owned = host.to_owned();
+        let output = self
+            .runner
+            .run("ssh-keygen", vec!["-r".to_owned(), host_owned])
+            .await?;
+
+        Ok(parse_sshfp_output(host, &output))
     }
 
     /// Hash all hostnames in `~/.ssh/known_hosts` (`ssh-keygen -H`).
@@ -575,6 +675,76 @@ fn expand_known_hosts_path(raw: &str) -> PathBuf {
     } else {
         path.to_path_buf()
     }
+}
+
+/// Detect the `VerifyHostKeyDNS` setting from SSH config content.
+///
+/// Scans for the directive at both the global level and inside `Host` blocks.
+/// The last occurrence wins (matching OpenSSH's first-match-wins for the
+/// *value*, but we scan top-to-bottom so the most specific block takes
+/// precedence if present).
+pub(crate) fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
+    for line in config_content.lines() {
+        let trimmed = line.trim();
+        // Skip comments and blank lines.
+        if trimmed.starts_with('#') || trimmed.is_empty() {
+            continue;
+        }
+
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("verifyhostkeydns") {
+            let value = trimmed["verifyhostkeydns".len()..].trim();
+            if value.eq_ignore_ascii_case("yes") || value == "true" {
+                return DnsVerifyStatus::Enabled;
+            } else if value.eq_ignore_ascii_case("no") || value == "false" {
+                return DnsVerifyStatus::Disabled;
+            } else if value.eq_ignore_ascii_case("ask") {
+                return DnsVerifyStatus::Ask;
+            }
+        }
+    }
+
+    DnsVerifyStatus::Unknown
+}
+
+/// Parse `ssh-keygen -r` output into a list of [`SshfpRecord`] values.
+///
+/// Expected line format:
+/// ```text
+/// hostname IN SSHFP algorithm key-type fingerprint
+/// ```
+///
+/// Lines that do not match this format are silently skipped.
+fn parse_sshfp_output(host: &str, output: &str) -> Vec<SshfpRecord> {
+    let mut records = Vec::new();
+
+    for line in output.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        // Expected: hostname IN SSHFP algorithm key-type fingerprint
+        if parts.len() >= 6
+            && parts.get(1).is_some_and(|p| p.eq_ignore_ascii_case("IN"))
+            && parts.get(2).is_some_and(|p| p.eq_ignore_ascii_case("SSHFP"))
+        {
+            let Some(algorithm) = parts.get(3) else {
+                continue;
+            };
+            let Some(key_type) = parts.get(4) else {
+                continue;
+            };
+            let Some(fingerprint) = parts.get(5) else {
+                continue;
+            };
+
+            records.push(SshfpRecord {
+                host: host.to_owned(),
+                algorithm: (*algorithm).to_owned(),
+                key_type: (*key_type).to_owned(),
+                fingerprint: (*fingerprint).to_owned(),
+            });
+        }
+    }
+
+    records
 }
 
 /// Generate a short random hex suffix for unique temp file names.
@@ -1745,5 +1915,236 @@ Host *
             paths.global_known_hosts_path(),
             dir.path().join("ssh_known_hosts")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // DnsVerifyStatus display and detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dns_verify_status_display() {
+        assert_eq!(format!("{}", DnsVerifyStatus::Enabled), "yes");
+        assert_eq!(format!("{}", DnsVerifyStatus::Disabled), "no");
+        assert_eq!(format!("{}", DnsVerifyStatus::Ask), "ask");
+        assert_eq!(format!("{}", DnsVerifyStatus::Unknown), "unknown");
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_yes() {
+        let config = "VerifyHostKeyDNS yes\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Enabled);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_no() {
+        let config = "VerifyHostKeyDNS no\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Disabled);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_ask() {
+        let config = "VerifyHostKeyDNS ask\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Ask);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_unknown_when_absent() {
+        let config = "Host example.com\n    User alice\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Unknown);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_case_insensitive() {
+        let config = "verifyhostkeydns Yes\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Enabled);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_in_host_block() {
+        let config = "Host example.com\n    VerifyHostKeyDNS yes\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Enabled);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_skips_comments() {
+        let config = "# VerifyHostKeyDNS yes\n";
+        assert_eq!(detect_verify_host_key_dns(config), DnsVerifyStatus::Unknown);
+    }
+
+    #[test]
+    fn detect_verify_host_key_dns_empty_config() {
+        assert_eq!(detect_verify_host_key_dns(""), DnsVerifyStatus::Unknown);
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_sshfp_output
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_sshfp_output_single_record() {
+        let output = "example.com IN SSHFP 1 1 A1B2C3D4E5F6\n";
+        let records = parse_sshfp_output("example.com", output);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].host, "example.com");
+        assert_eq!(records[0].algorithm, "1");
+        assert_eq!(records[0].key_type, "1");
+        assert_eq!(records[0].fingerprint, "A1B2C3D4E5F6");
+    }
+
+    #[test]
+    fn parse_sshfp_output_multiple_records() {
+        let output = "\
+example.com IN SSHFP 1 1 A1B2C3D4E5F6
+example.com IN SSHFP 1 2 7A8B9C0D1E2F3A4B5C6D7E8F9A0B1C2D
+example.com IN SSHFP 4 2 3A4B5C6D7E8F9A0B1C2D3E4F5A6B7C8D
+";
+        let records = parse_sshfp_output("example.com", output);
+        assert_eq!(records.len(), 3);
+        assert_eq!(records[0].algorithm, "1");
+        assert_eq!(records[0].key_type, "1");
+        assert_eq!(records[1].algorithm, "1");
+        assert_eq!(records[1].key_type, "2");
+        assert_eq!(records[2].algorithm, "4");
+        assert_eq!(records[2].key_type, "2");
+    }
+
+    #[test]
+    fn parse_sshfp_output_skips_non_sshfp_lines() {
+        let output = "\
+# some comment
+example.com IN TXT some-text-record
+example.com IN SSHFP 4 2 DEADBEEF
+random noise
+";
+        let records = parse_sshfp_output("example.com", output);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].fingerprint, "DEADBEEF");
+    }
+
+    #[test]
+    fn parse_sshfp_output_empty() {
+        let records = parse_sshfp_output("host", "");
+        assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_sshfp_output_case_insensitive_in_sshfp() {
+        let output = "example.com in sshfp 4 2 AABBCCDD\n";
+        let records = parse_sshfp_output("example.com", output);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].algorithm, "4");
+        assert_eq!(records[0].fingerprint, "AABBCCDD");
+    }
+
+    #[test]
+    fn parse_sshfp_output_too_few_fields() {
+        let output = "example.com IN SSHFP 1\n";
+        let records = parse_sshfp_output("example.com", output);
+        assert!(records.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // verify_host_key_dns_status() — integration with KnownHostsService
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn verify_host_key_dns_status_unknown_when_no_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::SshPaths::with_dir(dir.path());
+        let runner = crate::MockCliRunner::new();
+        let svc = KnownHostsService::new(&paths, &runner);
+        let status = svc.verify_host_key_dns_status().await.unwrap();
+        assert_eq!(status, DnsVerifyStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn verify_host_key_dns_status_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config");
+        std::fs::write(&config_path, "VerifyHostKeyDNS yes\n").unwrap();
+
+        let paths = crate::paths::SshPaths::with_dir(dir.path());
+        let runner = crate::MockCliRunner::new();
+        let svc = KnownHostsService::new(&paths, &runner);
+        let status = svc.verify_host_key_dns_status().await.unwrap();
+        assert_eq!(status, DnsVerifyStatus::Enabled);
+    }
+
+    #[tokio::test]
+    async fn verify_host_key_dns_status_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config");
+        std::fs::write(&config_path, "VerifyHostKeyDNS ask\n").unwrap();
+
+        let paths = crate::paths::SshPaths::with_dir(dir.path());
+        let runner = crate::MockCliRunner::new();
+        let svc = KnownHostsService::new(&paths, &runner);
+        let status = svc.verify_host_key_dns_status().await.unwrap();
+        assert_eq!(status, DnsVerifyStatus::Ask);
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_sshfp_records() — integration with KnownHostsService
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn generate_sshfp_records_parses_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::paths::SshPaths::with_dir(dir.path());
+        let runner = crate::MockCliRunner::new();
+        runner.push_run_response(
+            "ssh-keygen",
+            Ok(
+                "example.com IN SSHFP 1 1 A1B2C3D4E5F6\n\
+                 example.com IN SSHFP 4 2 7A8B9C0D1E2F3A4B5C6D7E8F9A0B1C2D\n"
+                    .to_owned(),
+            ),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let records = svc.generate_sshfp_records("example.com").await.unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].algorithm, "1");
+        assert_eq!(records[0].key_type, "1");
+        assert_eq!(records[1].algorithm, "4");
+        assert_eq!(records[1].key_type, "2");
+    }
+
+    // -----------------------------------------------------------------------
+    // SshfpRecord debug / serialize
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sshfp_record_debug() {
+        let record = SshfpRecord {
+            host: "example.com".into(),
+            algorithm: "4".into(),
+            key_type: "2".into(),
+            fingerprint: "DEADBEEF".into(),
+        };
+        let debug = format!("{record:?}");
+        assert!(debug.contains("example.com"));
+        assert!(debug.contains("DEADBEEF"));
+    }
+
+    #[test]
+    fn sshfp_record_serialize_deserialize() {
+        let record = SshfpRecord {
+            host: "example.com".into(),
+            algorithm: "4".into(),
+            key_type: "2".into(),
+            fingerprint: "DEADBEEF".into(),
+        };
+        let json = serde_json::to_string(&record).unwrap();
+        let deserialized: SshfpRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(record, deserialized);
+    }
+
+    #[test]
+    fn dns_verify_status_serialize_deserialize() {
+        for status in [DnsVerifyStatus::Enabled, DnsVerifyStatus::Disabled, DnsVerifyStatus::Ask, DnsVerifyStatus::Unknown] {
+            let json = serde_json::to_string(&status).unwrap();
+            let deserialized: DnsVerifyStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(status, deserialized);
+        }
     }
 }

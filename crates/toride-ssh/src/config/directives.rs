@@ -240,6 +240,11 @@ pub(crate) fn host_matches_patterns(host: &str, patterns: &[impl AsRef<str>]) ->
 }
 
 /// Simple glob matching supporting `*` (any chars) and `?` (single char).
+///
+/// **Note:** This function is used exclusively for SSH `Host` pattern matching
+/// (e.g. `Host *.example.com`).  It does NOT support `**` recursive directory
+/// globbing.  File-path glob expansion for `Include` directives is handled by
+/// [`super::resolve::glob_paths`] which has its own `**` implementation.
 pub(crate) fn glob_matches(text: &str, pattern: &str) -> bool {
     // Single-character patterns.
     if pattern.len() == 1 {

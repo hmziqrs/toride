@@ -4,6 +4,7 @@ pub mod install;
 mod repair;
 
 pub use install::InstallOutcome;
+pub use install::UninstallOutcome;
 
 use std::ffi::OsStr;
 
@@ -487,6 +488,25 @@ impl<'a> KeyService<'a> {
         dest: &str,
     ) -> Result<install::InstallOutcome> {
         install::install_key_to_remote(key_path, dest, self.runner).await
+    }
+
+    /// Remove a public key from a remote host's `authorized_keys`.
+    ///
+    /// SSHes into the remote and uses `grep -vF` to strip the matching key
+    /// line from `~/.ssh/authorized_keys`. See
+    /// [`install::uninstall_key_from_remote`] for details.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KeyNotFound`] if the key path does not exist,
+    /// [`Error::ToolNotFound`] if `ssh` is not available, or
+    /// [`Error::CommandFailed`] if the remote command fails.
+    pub async fn uninstall_key_from_remote(
+        &self,
+        key_path: &std::path::Path,
+        dest: &str,
+    ) -> Result<install::UninstallOutcome> {
+        install::uninstall_key_from_remote(key_path, dest, self.runner).await
     }
 }
 

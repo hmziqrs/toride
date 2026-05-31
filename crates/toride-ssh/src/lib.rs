@@ -56,6 +56,8 @@ pub mod key;
 pub mod known_hosts;
 /// Helpers for running external SSH tools (`ssh-keygen`, `ssh-keyscan`, etc.).
 pub mod runner;
+/// Undo/restore mechanism for file mutations.
+pub mod undo;
 pub use runner::cli_runner::{CliRunner, DefaultCliRunner, MockCliRunner};
 
 pub use paths::SshPaths;

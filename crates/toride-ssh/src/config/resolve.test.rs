@@ -867,6 +867,10 @@ fn is_canonicalize_enabled_yes() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -896,6 +900,10 @@ fn is_canonicalize_enabled_always() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -925,6 +933,10 @@ fn is_canonicalize_enabled_no() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     assert!(!is_canonicalize_enabled(&resolved));
 }
@@ -954,6 +966,10 @@ fn is_canonicalize_enabled_missing() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     assert!(!is_canonicalize_enabled(&resolved));
 }
@@ -983,6 +999,10 @@ fn is_canonicalize_enabled_case_insensitive() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     assert!(is_canonicalize_enabled(&resolved));
 }
@@ -1016,6 +1036,10 @@ fn expand_resolved_certificate_file() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
     // Certificate files should be expanded.
@@ -1050,6 +1074,10 @@ fn expand_resolved_control_path() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "example", Path::new("/tmp"));
     // ControlPath should be expanded.
@@ -1086,6 +1114,10 @@ fn expand_resolved_user_known_hosts_file() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "myhost", Path::new("/tmp"));
     let val = &resolved.directives[0].1;
@@ -1122,6 +1154,10 @@ fn expand_resolved_identity_agent() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "h", Path::new("/tmp"));
     // IdentityAgent should be expanded.
@@ -1650,6 +1686,10 @@ fn expand_resolved_local_forwards_with_tokens() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
     let lf = &resolved.local_forwards[0];
@@ -1682,6 +1722,10 @@ fn expand_resolved_remote_forwards_with_tokens() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "example.com", Path::new("/tmp"));
     let rf = &resolved.remote_forwards[0];
@@ -1714,6 +1758,10 @@ fn expand_resolved_dynamic_forwards_with_tokens() {
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: vec![],
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
     expand_resolved(&mut resolved, "h", Path::new("/tmp"));
     let df = &resolved.dynamic_forwards[0];
@@ -1996,4 +2044,344 @@ fn glob_paths_results_are_sorted() {
     assert!(result[0].ends_with("alpha.conf"));
     assert!(result[1].ends_with("middle.conf"));
     assert!(result[2].ends_with("zebra.conf"));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for recursive ** glob support
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glob_paths_double_star_conf_recursive() {
+    // **/*.conf should match .conf files at all directory levels.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    // Root level.
+    std::fs::write(base.join("root.conf"), "").unwrap();
+    std::fs::write(base.join("root.txt"), "").unwrap();
+
+    // One level deep.
+    let sub1 = base.join("sub1");
+    std::fs::create_dir(&sub1).unwrap();
+    std::fs::write(sub1.join("level1.conf"), "").unwrap();
+    std::fs::write(sub1.join("level1.txt"), "").unwrap();
+
+    // Two levels deep.
+    let sub2 = sub1.join("sub2");
+    std::fs::create_dir(&sub2).unwrap();
+    std::fs::write(sub2.join("level2.conf"), "").unwrap();
+
+    let pattern = format!("{}/**/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 3, "**/*.conf should match .conf at all levels");
+    // Sorted by full path string:
+    //   <base>/root.conf < <base>/sub1/level1.conf < <base>/sub1/sub2/level2.conf
+    assert!(result[0].ends_with("root.conf"));
+    assert!(result[1].ends_with("level1.conf"));
+    assert!(result[2].ends_with("level2.conf"));
+}
+
+#[test]
+fn glob_paths_double_star_at_start() {
+    // **/*.conf with no prefix — treats current dir ("." is not used; empty
+    // prefix means empty base).  Using an explicit base directory.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("a.conf"), "").unwrap();
+    let nested = base.join("deep");
+    std::fs::create_dir(&nested).unwrap();
+    std::fs::write(nested.join("b.conf"), "").unwrap();
+
+    // Pattern: <base>/**/*.conf (prefix is the base dir, not empty).
+    let pattern = format!("{}/**/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 2);
+    assert!(result[0].ends_with("a.conf"));
+    assert!(result[1].ends_with("b.conf"));
+}
+
+#[test]
+fn glob_paths_double_star_in_middle() {
+    // config.d/**/*.conf — prefix is config.d, suffix is *.conf.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+    let config_d = base.join("config.d");
+    std::fs::create_dir(&config_d).unwrap();
+
+    // Direct child of config.d.
+    std::fs::write(config_d.join("top.conf"), "").unwrap();
+
+    // Nested under config.d/hosts/.
+    let hosts = config_d.join("hosts");
+    std::fs::create_dir(&hosts).unwrap();
+    std::fs::write(hosts.join("web.conf"), "").unwrap();
+    std::fs::write(hosts.join("db.conf"), "").unwrap();
+
+    // A file in the base dir should NOT be matched.
+    std::fs::write(base.join("outside.conf"), "").unwrap();
+
+    let pattern = format!("{}/config.d/**/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 3, "should match all .conf under config.d/");
+    // Sorted by full path:
+    //   .../hosts/db.conf < .../hosts/web.conf < .../top.conf
+    assert!(result[0].ends_with("db.conf"));
+    assert!(result[1].ends_with("web.conf"));
+    assert!(result[2].ends_with("top.conf"));
+}
+
+#[test]
+fn glob_paths_double_star_no_matches() {
+    // **/*.conf in a directory tree with no .conf files.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("readme.md"), "").unwrap();
+    let sub = base.join("notes");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("data.json"), "").unwrap();
+
+    let pattern = format!("{}/**/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert!(result.is_empty(), "no .conf files should yield empty result");
+}
+
+#[test]
+fn glob_paths_double_star_with_subdir_in_suffix() {
+    // **/sub/*.conf — matches any "sub" directory at any depth, then *.conf
+    // inside it.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    // base/sub/a.conf
+    let sub1 = base.join("sub");
+    std::fs::create_dir(&sub1).unwrap();
+    std::fs::write(sub1.join("a.conf"), "").unwrap();
+    std::fs::write(sub1.join("a.txt"), "").unwrap();
+
+    // base/other/sub/b.conf (two levels)
+    let other = base.join("other");
+    std::fs::create_dir(&other).unwrap();
+    let sub2 = other.join("sub");
+    std::fs::create_dir(&sub2).unwrap();
+    std::fs::write(sub2.join("b.conf"), "").unwrap();
+
+    // base/other/c.conf (should NOT match — not inside a "sub" dir)
+    std::fs::write(other.join("c.conf"), "").unwrap();
+
+    let pattern = format!("{}/**/sub/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 2, "only .conf files inside a 'sub' dir should match");
+    // Sorted by full path: .../other/sub/b.conf < .../sub/a.conf
+    assert!(result[0].ends_with("b.conf"));
+    assert!(result[1].ends_with("a.conf"));
+}
+
+#[test]
+fn glob_paths_double_star_trailing() {
+    // Trailing ** without slash matches everything under the prefix.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("file.txt"), "").unwrap();
+    let sub = base.join("dir");
+    std::fs::create_dir(&sub).unwrap();
+    std::fs::write(sub.join("nested.txt"), "").unwrap();
+
+    let pattern = format!("{}/**", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert!(
+        result.len() >= 2,
+        "trailing ** should match all entries recursively"
+    );
+    assert!(result.iter().any(|p| p.ends_with("file.txt")));
+    assert!(result.iter().any(|p| p.ends_with("nested.txt")));
+}
+
+#[test]
+fn glob_paths_no_double_star_unchanged() {
+    // Verify existing * and ? behavior is not affected by the ** changes.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    std::fs::write(base.join("alpha.conf"), "").unwrap();
+    std::fs::write(base.join("beta.conf"), "").unwrap();
+    std::fs::write(base.join("gamma.txt"), "").unwrap();
+
+    let pattern = format!("{}/*.conf", base.display());
+    let mut result = glob_paths(&pattern);
+    result.sort();
+
+    assert_eq!(result.len(), 2);
+    assert!(result[0].ends_with("alpha.conf"));
+    assert!(result[1].ends_with("beta.conf"));
+}
+
+#[test]
+fn glob_paths_double_star_empty_tree() {
+    // **/*.conf in an empty directory should return no matches.
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    let pattern = format!("{}/**/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert!(result.is_empty());
+}
+
+#[test]
+fn glob_paths_double_star_zero_levels() {
+    // **/ matches zero levels, so base/**/*.conf should also match files
+    // directly in base/ (not just in subdirectories).
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path();
+
+    // Only a file at the root — no subdirectories at all.
+    std::fs::write(base.join("solo.conf"), "").unwrap();
+
+    let pattern = format!("{}/**/*.conf", base.display());
+    let result = glob_paths(&pattern);
+
+    assert_eq!(result.len(), 1, "** must match zero directory levels");
+    assert!(result[0].ends_with("solo.conf"));
+}
+
+// ---------------------------------------------------------------------------
+// Tests for GSSAPI field resolution
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn resolve_gssapi_authentication() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    HostName example.com
+    GSSAPIAuthentication yes
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(
+        resolved.gssapi_authentication.as_deref(),
+        Some("yes"),
+        "GSSAPIAuthentication should be populated"
+    );
+    assert!(resolved.gssapi_delegate_credentials.is_none());
+    assert!(resolved.gssapi_server_identity.is_none());
+    assert!(resolved.gssapi_client_identity.is_none());
+}
+
+#[tokio::test]
+async fn resolve_gssapi_all_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host kdc-host
+    HostName kdc.example.com
+    GSSAPIAuthentication yes
+    GSSAPIDelegateCredentials yes
+    GSSAPIServerIdentity example.com
+    GSSAPIClientIdentity alice@EXAMPLE.COM
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "kdc-host", None).await.unwrap();
+    assert_eq!(resolved.gssapi_authentication.as_deref(), Some("yes"));
+    assert_eq!(resolved.gssapi_delegate_credentials.as_deref(), Some("yes"));
+    assert_eq!(resolved.gssapi_server_identity.as_deref(), Some("example.com"));
+    assert_eq!(
+        resolved.gssapi_client_identity.as_deref(),
+        Some("alice@EXAMPLE.COM")
+    );
+}
+
+#[tokio::test]
+async fn resolve_gssapi_first_match_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    GSSAPIAuthentication yes
+
+Host *
+    GSSAPIAuthentication no
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    assert_eq!(
+        resolved.gssapi_authentication.as_deref(),
+        Some("yes"),
+        "GSSAPIAuthentication uses first-match-wins semantics"
+    );
+}
+
+#[tokio::test]
+async fn resolve_gssapi_wildcard_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host *
+    GSSAPIAuthentication no
+    GSSAPIServerIdentity corp.example.com
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "anything", None).await.unwrap();
+    assert_eq!(resolved.gssapi_authentication.as_deref(), Some("no"));
+    assert_eq!(
+        resolved.gssapi_server_identity.as_deref(),
+        Some("corp.example.com")
+    );
+}
+
+#[tokio::test]
+async fn resolve_gssapi_in_directives_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let ssh_dir = dir.path();
+    std::fs::write(
+        ssh_dir.join("config"),
+        "\
+Host myhost
+    HostName example.com
+    GSSAPIAuthentication yes
+    GSSAPIServerIdentity example.com
+",
+    )
+    .unwrap();
+
+    let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
+    let gssapi_directives: Vec<(&str, &str)> = resolved
+        .directives
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("GSSAPIAuthentication")
+            || k.eq_ignore_ascii_case("GSSAPIServerIdentity"))
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    assert_eq!(gssapi_directives.len(), 2, "GSSAPI directives should appear in the directives list");
 }

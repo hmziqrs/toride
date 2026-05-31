@@ -67,6 +67,14 @@ pub struct ResolvedHost {
     /// Warnings for Match blocks containing `exec` criteria that were not
     /// evaluated (toride does not execute arbitrary commands for security).
     pub unevaluated_match_warnings: Vec<String>,
+    /// `GSSAPIAuthentication` setting (yes/no).
+    pub gssapi_authentication: Option<String>,
+    /// `GSSAPIDelegateCredentials` setting (yes/no).
+    pub gssapi_delegate_credentials: Option<String>,
+    /// `GSSAPIServerIdentity` value.
+    pub gssapi_server_identity: Option<String>,
+    /// `GSSAPIClientIdentity` value.
+    pub gssapi_client_identity: Option<String>,
 }
 
 /// Directives whose values may contain SSH tokens (`%h`, `%d`, etc.) or
@@ -175,6 +183,10 @@ fn resolve_pass(
         identities_only: None,
         canonicalized: false,
         unevaluated_match_warnings: Vec::new(),
+        gssapi_authentication: None,
+        gssapi_delegate_credentials: None,
+        gssapi_server_identity: None,
+        gssapi_client_identity: None,
     };
 
     let mut seen_keys = HashSet::new();
@@ -358,10 +370,21 @@ fn expand_env_vars(s: &str) -> String {
 }
 
 /// Expand glob patterns and return matching file paths.
+///
+/// Supports `*` and `?` single-directory wildcards as well as `**` for
+/// recursive directory matching:
+/// - `**/` matches zero or more directory levels
+/// - `dir/**/*.conf` matches all `.conf` files in `dir` and its subdirectories
+/// - `dir/**/` matches all directories under `dir` (recursively)
 fn glob_paths(pattern: &str) -> Vec<PathBuf> {
+    // Detect recursive glob (**).
+    if pattern.contains("**") {
+        return glob_paths_recursive(pattern);
+    }
+
+    // Original single-directory glob logic.
     let mut paths = Vec::new();
 
-    // Use a simple glob implementation.
     if let Some(parent) = Path::new(pattern).parent() {
         let file_name = Path::new(pattern)
             .file_name()
@@ -381,6 +404,124 @@ fn glob_paths(pattern: &str) -> Vec<PathBuf> {
 
     paths.sort();
     paths
+}
+
+/// Recursive glob expansion for patterns containing `**`.
+///
+/// Splits the pattern at the first occurrence of `**/` to obtain a base
+/// directory (prefix) and a suffix pattern.  Walks all subdirectories under
+/// the prefix and applies the suffix pattern at every level using
+/// [`simple_glob_match`], matching zero or more intermediate directory
+/// levels.
+fn glob_paths_recursive(pattern: &str) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+
+    // Split on the first occurrence of "**/".
+    if let Some(delim) = pattern.find("**/") {
+        let prefix = &pattern[..delim];
+        // Skip past "**/" (3 characters).
+        let suffix = &pattern[delim + 3..];
+
+        let base = if prefix.is_empty() || prefix == "/" {
+            PathBuf::from(if prefix.is_empty() { "." } else { "/" })
+        } else {
+            PathBuf::from(prefix)
+        };
+
+        if base.is_dir() {
+            collect_recursive_glob(&base, suffix, &mut paths);
+        }
+    } else if let Some(prefix) = pattern.strip_suffix("**") {
+        // Trailing ** without trailing slash — treat as "match everything
+        // under the prefix directory".
+        let base = if prefix.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(prefix)
+        };
+
+        if base.is_dir() {
+            collect_recursive_glob(&base, "*", &mut paths);
+        }
+    }
+
+    paths.sort();
+    paths
+}
+
+/// Recursively walk `dir`, applying `suffix` at every directory level.
+///
+/// `**` matches zero or more directory levels.  This function visits every
+/// subdirectory and applies the suffix pattern at each level.  The suffix
+/// may itself contain additional path components separated by `/`; the first
+/// component is matched against directory entries and the remainder is
+/// walked normally (without `**` semantics).
+fn collect_recursive_glob(dir: &Path, suffix: &str, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let collected: Vec<_> = entries.flatten().collect();
+
+    for entry in &collected {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let path = entry.path();
+
+        // Apply the suffix at this level.
+        // Split suffix into the first path component and the rest.
+        if let Some(slash) = suffix.find('/') {
+            let first = &suffix[..slash];
+            let rest = &suffix[slash + 1..];
+
+            // First component must match and entry must be a directory for
+            // the rest of the pattern to apply.
+            if path.is_dir() && simple_glob_match(&name_str, first) {
+                walk_subpath(&path, rest, out);
+            }
+        } else if simple_glob_match(&name_str, suffix) {
+            out.push(path.clone());
+        }
+
+        // Recurse into every subdirectory (zero-or-more levels).
+        if path.is_dir() {
+            collect_recursive_glob(&path, suffix, out);
+        }
+    }
+}
+
+/// Walk a non-`**` path pattern starting from `dir`.
+///
+/// Each call consumes one path component from `pattern`, matching it against
+/// directory entries.  When the pattern is fully consumed the matching entry
+/// is added to `out`.
+fn walk_subpath(dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
+    let (first, rest) = if let Some(slash) = pattern.find('/') {
+        (&pattern[..slash], Some(&pattern[slash + 1..]))
+    } else {
+        (pattern, None)
+    };
+
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+
+        if !simple_glob_match(&name_str, first) {
+            continue;
+        }
+
+        if let Some(remaining) = rest {
+            if entry.path().is_dir() {
+                walk_subpath(&entry.path(), remaining, out);
+            }
+        } else {
+            out.push(entry.path());
+        }
+    }
 }
 
 /// Simple glob match for file names.
@@ -489,6 +630,14 @@ fn resolve_block(
                 } else if lv == "no" {
                     resolved.identities_only = Some(false);
                 }
+            } else if d.keyword.eq_ignore_ascii_case("gssapiauthentication") {
+                resolved.gssapi_authentication = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("gssapidelegatecredentials") {
+                resolved.gssapi_delegate_credentials = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("gssapiserveridentity") {
+                resolved.gssapi_server_identity = Some(d.value.clone());
+            } else if d.keyword.eq_ignore_ascii_case("gssapiclientidentity") {
+                resolved.gssapi_client_identity = Some(d.value.clone());
             }
 
             resolved

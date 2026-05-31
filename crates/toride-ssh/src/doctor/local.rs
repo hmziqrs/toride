@@ -114,6 +114,16 @@ struct UseKeychainPlatformCheck<'a> {
     paths: &'a SshPaths,
 }
 
+/// Check for GSSAPI/Kerberos-related directives in SSH config.
+struct GssapiConfigCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+/// Check for `VerifyHostKeyDNS` configuration and DNS/SSHFP readiness.
+struct VerifyHostKeyDnsCheck<'a> {
+    paths: &'a SshPaths,
+}
+
 // ---------------------------------------------------------------------------
 // Check implementations
 // ---------------------------------------------------------------------------
@@ -1737,6 +1747,299 @@ impl Check for IdentitiesOnlyCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// GssapiConfigCheck — GSSAPI/Kerberos configuration awareness
+// ---------------------------------------------------------------------------
+
+/// GSSAPI-related directive keywords to scan for.
+const GSSAPI_DIRECTIVES: &[&str] = &[
+    "GSSAPIAuthentication",
+    "GSSAPIDelegateCredentials",
+    "GSSAPIServerIdentity",
+    "GSSAPIClientIdentity",
+    "GSSAPIKeyExchange",
+    "GSSAPIRenewalForcesRekey",
+    "GSSAPIStrictAcceptorCheck",
+    "GSSAPITrustDns",
+];
+
+/// Check whether `PreferredAuthentications` is set to `gssapi-with-mic` only
+/// (excluding publickey) anywhere in the config AST.
+fn is_preferred_gssapi_only(ast: &ast::ConfigAst) -> bool {
+    let mut result = false;
+    for node in &ast.nodes {
+        match node {
+            ConfigNode::Directive(d)
+                if d.keyword.eq_ignore_ascii_case("PreferredAuthentications") =>
+            {
+                let methods: Vec<&str> = d.value.split(',').map(str::trim).collect();
+                let has_gssapi = methods.iter().any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
+                let has_pubkey = methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
+                if has_gssapi && !has_pubkey && methods.len() == 1 {
+                    result = true;
+                }
+            }
+            ConfigNode::HostBlock(b) => {
+                for child in &b.nodes {
+                    if let ConfigNode::Directive(d) = child
+                        && d.keyword.eq_ignore_ascii_case("PreferredAuthentications")
+                    {
+                        let methods: Vec<&str> = d.value.split(',').map(str::trim).collect();
+                        let has_gssapi =
+                            methods.iter().any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
+                        let has_pubkey = methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
+                        if has_gssapi && !has_pubkey && methods.len() == 1 {
+                            result = true;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+impl Check for GssapiConfigCheck<'_> {
+    fn id(&self) -> &'static str {
+        "gssapi_config"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "gssapi_config",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check GSSAPI configuration: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let ast = ast::parse(&content);
+
+            // Collect GSSAPI directives with their context (top-level or Host block).
+            let mut findings: Vec<(String, String, String)> = Vec::new();
+
+            for node in &ast.nodes {
+                match node {
+                    ConfigNode::Directive(d)
+                        if GSSAPI_DIRECTIVES.iter().any(|kw| d.keyword.eq_ignore_ascii_case(kw)) =>
+                    {
+                        findings.push((d.keyword.clone(), d.value.clone(), "top-level".into()));
+                    }
+                    ConfigNode::HostBlock(b) => {
+                        let ctx = format!("Host {}", b.patterns.join(", "));
+                        for child in &b.nodes {
+                            if let ConfigNode::Directive(d) = child
+                                && GSSAPI_DIRECTIVES
+                                    .iter()
+                                    .any(|kw| d.keyword.eq_ignore_ascii_case(kw))
+                            {
+                                findings.push((d.keyword.clone(), d.value.clone(), ctx.clone()));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if findings.is_empty() {
+                return Ok(vec![Diagnostic {
+                    id: "gssapi_config",
+                    severity: Severity::Ok,
+                    message: "No GSSAPI directives found in config".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            }
+
+            let mut diagnostics = Vec::new();
+
+            // Report each configured GSSAPI directive.
+            let summary_parts: Vec<String> = findings
+                .iter()
+                .map(|(keyword, value, context)| format!("{keyword} {value} ({context})"))
+                .collect();
+
+            diagnostics.push(Diagnostic {
+                id: "gssapi_config",
+                severity: Severity::Info,
+                message: format!("GSSAPI configuration: {}", summary_parts.join("; ")),
+                hint: None,
+                module: "local",
+            });
+
+            // Warn if GSSAPIAuthentication is the ONLY authentication method
+            // and publickey is explicitly excluded via PreferredAuthentications.
+            let gssapi_auth_yes = findings.iter().any(|(kw, val, _)| {
+                kw.eq_ignore_ascii_case("GSSAPIAuthentication") && val.eq_ignore_ascii_case("yes")
+            });
+
+            if gssapi_auth_yes && is_preferred_gssapi_only(&ast) {
+                diagnostics.push(Diagnostic {
+                    id: "gssapi_config",
+                    severity: Severity::Warning,
+                    message: "GSSAPIAuthentication is enabled and PreferredAuthentications \
+                              is set to gssapi-with-mic only — publickey authentication is \
+                              excluded, which may reduce security"
+                        .into(),
+                    hint: Some(
+                        "Consider adding 'publickey' to PreferredAuthentications as a \
+                         fallback, e.g.: PreferredAuthentications gssapi-with-mic,publickey"
+                            .into(),
+                    ),
+                    module: "local",
+                });
+            }
+
+            Ok(diagnostics)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// VerifyHostKeyDnsCheck — VerifyHostKeyDNS configuration and SSHFP readiness
+// ---------------------------------------------------------------------------
+
+impl Check for VerifyHostKeyDnsCheck<'_> {
+    fn id(&self) -> &'static str {
+        "verify_host_key_dns"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    #[allow(clippy::too_many_lines)]
+    fn run(&self) -> CheckFuture<'_> {
+        let config_path = self.paths.config_path().to_path_buf();
+        Box::pin(async move {
+            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+                return Ok(vec![Diagnostic {
+                    id: "verify_host_key_dns",
+                    severity: Severity::Info,
+                    message: format!(
+                        "Cannot check VerifyHostKeyDNS: {} does not exist",
+                        config_path.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let status = crate::known_hosts::detect_verify_host_key_dns(&content);
+
+            match status {
+                crate::known_hosts::DnsVerifyStatus::Unknown => {
+                    Ok(vec![Diagnostic {
+                        id: "verify_host_key_dns",
+                        severity: Severity::Info,
+                        message: "VerifyHostKeyDNS is not configured (default: no)".into(),
+                        hint: Some(
+                            "To enable DNS-based host key verification, add \
+                             'VerifyHostKeyDNS yes' to your SSH config"
+                                .into(),
+                        ),
+                        module: "local",
+                    }])
+                }
+                crate::known_hosts::DnsVerifyStatus::Disabled => {
+                    Ok(vec![Diagnostic {
+                        id: "verify_host_key_dns",
+                        severity: Severity::Ok,
+                        message: "VerifyHostKeyDNS is set to 'no'".into(),
+                        hint: None,
+                        module: "local",
+                    }])
+                }
+                crate::known_hosts::DnsVerifyStatus::Ask => {
+                    Ok(vec![Diagnostic {
+                        id: "verify_host_key_dns",
+                        severity: Severity::Info,
+                        message: "VerifyHostKeyDNS is set to 'ask' — \
+                                  host keys will be verified via SSHFP but you will \
+                                  be prompted on mismatch"
+                            .into(),
+                        hint: None,
+                        module: "local",
+                    }])
+                }
+                crate::known_hosts::DnsVerifyStatus::Enabled => {
+                    let mut diagnostics = Vec::new();
+
+                    diagnostics.push(Diagnostic {
+                        id: "verify_host_key_dns",
+                        severity: Severity::Ok,
+                        message: "VerifyHostKeyDNS is set to 'yes' — \
+                                  host keys will be verified via SSHFP DNS records"
+                            .into(),
+                        hint: None,
+                        module: "local",
+                    });
+
+                    // Basic DNS resolution check: try to resolve localhost
+                    // as a heuristic that DNS is functional.
+                    let dns_available = tokio::task::spawn_blocking(|| {
+                        duct::cmd("host", ["localhost"])
+                            .stderr_null()
+                            .read()
+                            .is_ok()
+                    })
+                    .await
+                    .unwrap_or(false);
+
+                    if dns_available {
+                        diagnostics.push(Diagnostic {
+                            id: "verify_host_key_dns",
+                            severity: Severity::Ok,
+                            message: "DNS resolution appears to be available".into(),
+                            hint: None,
+                            module: "local",
+                        });
+                    } else {
+                        diagnostics.push(Diagnostic {
+                            id: "verify_host_key_dns",
+                            severity: Severity::Warning,
+                            message: "VerifyHostKeyDNS is enabled but DNS resolution may \
+                                      not be available — SSHFP verification will fail"
+                                .into(),
+                            hint: Some(
+                                "Ensure DNS is configured correctly, or install bind-utils \
+                                 / dnsutils for the 'host' command"
+                                    .into(),
+                            ),
+                            module: "local",
+                        });
+                    }
+
+                    // Warn about SSHFP record requirements.
+                    diagnostics.push(Diagnostic {
+                        id: "verify_host_key_dns",
+                        severity: Severity::Info,
+                        message: "SSHFP records must be published in DNS for each host. \
+                                  Generate with: ssh-keygen -r <hostname>"
+                            .into(),
+                        hint: Some(
+                            "If hosts do not have SSHFP records in their DNS zone, \
+                             VerifyHostKeyDNS will not be able to verify them"
+                                .into(),
+                        ),
+                        module: "local",
+                    });
+
+                    Ok(diagnostics)
+                }
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HomeDirPermissionsCheck — StrictModes full chain
 // ---------------------------------------------------------------------------
 
@@ -2526,6 +2829,229 @@ impl Check for RsaWeakKeyCheck<'_> {
 }
 
 // ---------------------------------------------------------------------------
+// NfsHomeCheck — detect NFS home directory mounts
+// ---------------------------------------------------------------------------
+
+/// Check whether the home directory resides on an NFS mount.
+///
+/// NFS servers commonly apply *root-squashing*, which maps root access to an
+/// unprivileged user (typically `nobody`).  When `sshd` runs as root and tries
+/// to read `~/.ssh/authorized_keys` on an NFS-mounted home, root-squashing can
+/// silently deny access, causing public-key authentication to fail.
+struct NfsHomeCheck;
+
+impl Check for NfsHomeCheck {
+    fn id(&self) -> &'static str {
+        "nfs_home"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        Box::pin(async move {
+            let Some(home) = dirs::home_dir() else {
+                return Ok(vec![Diagnostic {
+                    id: "nfs_home",
+                    severity: Severity::Info,
+                    message: "Cannot determine home directory".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            // On Linux, inspect /proc/mounts for NFS entries.
+            if cfg!(target_os = "linux") {
+                let home_str = home.to_string_lossy().to_string();
+
+                let nfs_detected = tokio::task::spawn_blocking(move || {
+                    let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
+                        // Cannot read mounts file — cannot determine NFS status.
+                        return None::<Vec<String>>;
+                    };
+
+                    let mut matches: Vec<String> = Vec::new();
+                    for line in content.lines() {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        // Format: device mount_point fs_type options ...
+                        if parts.len() >= 3 {
+                            let fs_type = parts[2];
+                            let mount_point = parts[1];
+                            if (fs_type == "nfs" || fs_type == "nfs4")
+                                && home_str.starts_with(mount_point)
+                            {
+                                matches.push(format!(
+                                    "{} on {} ({})",
+                                    parts[0], mount_point, fs_type
+                                ));
+                            }
+                        }
+                    }
+                    Some(matches)
+                })
+                .await
+                .ok()
+                .flatten();
+
+                match nfs_detected {
+                    Some(entries) if !entries.is_empty() => {
+                        return Ok(vec![Diagnostic {
+                            id: "nfs_home",
+                            severity: Severity::Warning,
+                            message: format!(
+                                "Home directory {} is on an NFS mount ({}). \
+                                 NFS root-squashing may prevent sshd from reading ~/.ssh/authorized_keys",
+                                home.display(),
+                                entries.join(", "),
+                            ),
+                            hint: Some(
+                                "Ensure the NFS export allows root access (no_root_squash) \
+                                 or configure sshd AuthorizedKeysFile to a non-NFS path"
+                                    .into(),
+                            ),
+                            module: "local",
+                        }]);
+                    }
+                    Some(_) => {
+                        // No NFS mounts matching home dir.
+                        return Ok(vec![Diagnostic {
+                            id: "nfs_home",
+                            severity: Severity::Ok,
+                            message: format!(
+                                "Home directory {} is not on an NFS mount",
+                                home.display()
+                            ),
+                            hint: None,
+                            module: "local",
+                        }]);
+                    }
+                    None => {
+                        // Could not read /proc/mounts.
+                        return Ok(vec![Diagnostic {
+                            id: "nfs_home",
+                            severity: Severity::Info,
+                            message: "Cannot read /proc/mounts to check for NFS home directory"
+                                .into(),
+                            hint: None,
+                            module: "local",
+                        }]);
+                    }
+                }
+            }
+
+            // Non-Linux: NFS check is not applicable.
+            Ok(vec![Diagnostic {
+                id: "nfs_home",
+                severity: Severity::Info,
+                message: "NFS home directory check is not applicable on this platform".into(),
+                hint: None,
+                module: "local",
+            }])
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SELinuxContextCheck — check SELinux security contexts on ~/.ssh
+// ---------------------------------------------------------------------------
+
+/// Check SELinux security contexts for files under `~/.ssh`.
+///
+/// Runs `restorecon -Rvn ~/.ssh` (dry-run, non-destructive) to detect files
+/// that would be relabeled. Incorrect SELinux contexts can prevent sshd from
+/// reading `~/.ssh/authorized_keys`, causing public-key authentication failures
+/// on SELinux-enforced systems.
+struct SELinuxContextCheck<'a> {
+    paths: &'a SshPaths,
+}
+
+impl Check for SELinuxContextCheck<'_> {
+    fn id(&self) -> &'static str {
+        "selinux_context"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
+        Box::pin(async move {
+            // Only applicable on Linux; skip entirely on other platforms.
+            if !cfg!(target_os = "linux") {
+                return Ok(vec![]);
+            }
+
+            // Run restorecon -Rvn ~/.ssh (dry-run, verbose, no-change).
+            // Output lines have the form:
+            //   would relabel /home/user/.ssh/authorized_keys from ...
+            let output = tokio::task::spawn_blocking({
+                let ssh_dir_clone = ssh_dir.clone();
+                move || {
+                    duct::cmd("restorecon", ["-Rvn", ssh_dir_clone.to_str().unwrap_or("")])
+                        .stderr_to_stdout()
+                        .read()
+                        .ok()
+                }
+            })
+            .await
+            .ok()
+            .flatten();
+
+            let Some(output) = output else {
+                return Ok(vec![Diagnostic {
+                    id: "selinux_context",
+                    severity: Severity::Info,
+                    message: "SELinux check skipped: restorecon is not available".into(),
+                    hint: None,
+                    module: "local",
+                }]);
+            };
+
+            let relabel_lines: Vec<&str> = output
+                .lines()
+                .filter(|l| !l.is_empty())
+                .collect();
+
+            if relabel_lines.is_empty() {
+                Ok(vec![Diagnostic {
+                    id: "selinux_context",
+                    severity: Severity::Ok,
+                    message: format!(
+                        "SELinux contexts for {} are correct",
+                        ssh_dir.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }])
+            } else {
+                let files: Vec<&str> = relabel_lines
+                    .iter()
+                    .filter_map(|line| {
+                        // Extract the file path from restorecon output.
+                        // Typical: "would relabel /path/to/file from X to Y"
+                        line.split_whitespace().nth(2)
+                    })
+                    .collect();
+
+                Ok(vec![Diagnostic {
+                    id: "selinux_context",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "SELinux contexts need fixing for {} file(s) under {}: {}",
+                        files.len().max(relabel_lines.len()),
+                        ssh_dir.display(),
+                        files.iter().take(5).copied().collect::<Vec<_>>().join(", "),
+                    ),
+                    hint: Some(format!(
+                        "Run `restorecon -Rv {}` to fix SELinux contexts",
+                        ssh_dir.display()
+                    )),
+                    module: "local",
+                }])
+            }
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // run_all — execute every local check
 // ---------------------------------------------------------------------------
 
@@ -2569,6 +3095,10 @@ pub async fn run_all<'a>(
     checks.push(Box::new(ProxyJumpHostCheck { paths }));
     checks.push(Box::new(AgentIdentityCheck { paths }));
     checks.push(Box::new(RsaWeakKeyCheck { paths }));
+    checks.push(Box::new(GssapiConfigCheck { paths }));
+    checks.push(Box::new(VerifyHostKeyDnsCheck { paths }));
+    checks.push(Box::new(NfsHomeCheck));
+    checks.push(Box::new(SELinuxContextCheck { paths }));
     #[cfg(unix)]
     checks.push(Box::new(HomeDirPermissionsCheck));
     checks.push(Box::new(PlatformCheck));
