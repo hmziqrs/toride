@@ -127,7 +127,15 @@ mod tests {
         let new = "a\nc\n";
         let diff = ConfigDiff::new(old, new);
         let unified = diff.to_unified_string();
-        assert!(unified.contains("- b"));
-        assert!(unified.contains("+ c"));
+        // The diff should contain a deleted line with 'b' and an inserted line with 'c'.
+        // `similar` preserves trailing newlines in content, so match without newline.
+        assert!(
+            diff.lines.iter().any(|l| l.tag == DiffTag::Delete && l.content.trim() == "b"),
+            "expected a deleted line with 'b', got: {unified:?}"
+        );
+        assert!(
+            diff.lines.iter().any(|l| l.tag == DiffTag::Insert && l.content.trim() == "c"),
+            "expected an inserted line with 'c', got: {unified:?}"
+        );
     }
 }

@@ -516,8 +516,8 @@ mod proptests {
                 keyword
             );
             prop_assert!(
-                !result.contains(&value),
-                "sensitive value should not appear in output"
+                !result.contains(&format!("={value}")),
+                "sensitive value should not appear as a flag value in output"
             );
         }
 

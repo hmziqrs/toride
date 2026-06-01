@@ -139,7 +139,7 @@ pub fn render_caddyfile(spec: &ProxySpec) -> String {
 ///
 /// let headers = render_security_headers(true, None);
 /// assert!(headers.contains("Strict-Transport-Security"));
-/// assert!(headers.contains("X-Content-Options"));
+/// assert!(headers.contains("X-Content-Type-Options"));
 /// ```
 pub fn render_security_headers(include_hsts: bool, csp_policy: Option<&str>) -> String {
     let mut lines = Vec::new();

@@ -25,7 +25,7 @@ use crate::Result;
 /// ```rust,no_run
 /// use toride_users::client::UsersClient;
 ///
-/// let client = UsersClient::new().unwrap();
+/// let client = UsersClient::new();
 /// let exists = client.user().exists("deployer").unwrap();
 /// ```
 pub struct UsersClient {

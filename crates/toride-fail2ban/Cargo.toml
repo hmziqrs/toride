@@ -68,6 +68,7 @@ tempfile = { version = "3", optional = true }
 insta = "1"
 assert_fs = "1"
 tempfile = "3"
+indoc = "2"
 proptest = "1"
 
 [lints]

@@ -50,7 +50,8 @@ pub fn parse_nginx_status(output: &str) -> NginxStatus {
     let running = output.contains("active (running)");
 
     let pid = output.lines().find_map(|line| {
-        let rest = line.strip_prefix("    Main PID: ")?;
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("Main PID: ")?;
         rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok())
     });
 
