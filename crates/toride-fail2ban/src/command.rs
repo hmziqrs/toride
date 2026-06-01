@@ -10,6 +10,12 @@
 //! - [`FakeRunner`] -- test double that records calls and returns pre-canned
 //!   responses.
 //!
+//! # Migration note
+//!
+//! This module re-exports [`CommandOutput`] and [`find_binary`] from the shared
+//! `toride-runner` crate. The local [`Runner`] trait is kept for backward
+//! compatibility with existing call sites that use `runner.run("cmd", &["args"])`.
+//!
 //! # Security
 //!
 //! Arguments are always passed as arrays (no shell string concatenation).
@@ -19,8 +25,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 #[cfg(feature = "client")]
-use std::process::Output;
-#[cfg(feature = "client")]
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -29,48 +33,20 @@ use crate::Error;
 use crate::Result;
 
 // ---------------------------------------------------------------------------
-// CommandOutput
+// Re-exports from toride-runner
 // ---------------------------------------------------------------------------
 
-/// Captured output from an external command.
-#[derive(Debug, Clone)]
-pub struct CommandOutput {
-    /// Standard output captured as a UTF-8 string.
-    pub stdout: String,
-    /// Standard error captured as a UTF-8 string.
-    pub stderr: String,
-    /// Exit code, or `None` if the process was killed by a signal.
-    pub exit_code: Option<i32>,
-    /// Convenience: `true` when `exit_code` is `Some(0)`.
-    pub success: bool,
-}
+pub use toride_runner::CommandOutput;
+pub use toride_runner::CommandSpec;
 
-impl CommandOutput {
-    /// Build a `CommandOutput` from a `std::process::Output`.
-    #[cfg(feature = "client")]
-    fn from_raw_output(output: &Output) -> Self {
-        let exit_code = output.status.code();
-        let success = output.status.success();
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        Self {
-            stdout,
-            stderr,
-            exit_code,
-            success,
-        }
-    }
-
-    /// Create a successful empty output (used in dry-run mode).
-    #[cfg(feature = "client")]
-    fn empty_success() -> Self {
-        Self {
-            stdout: String::new(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            success: true,
-        }
-    }
+/// Locate a binary on the system `$PATH`.
+///
+/// Delegates to [`toride_runner::discovery::find_binary`].
+///
+/// Returns [`Error::NotFound`] if the binary cannot be found.
+pub fn find_binary(name: &str) -> Result<PathBuf> {
+    toride_runner::discovery::find_binary(name)
+        .map_err(|_| Error::NotFound(name.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -182,9 +158,6 @@ impl DuctRunner {
             .map_err(|e| Error::CommandFailed(format!("failed to spawn {program}: {e}")))?;
 
         // Channel for the owned output of `handle.wait()`.
-        // `Handle::wait(&self) -> io::Result<&Output>` borrows the handle, so
-        // we must clone the `Output` inside the spawned thread to obtain an
-        // owned value we can send across the channel.
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
@@ -198,12 +171,17 @@ impl DuctRunner {
             .map_err(|_| Error::CommandTimeout(timeout))?
             .map_err(|e| Error::CommandFailed(format!("wait failed for {program}: {e}")))?;
 
-        let result = CommandOutput::from_raw_output(&raw_output);
+        let stdout = String::from_utf8_lossy(&raw_output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&raw_output.stderr).into_owned();
+        let exit_code = raw_output.status.code();
+        let success = raw_output.status.success();
 
-        if !result.success {
+        let result = CommandOutput::new(stdout, stderr, exit_code);
+
+        if !success {
             tracing::warn!(
                 cmd = %cmd_str,
-                exit = ?result.exit_code,
+                exit = ?exit_code,
                 stderr = %result.stderr.trim(),
                 "command failed"
             );
@@ -227,7 +205,7 @@ impl Runner for DuctRunner {
 
         if self.dry_run {
             tracing::info!(cmd = %cmd_str, "[dry-run]");
-            return Ok(CommandOutput::empty_success());
+            return Ok(CommandOutput::new(String::new(), String::new(), Some(0)));
         }
 
         Self::execute(program, args, self.default_timeout)
@@ -243,7 +221,7 @@ impl Runner for DuctRunner {
 
         if self.dry_run {
             tracing::info!(cmd = %cmd_str, timeout = ?timeout, "[dry-run]");
-            return Ok(CommandOutput::empty_success());
+            return Ok(CommandOutput::new(String::new(), String::new(), Some(0)));
         }
 
         Self::execute(program, args, timeout)
@@ -268,7 +246,7 @@ impl Runner for DuctRunner {
 ///
 /// ```ignore
 /// let mut fake = FakeRunner::new();
-/// fake.with_response("echo", &["hello"], CommandOutput::empty_success());
+/// fake.with_response("echo", &["hello"], CommandOutput::new(String::new(), String::new(), Some(0)));
 ///
 /// let out = fake.run("echo", &["hello"]).unwrap();
 /// assert!(out.success);
@@ -323,12 +301,7 @@ impl FakeRunner {
     fn lookup(&self, program: &str, args: &[&str]) -> CommandOutput {
         let key = format!("{program} {}", args.join(" "));
         self.responses.get(&key).cloned().unwrap_or_else(|| {
-            CommandOutput {
-                stdout: String::new(),
-                stderr: String::new(),
-                exit_code: Some(0),
-                success: true,
-            }
+            CommandOutput::new(String::new(), String::new(), Some(0))
         })
     }
 
@@ -373,17 +346,6 @@ impl Runner for FakeRunner {
     fn set_dry_run(&mut self, dry_run: bool) {
         self.dry_run = dry_run;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Binary discovery
-// ---------------------------------------------------------------------------
-
-/// Locate a binary on the system `$PATH`.
-///
-/// Returns [`Error::NotFound`] if the binary cannot be found.
-pub fn find_binary(name: &str) -> Result<PathBuf> {
-    which::which(name).map_err(|_| Error::NotFound(name.to_string()))
 }
 
 #[cfg(test)]

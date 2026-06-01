@@ -188,9 +188,8 @@ pub fn derive_public_key(private_key: &PrivateKey) -> Result<PublicKey> {
 /// Decode a Base64 string into raw bytes.
 fn base64_decode(input: &str) -> Result<Vec<u8>> {
     let decoder = base64::engine::general_purpose::STANDARD;
-    base64::Engine::decode(&decoder, input).map_err(|e| {
-        Error::KeyGeneration(format!("base64 decode failed: {e}"))
-    })
+    base64::Engine::decode(&decoder, input)
+        .map_err(|e| Error::KeyGeneration(format!("base64 decode failed: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -199,6 +198,8 @@ fn base64_decode(input: &str) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine;
+
     use super::*;
 
     #[test]

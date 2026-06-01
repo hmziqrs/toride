@@ -198,12 +198,7 @@ fn fake_runner_run_with_timeout_records_calls() {
 #[test]
 fn fake_runner_returns_configured_response() {
     let mut fake = FakeRunner::new();
-    let response = CommandOutput {
-        stdout: "pong".to_string(),
-        stderr: String::new(),
-        exit_code: Some(0),
-        success: true,
-    };
+    let response = CommandOutput::new("pong".to_string(), String::new(), Some(0));
     fake.with_response("fail2ban-client", &["ping"], response);
 
     let out = fake.run("fail2ban-client", &["ping"]).unwrap();
@@ -227,22 +222,12 @@ fn fake_runner_with_response_chains() {
     fake.with_response(
         "cmd1",
         &["a"],
-        CommandOutput {
-            stdout: "out1".to_string(),
-            stderr: String::new(),
-            exit_code: Some(0),
-            success: true,
-        },
+        CommandOutput::new("out1".to_string(), String::new(), Some(0)),
     )
     .with_response(
         "cmd2",
         &["b"],
-        CommandOutput {
-            stdout: "out2".to_string(),
-            stderr: String::new(),
-            exit_code: Some(1),
-            success: false,
-        },
+        CommandOutput::new("out2".to_string(), String::new(), Some(1)),
     );
 
     let out1 = fake.run("cmd1", &["a"]).unwrap();
@@ -261,12 +246,7 @@ fn fake_runner_can_return_failure_response() {
     fake.with_response(
         "fail2ban-client",
         &["status", "sshd"],
-        CommandOutput {
-            stdout: String::new(),
-            stderr: "No jail found".to_string(),
-            exit_code: Some(1),
-            success: false,
-        },
+        CommandOutput::new(String::new(), "No jail found".to_string(), Some(1)),
     );
 
     let out = fake.run("fail2ban-client", &["status", "sshd"]).unwrap();
@@ -355,8 +335,8 @@ fn find_binary_returns_not_found_for_nonexistent() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn command_output_empty_success_fields() {
-    let out = CommandOutput::empty_success();
+fn command_output_new_success() {
+    let out = CommandOutput::new(String::new(), String::new(), Some(0));
     assert!(out.success);
     assert_eq!(out.exit_code, Some(0));
     assert!(out.stdout.is_empty());
@@ -371,7 +351,11 @@ fn command_output_from_raw_output_captures_fields() {
         stdout: b"hello\n".to_vec(),
         stderr: b"".to_vec(),
     };
-    let out = CommandOutput::from_raw_output(&raw);
+    let out = CommandOutput::new(
+        String::from_utf8_lossy(&raw.stdout).into_owned(),
+        String::from_utf8_lossy(&raw.stderr).into_owned(),
+        raw.status.code(),
+    );
     assert!(out.success);
     assert_eq!(out.exit_code, Some(0));
     assert_eq!(out.stdout, "hello\n");
@@ -386,7 +370,11 @@ fn command_output_from_raw_output_nonzero() {
         stdout: b"".to_vec(),
         stderr: b"error msg\n".to_vec(),
     };
-    let out = CommandOutput::from_raw_output(&raw);
+    let out = CommandOutput::new(
+        String::from_utf8_lossy(&raw.stdout).into_owned(),
+        String::from_utf8_lossy(&raw.stderr).into_owned(),
+        raw.status.code(),
+    );
     assert!(!out.success);
     assert_eq!(out.exit_code, Some(1));
     assert_eq!(out.stderr, "error msg\n");

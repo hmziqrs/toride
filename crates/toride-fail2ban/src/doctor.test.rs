@@ -132,9 +132,12 @@ fn check_binaries_with_missing_fail2ban_client() {
     // If fail2ban-client is not found, the critical finding should appear.
     if let Err(_) = find_binary("fail2ban-client") {
         assert!(has_finding(&findings, "binary.fail2ban-client.missing"));
-        assert!(findings
-            .iter()
-            .any(|f| f.id == "binary.fail2ban-client.missing" && f.severity == Severity::Critical));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "binary.fail2ban-client.missing"
+                    && f.severity == Severity::Critical)
+        );
     }
 }
 
@@ -155,7 +158,10 @@ fn check_binaries_reports_version_when_available() {
     let findings = doctor.check_binaries();
 
     assert!(has_finding(&findings, "binary.fail2ban-client.version"));
-    let ver_finding = findings.iter().find(|f| f.id == "binary.fail2ban-client.version").unwrap();
+    let ver_finding = findings
+        .iter()
+        .find(|f| f.id == "binary.fail2ban-client.version")
+        .unwrap();
     assert_eq!(ver_finding.severity, Severity::Info);
     assert!(ver_finding.detail.contains("Fail2Ban v1.1.0"));
 }
@@ -175,7 +181,10 @@ fn check_binaries_reports_version_failed_when_nonzero() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_binaries();
 
-    assert!(has_finding(&findings, "binary.fail2ban-client.version-failed"));
+    assert!(has_finding(
+        &findings,
+        "binary.fail2ban-client.version-failed"
+    ));
 }
 
 // ===========================================================================
@@ -185,11 +194,7 @@ fn check_binaries_reports_version_failed_when_nonzero() {
 #[test]
 fn check_service_with_active_service() {
     let mut fake = FakeRunner::new();
-    fake.with_response(
-        "systemctl",
-        &["is-active", "fail2ban"],
-        ok_output("active"),
-    );
+    fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
     fake.with_response(
         "systemctl",
         &["is-enabled", "fail2ban"],
@@ -200,7 +205,11 @@ fn check_service_with_active_service() {
     if let Ok(path) = find_binary("fail2ban-client") {
         let bin = path.to_str().unwrap_or("fail2ban-client");
         fake.with_response(bin, &["ping"], ok_output("Server replied: pong"));
-        fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
+        fake.with_response(
+            bin,
+            &["get", "logtarget"],
+            ok_output("/var/log/fail2ban.log"),
+        );
         fake.with_response(
             bin,
             &["get", "dbfile"],
@@ -242,7 +251,10 @@ fn check_service_with_inactive_service() {
     assert!(has_finding(&findings, "service.inactive"));
     assert!(has_finding(&findings, "service.not-enabled"));
 
-    let inactive = findings.iter().find(|f| f.id == "service.inactive").unwrap();
+    let inactive = findings
+        .iter()
+        .find(|f| f.id == "service.inactive")
+        .unwrap();
     assert_eq!(inactive.severity, Severity::Critical);
     assert!(inactive.fix.is_some());
 }
@@ -266,11 +278,7 @@ fn check_service_ping_failed() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(
-        "systemctl",
-        &["is-active", "fail2ban"],
-        ok_output("active"),
-    );
+    fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
     fake.with_response(
         "systemctl",
         &["is-enabled", "fail2ban"],
@@ -284,7 +292,10 @@ fn check_service_ping_failed() {
     let findings = doctor.check_service();
 
     assert!(has_finding(&findings, "service.ping-failed"));
-    let ping_finding = findings.iter().find(|f| f.id == "service.ping-failed").unwrap();
+    let ping_finding = findings
+        .iter()
+        .find(|f| f.id == "service.ping-failed")
+        .unwrap();
     assert_eq!(ping_finding.severity, Severity::Critical);
 }
 
@@ -296,18 +307,18 @@ fn check_service_dbfile_disabled() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(
-        "systemctl",
-        &["is-active", "fail2ban"],
-        ok_output("active"),
-    );
+    fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
     fake.with_response(
         "systemctl",
         &["is-enabled", "fail2ban"],
         ok_output("enabled"),
     );
     fake.with_response(bin, &["ping"], ok_output("pong"));
-    fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
+    fake.with_response(
+        bin,
+        &["get", "logtarget"],
+        ok_output("/var/log/fail2ban.log"),
+    );
     fake.with_response(bin, &["get", "dbfile"], ok_output("None"));
 
     let doctor = Doctor::new(&fake);
@@ -382,7 +393,10 @@ fn check_config_test_failed_when_nonzero() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_config();
     assert!(has_finding(&findings, "config.test.failed"));
-    let f = findings.iter().find(|f| f.id == "config.test.failed").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "config.test.failed")
+        .unwrap();
     assert_eq!(f.severity, Severity::Error);
     assert!(f.fix.is_some());
 }
@@ -464,7 +478,10 @@ fn check_jail_maxretry_zero_warning() {
     let findings = doctor.check_jail("badjail");
 
     assert!(has_finding(&findings, "jail.maxretry-zero"));
-    let f = findings.iter().find(|f| f.id == "jail.maxretry-zero").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.maxretry-zero")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -476,7 +493,11 @@ fn check_jail_maxretry_very_high_info() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "loosejail"], ok_output("Filter\nActions\n"));
+    fake.with_response(
+        bin,
+        &["status", "loosejail"],
+        ok_output("Filter\nActions\n"),
+    );
     fake.with_response(bin, &["get", "loosejail", "bantime"], ok_output("600"));
     fake.with_response(bin, &["get", "loosejail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "loosejail", "maxretry"], ok_output("200"));
@@ -590,11 +611,7 @@ fn run_with_binary_scope() {
 #[test]
 fn run_with_service_scope() {
     let mut fake = FakeRunner::new();
-    fake.with_response(
-        "systemctl",
-        &["is-active", "fail2ban"],
-        ok_output("active"),
-    );
+    fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
     fake.with_response(
         "systemctl",
         &["is-enabled", "fail2ban"],
@@ -643,7 +660,10 @@ fn run_with_journal_scope() {
 
     let doctor = Doctor::new(&fake);
     let report = doctor.run(&DoctorScope::Journal).unwrap();
-    assert!(has_finding(&report.findings, "journal.journalctl.available"));
+    assert!(has_finding(
+        &report.findings,
+        "journal.journalctl.available"
+    ));
     assert!(has_finding(&report.findings, "journal.entries-found"));
 }
 
@@ -922,13 +942,33 @@ fn check_service_socket_ok_when_path_exists() {
 
     let mut fake = FakeRunner::new();
     fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
-    fake.with_response("systemctl", &["is-enabled", "fail2ban"], ok_output("enabled"));
+    fake.with_response(
+        "systemctl",
+        &["is-enabled", "fail2ban"],
+        ok_output("enabled"),
+    );
     fake.with_response(bin, &["ping"], ok_output("Server replied: pong"));
-    fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
-    fake.with_response(bin, &["get", "dbfile"], ok_output("/var/lib/fail2ban/fail2ban.sqlite3"));
+    fake.with_response(
+        bin,
+        &["get", "logtarget"],
+        ok_output("/var/log/fail2ban.log"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "dbfile"],
+        ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
+    );
     // Use a path that exists on any Unix system.
-    fake.with_response(bin, &["get", "socket"], ok_output("/var/run/fail2ban/fail2ban.sock"));
-    fake.with_response(bin, &["get", "pidfile"], ok_output("/var/run/fail2ban/fail2ban.pid"));
+    fake.with_response(
+        bin,
+        &["get", "socket"],
+        ok_output("/var/run/fail2ban/fail2ban.sock"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "pidfile"],
+        ok_output("/var/run/fail2ban/fail2ban.pid"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_service();
@@ -937,7 +977,11 @@ fn check_service_socket_ok_when_path_exists() {
     // the test host, so assert one of the two socket findings is present.
     let has_socket_finding = has_finding(&findings, "service.socket_ok")
         || has_finding(&findings, "service.socket_missing");
-    assert!(has_socket_finding, "expected socket finding, got: {:?}", findings.iter().map(|f| &f.id).collect::<Vec<_>>());
+    assert!(
+        has_socket_finding,
+        "expected socket finding, got: {:?}",
+        findings.iter().map(|f| &f.id).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -949,23 +993,42 @@ fn check_service_socket_missing_when_path_not_on_disk() {
 
     let mut fake = FakeRunner::new();
     fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
-    fake.with_response("systemctl", &["is-enabled", "fail2ban"], ok_output("enabled"));
+    fake.with_response(
+        "systemctl",
+        &["is-enabled", "fail2ban"],
+        ok_output("enabled"),
+    );
     fake.with_response(bin, &["ping"], ok_output("pong"));
-    fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
-    fake.with_response(bin, &["get", "dbfile"], ok_output("/var/lib/fail2ban/fail2ban.sqlite3"));
+    fake.with_response(
+        bin,
+        &["get", "logtarget"],
+        ok_output("/var/log/fail2ban.log"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "dbfile"],
+        ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
+    );
     // Report a path that is guaranteed not to exist.
     fake.with_response(
         bin,
         &["get", "socket"],
         ok_output("/tmp/doctor-test-nonexistent-socket-path-abc123.sock"),
     );
-    fake.with_response(bin, &["get", "pidfile"], ok_output("/var/run/fail2ban/fail2ban.pid"));
+    fake.with_response(
+        bin,
+        &["get", "pidfile"],
+        ok_output("/var/run/fail2ban/fail2ban.pid"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_service();
 
     assert!(has_finding(&findings, "service.socket_missing"));
-    let f = findings.iter().find(|f| f.id == "service.socket_missing").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "service.socket_missing")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
     assert!(f.fix.is_some());
 }
@@ -983,11 +1046,27 @@ fn check_service_pidfile_ok_when_path_exists() {
 
     let mut fake = FakeRunner::new();
     fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
-    fake.with_response("systemctl", &["is-enabled", "fail2ban"], ok_output("enabled"));
+    fake.with_response(
+        "systemctl",
+        &["is-enabled", "fail2ban"],
+        ok_output("enabled"),
+    );
     fake.with_response(bin, &["ping"], ok_output("pong"));
-    fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
-    fake.with_response(bin, &["get", "dbfile"], ok_output("/var/lib/fail2ban/fail2ban.sqlite3"));
-    fake.with_response(bin, &["get", "socket"], ok_output("/var/run/fail2ban/fail2ban.sock"));
+    fake.with_response(
+        bin,
+        &["get", "logtarget"],
+        ok_output("/var/log/fail2ban.log"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "dbfile"],
+        ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "socket"],
+        ok_output("/var/run/fail2ban/fail2ban.sock"),
+    );
     // Report /proc/1/status -- a path that exists on Linux (always present for
     // init).  On macOS, /dev/null works as a universally existing path.
     fake.with_response(bin, &["get", "pidfile"], ok_output("/dev/null"));
@@ -996,7 +1075,10 @@ fn check_service_pidfile_ok_when_path_exists() {
     let findings = doctor.check_service();
 
     assert!(has_finding(&findings, "service.pidfile_ok"));
-    let f = findings.iter().find(|f| f.id == "service.pidfile_ok").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "service.pidfile_ok")
+        .unwrap();
     assert_eq!(f.severity, Severity::Ok);
 }
 
@@ -1009,11 +1091,27 @@ fn check_service_pidfile_missing_when_path_not_on_disk() {
 
     let mut fake = FakeRunner::new();
     fake.with_response("systemctl", &["is-active", "fail2ban"], ok_output("active"));
-    fake.with_response("systemctl", &["is-enabled", "fail2ban"], ok_output("enabled"));
+    fake.with_response(
+        "systemctl",
+        &["is-enabled", "fail2ban"],
+        ok_output("enabled"),
+    );
     fake.with_response(bin, &["ping"], ok_output("pong"));
-    fake.with_response(bin, &["get", "logtarget"], ok_output("/var/log/fail2ban.log"));
-    fake.with_response(bin, &["get", "dbfile"], ok_output("/var/lib/fail2ban/fail2ban.sqlite3"));
-    fake.with_response(bin, &["get", "socket"], ok_output("/var/run/fail2ban/fail2ban.sock"));
+    fake.with_response(
+        bin,
+        &["get", "logtarget"],
+        ok_output("/var/log/fail2ban.log"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "dbfile"],
+        ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "socket"],
+        ok_output("/var/run/fail2ban/fail2ban.sock"),
+    );
     fake.with_response(
         bin,
         &["get", "pidfile"],
@@ -1024,7 +1122,10 @@ fn check_service_pidfile_missing_when_path_not_on_disk() {
     let findings = doctor.check_service();
 
     assert!(has_finding(&findings, "service.pidfile_missing"));
-    let f = findings.iter().find(|f| f.id == "service.pidfile_missing").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "service.pidfile_missing")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
     assert!(f.fix.is_some());
 }
@@ -1041,7 +1142,11 @@ fn check_jail_usedns_no_is_ok() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1062,7 +1167,11 @@ fn check_jail_usedns_yes_is_warning() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1073,7 +1182,10 @@ fn check_jail_usedns_yes_is_warning() {
     let findings = doctor.check_jail("myjail");
 
     assert!(has_finding(&findings, "jail.usedns_insecure"));
-    let f = findings.iter().find(|f| f.id == "jail.usedns_insecure").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.usedns_insecure")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1089,7 +1201,11 @@ fn check_jail_ignoreip_empty_is_info() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1100,7 +1216,10 @@ fn check_jail_ignoreip_empty_is_info() {
     let findings = doctor.check_jail("myjail");
 
     assert!(has_finding(&findings, "jail.ignoreip_empty"));
-    let f = findings.iter().find(|f| f.id == "jail.ignoreip_empty").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.ignoreip_empty")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1112,18 +1231,29 @@ fn check_jail_ignoreip_populated_is_ok() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
     fake.with_response(bin, &["get", "myjail", "usedns"], ok_output("no"));
-    fake.with_response(bin, &["get", "myjail", "ignoreip"], ok_output("127.0.0.1/8, ::1"));
+    fake.with_response(
+        bin,
+        &["get", "myjail", "ignoreip"],
+        ok_output("127.0.0.1/8, ::1"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_jail("myjail");
 
     assert!(has_finding(&findings, "jail.ignoreip-configured"));
-    let f = findings.iter().find(|f| f.id == "jail.ignoreip-configured").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.ignoreip-configured")
+        .unwrap();
     assert_eq!(f.severity, Severity::Ok);
 }
 
@@ -1139,7 +1269,11 @@ fn check_jail_bantime_shorter_than_findtime_is_warning() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("120"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("600"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1165,7 +1299,11 @@ fn check_jail_bantime_very_short_is_warning() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("30"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("10"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1176,7 +1314,10 @@ fn check_jail_bantime_very_short_is_warning() {
     let findings = doctor.check_jail("myjail");
 
     assert!(has_finding(&findings, "jail.bantime_very_short"));
-    let f = findings.iter().find(|f| f.id == "jail.bantime_very_short").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.bantime_very_short")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1188,7 +1329,11 @@ fn check_jail_findtime_very_long_is_info() {
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
     let mut fake = FakeRunner::new();
-    fake.with_response(bin, &["status", "myjail"], ok_output("Filter\nActions\nCurrently banned: 0\n"));
+    fake.with_response(
+        bin,
+        &["status", "myjail"],
+        ok_output("Filter\nActions\nCurrently banned: 0\n"),
+    );
     fake.with_response(bin, &["get", "myjail", "bantime"], ok_output("7200"));
     fake.with_response(bin, &["get", "myjail", "findtime"], ok_output("7200"));
     fake.with_response(bin, &["get", "myjail", "maxretry"], ok_output("5"));
@@ -1199,7 +1344,10 @@ fn check_jail_findtime_very_long_is_info() {
     let findings = doctor.check_jail("myjail");
 
     assert!(has_finding(&findings, "jail.findtime_very_long"));
-    let f = findings.iter().find(|f| f.id == "jail.findtime_very_long").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "jail.findtime_very_long")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1217,7 +1365,11 @@ fn check_log_paths_proxy_ips_only_warning() {
     // Create a temp file with only private IPs.
     let tmp_dir = tempfile::tempdir().unwrap();
     let log_file = tmp_dir.path().join("test.log");
-    std::fs::write(&log_file, "Failed password from 192.168.1.100 port 22\nFailed from 10.0.0.1\n").unwrap();
+    std::fs::write(
+        &log_file,
+        "Failed password from 192.168.1.100 port 22\nFailed from 10.0.0.1\n",
+    )
+    .unwrap();
     let log_path_str = log_file.to_str().unwrap();
 
     let mut fake = FakeRunner::new();
@@ -1233,7 +1385,10 @@ fn check_log_paths_proxy_ips_only_warning() {
     let findings = doctor.check_log_paths();
 
     assert!(has_finding(&findings, "logpath.proxy_ips_only"));
-    let f = findings.iter().find(|f| f.id == "logpath.proxy_ips_only").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "logpath.proxy_ips_only")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1280,11 +1435,7 @@ fn check_log_paths_docker_path_warning() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   dockjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    fake.with_response(
-        bin,
-        &["get", "dockjail", "logpath"],
-        ok_output(docker_log),
-    );
+    fake.with_response(bin, &["get", "dockjail", "logpath"], ok_output(docker_log));
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_log_paths();
@@ -1321,14 +1472,25 @@ fn check_journal_logpath_with_systemd_backend_warning() {
     let status_output = "`- Jail list:   sshd\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
     fake.with_response(bin, &["get", "sshd", "backend"], ok_output("systemd"));
-    fake.with_response(bin, &["get", "sshd", "logpath"], ok_output("/var/log/auth.log"));
-    fake.with_response(bin, &["get", "sshd", "journalmatch"], ok_output("_SYSTEMD_UNIT=sshd.service"));
+    fake.with_response(
+        bin,
+        &["get", "sshd", "logpath"],
+        ok_output("/var/log/auth.log"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "sshd", "journalmatch"],
+        ok_output("_SYSTEMD_UNIT=sshd.service"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_journal();
 
     assert!(has_finding(&findings, "journal.logpath_with_systemd"));
-    let f = findings.iter().find(|f| f.id == "journal.logpath_with_systemd").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "journal.logpath_with_systemd")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1367,7 +1529,10 @@ fn check_journal_unit_not_found_error() {
     let findings = doctor.check_journal();
 
     assert!(has_finding(&findings, "journal.unit_not_found"));
-    let f = findings.iter().find(|f| f.id == "journal.unit_not_found").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "journal.unit_not_found")
+        .unwrap();
     assert_eq!(f.severity, Severity::Error);
 }
 
@@ -1390,7 +1555,10 @@ fn check_journal_access_denied_error() {
     let findings = doctor.check_journal();
 
     assert!(has_finding(&findings, "journal.access_denied"));
-    let f = findings.iter().find(|f| f.id == "journal.access_denied").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "journal.access_denied")
+        .unwrap();
     assert_eq!(f.severity, Severity::Error);
 }
 
@@ -1421,33 +1589,56 @@ fn check_regex_attack_not_matched_warning() {
     // Attack lines should NOT match -- return success without "Lines:".
     fake.with_response(
         regex_bin,
-        &["Failed password for root from 192.168.1.100 port 22 ssh2", "^some weird pattern <HOST>$"],
+        &[
+            "Failed password for root from 192.168.1.100 port 22 ssh2",
+            "^some weird pattern <HOST>$",
+        ],
         ok_output("No match"),
     );
     fake.with_response(
         regex_bin,
-        &["authentication failure; rhost=10.0.0.1 user=admin", "^some weird pattern <HOST>$"],
+        &[
+            "authentication failure; rhost=10.0.0.1 user=admin",
+            "^some weird pattern <HOST>$",
+        ],
         ok_output("No match"),
     );
     // Safe lines -- return success with "Lines:" and "0 matched" so no false positive.
     fake.with_response(
         regex_bin,
-        &["Accepted password for user from 192.168.1.1 port 22 ssh2", "^some weird pattern <HOST>$"],
+        &[
+            "Accepted password for user from 192.168.1.1 port 22 ssh2",
+            "^some weird pattern <HOST>$",
+        ],
         ok_output("Lines: 0 matched"),
     );
     fake.with_response(
         regex_bin,
-        &["session opened for user admin", "^some weird pattern <HOST>$"],
+        &[
+            "session opened for user admin",
+            "^some weird pattern <HOST>$",
+        ],
         ok_output("Lines: 0 matched"),
     );
-    fake.with_response(client_bin, &["get", "testjail", "maxlines"], ok_output("None"));
-    fake.with_response(client_bin, &["get", "testjail", "datepattern"], ok_output("None"));
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "maxlines"],
+        ok_output("None"),
+    );
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "datepattern"],
+        ok_output("None"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_regex();
 
     assert!(has_finding(&findings, "regex.attack_not_matched"));
-    let f = findings.iter().find(|f| f.id == "regex.attack_not_matched").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "regex.attack_not_matched")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1474,18 +1665,27 @@ fn check_regex_false_positive_warning() {
     // Attack lines match (good).
     fake.with_response(
         regex_bin,
-        &["Failed password for root from 192.168.1.100 port 22 ssh2", ".* <HOST> .*"],
+        &[
+            "Failed password for root from 192.168.1.100 port 22 ssh2",
+            ".* <HOST> .*",
+        ],
         ok_output("Lines: 1 matched"),
     );
     fake.with_response(
         regex_bin,
-        &["authentication failure; rhost=10.0.0.1 user=admin", ".* <HOST> .*"],
+        &[
+            "authentication failure; rhost=10.0.0.1 user=admin",
+            ".* <HOST> .*",
+        ],
         ok_output("Lines: 1 matched"),
     );
     // Safe lines also match -- false positive.
     fake.with_response(
         regex_bin,
-        &["Accepted password for user from 192.168.1.1 port 22 ssh2", ".* <HOST> .*"],
+        &[
+            "Accepted password for user from 192.168.1.1 port 22 ssh2",
+            ".* <HOST> .*",
+        ],
         ok_output("Lines: 1 matched, some lines"),
     );
     fake.with_response(
@@ -1493,14 +1693,25 @@ fn check_regex_false_positive_warning() {
         &["session opened for user admin", ".* <HOST> .*"],
         ok_output("Lines: 0 matched"),
     );
-    fake.with_response(client_bin, &["get", "testjail", "maxlines"], ok_output("None"));
-    fake.with_response(client_bin, &["get", "testjail", "datepattern"], ok_output("None"));
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "maxlines"],
+        ok_output("None"),
+    );
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "datepattern"],
+        ok_output("None"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_regex();
 
     assert!(has_finding(&findings, "regex.false_positive"));
-    let f = findings.iter().find(|f| f.id == "regex.false_positive").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "regex.false_positive")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1527,18 +1738,27 @@ fn check_regex_missing_datepattern_info() {
     // Attack lines match.
     fake.with_response(
         regex_bin,
-        &["Failed password for root from 192.168.1.100 port 22 ssh2", "^Failed <HOST>$"],
+        &[
+            "Failed password for root from 192.168.1.100 port 22 ssh2",
+            "^Failed <HOST>$",
+        ],
         ok_output("Lines: 1 matched"),
     );
     fake.with_response(
         regex_bin,
-        &["authentication failure; rhost=10.0.0.1 user=admin", "^Failed <HOST>$"],
+        &[
+            "authentication failure; rhost=10.0.0.1 user=admin",
+            "^Failed <HOST>$",
+        ],
         ok_output("Lines: 0 matched"),
     );
     // Safe lines don't match.
     fake.with_response(
         regex_bin,
-        &["Accepted password for user from 192.168.1.1 port 22 ssh2", "^Failed <HOST>$"],
+        &[
+            "Accepted password for user from 192.168.1.1 port 22 ssh2",
+            "^Failed <HOST>$",
+        ],
         ok_output("Lines: 0 matched"),
     );
     fake.with_response(
@@ -1546,14 +1766,25 @@ fn check_regex_missing_datepattern_info() {
         &["session opened for user admin", "^Failed <HOST>$"],
         ok_output("Lines: 0 matched"),
     );
-    fake.with_response(client_bin, &["get", "testjail", "maxlines"], ok_output("None"));
-    fake.with_response(client_bin, &["get", "testjail", "datepattern"], fail_output("No datepattern"));
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "maxlines"],
+        ok_output("None"),
+    );
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "datepattern"],
+        fail_output("No datepattern"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_regex();
 
     assert!(has_finding(&findings, "regex.no_datepattern"));
-    let f = findings.iter().find(|f| f.id == "regex.no_datepattern").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "regex.no_datepattern")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1583,18 +1814,27 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
     // Attack lines.
     fake.with_response(
         regex_bin,
-        &["Failed password for root from 192.168.1.100 port 22 ssh2", multiline_regex],
+        &[
+            "Failed password for root from 192.168.1.100 port 22 ssh2",
+            multiline_regex,
+        ],
         ok_output("Lines: 0 matched"),
     );
     fake.with_response(
         regex_bin,
-        &["authentication failure; rhost=10.0.0.1 user=admin", multiline_regex],
+        &[
+            "authentication failure; rhost=10.0.0.1 user=admin",
+            multiline_regex,
+        ],
         ok_output("Lines: 0 matched"),
     );
     // Safe lines.
     fake.with_response(
         regex_bin,
-        &["Accepted password for user from 192.168.1.1 port 22 ssh2", multiline_regex],
+        &[
+            "Accepted password for user from 192.168.1.1 port 22 ssh2",
+            multiline_regex,
+        ],
         ok_output("Lines: 0 matched"),
     );
     fake.with_response(
@@ -1603,14 +1843,25 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
         ok_output("Lines: 0 matched"),
     );
     // maxlines returns None / empty.
-    fake.with_response(client_bin, &["get", "testjail", "maxlines"], ok_output("None"));
-    fake.with_response(client_bin, &["get", "testjail", "datepattern"], ok_output("None"));
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "maxlines"],
+        ok_output("None"),
+    );
+    fake.with_response(
+        client_bin,
+        &["get", "testjail", "datepattern"],
+        ok_output("None"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_regex();
 
     assert!(has_finding(&findings, "regex.maxlines_missing"));
-    let f = findings.iter().find(|f| f.id == "regex.maxlines_missing").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "regex.maxlines_missing")
+        .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
 
@@ -1633,7 +1884,11 @@ fn check_actions_missing_actionban_error() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   testjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    fake.with_response(bin, &["get", "testjail", "actions"], ok_output("dummy-action"));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "actions"],
+        ok_output("dummy-action"),
+    );
     // The file dummy-action.conf / .local must exist. We skip this test
     // if the action file is not on disk; the real test coverage comes from
     // the filesystem-based check. Instead we verify the method does not panic.
@@ -1703,7 +1958,11 @@ fn check_actions_cloudflare_placeholder_creds_error() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   testjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    fake.with_response(bin, &["get", "testjail", "actions"], ok_output("cloudflare"));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "actions"],
+        ok_output("cloudflare"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_actions();
@@ -1748,13 +2007,20 @@ fn check_safety_self_ban_risk_critical() {
     let status_output = "`- Jail list:   myjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
     // ignoreip returns only an external IP -- no localhost.
-    fake.with_response(bin, &["get", "myjail", "ignoreip"], ok_output("203.0.113.1"));
+    fake.with_response(
+        bin,
+        &["get", "myjail", "ignoreip"],
+        ok_output("203.0.113.1"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_safety();
 
     assert!(has_finding(&findings, "safety.self_ban_risk"));
-    let f = findings.iter().find(|f| f.id == "safety.self_ban_risk").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "safety.self_ban_risk")
+        .unwrap();
     assert_eq!(f.severity, Severity::Critical);
 }
 
@@ -1769,13 +2035,20 @@ fn check_safety_no_private_network_ignore_info() {
     let status_output = "`- Jail list:   myjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
     // ignoreip has 127.0.0.1 and ::1 (protects against self-ban) but no RFC1918 ranges.
-    fake.with_response(bin, &["get", "myjail", "ignoreip"], ok_output("127.0.0.1 ::1"));
+    fake.with_response(
+        bin,
+        &["get", "myjail", "ignoreip"],
+        ok_output("127.0.0.1 ::1"),
+    );
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_safety();
 
     assert!(has_finding(&findings, "safety.no_private_network_ignore"));
-    let f = findings.iter().find(|f| f.id == "safety.no_private_network_ignore").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "safety.no_private_network_ignore")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1812,7 +2085,10 @@ fn check_proxy_realip_docs_info() {
     let findings = doctor.check_proxy();
 
     assert!(has_finding(&findings, "proxy.realip_docs"));
-    let f = findings.iter().find(|f| f.id == "proxy.realip_docs").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "proxy.realip_docs")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1843,7 +2119,10 @@ fn check_proxy_traefik_filter_info() {
     let findings = doctor.check_proxy();
 
     assert!(has_finding(&findings, "proxy.traefik_filter"));
-    let f = findings.iter().find(|f| f.id == "proxy.traefik_filter").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "proxy.traefik_filter")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1857,16 +2136,27 @@ fn check_proxy_cloudflare_action_info() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   cfjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    fake.with_response(bin, &["get", "cfjail", "logpath"], ok_output("/var/log/nginx/access.log"));
+    fake.with_response(
+        bin,
+        &["get", "cfjail", "logpath"],
+        ok_output("/var/log/nginx/access.log"),
+    );
     fake.with_response(bin, &["get", "cfjail", "actions"], ok_output("cloudflare"));
-    fake.with_response(bin, &["get", "cfjail", "logpath"], ok_output("/var/log/nginx/access.log"));
+    fake.with_response(
+        bin,
+        &["get", "cfjail", "logpath"],
+        ok_output("/var/log/nginx/access.log"),
+    );
     fake.with_response(bin, &["get", "cfjail", "actions"], ok_output("cloudflare"));
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_proxy();
 
     assert!(has_finding(&findings, "proxy.cloudflare_action"));
-    let f = findings.iter().find(|f| f.id == "proxy.cloudflare_action").unwrap();
+    let f = findings
+        .iter()
+        .find(|f| f.id == "proxy.cloudflare_action")
+        .unwrap();
     assert_eq!(f.severity, Severity::Info);
 }
 
@@ -1949,13 +2239,19 @@ fn is_host_anchored_true_at_end_of_pattern() {
 #[test]
 fn extract_ini_value_finds_key() {
     let content = "[Definition]\ntimeout = 120\nactionban = something\n";
-    assert_eq!(extract_ini_value(content, "timeout"), Some("120".to_string()));
+    assert_eq!(
+        extract_ini_value(content, "timeout"),
+        Some("120".to_string())
+    );
 }
 
 #[test]
 fn extract_ini_value_skips_comments() {
     let content = "# timeout = 99\ntimeout = 30\n";
-    assert_eq!(extract_ini_value(content, "timeout"), Some("30".to_string()));
+    assert_eq!(
+        extract_ini_value(content, "timeout"),
+        Some("30".to_string())
+    );
 }
 
 #[test]

@@ -75,6 +75,18 @@ use crate::command::{CommandOutput, Runner};
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
+// Re-export from toride-service
+// ---------------------------------------------------------------------------
+
+/// Re-export of the shared [`toride_service::ServiceManager`] type.
+///
+/// The shared type owns a `Box<dyn Runner>` and takes the service name per
+/// method call. The local [`ServiceManager`] borrows `&dyn Runner` and has a
+/// fixed service name set at construction, which is more ergonomic for the
+/// fail2ban use case.
+pub use toride_service::ServiceManager as SharedServiceManager;
+
+// ---------------------------------------------------------------------------
 // ServiceManager
 // ---------------------------------------------------------------------------
 

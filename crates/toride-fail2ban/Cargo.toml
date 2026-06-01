@@ -11,7 +11,7 @@ default = ["client", "doctor"]
 # === Capability features ===
 
 ## fail2ban-client wrapper, DuctRunner, service management, firewall diagnostics.
-client = ["dep:duct"]
+client = ["dep:duct", "dep:toride-service"]
 
 ## Diagnostic engine for Fail2Ban installations.
 doctor = ["dep:regex", "dep:ipnet"]
@@ -47,8 +47,14 @@ which = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 humantime = "2"
 
+# --- Shared workspace crates ---
+toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", features = ["serde"] }
+
 # --- Optional (feature-gated) ---
 duct = { version = "0.13", optional = true }
+toride-service = { path = "../toride-service", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 regex = { version = "1", optional = true }
 typed-builder = { version = "0.20", optional = true }
@@ -61,6 +67,7 @@ tempfile = { version = "3", optional = true }
 [dev-dependencies]
 insta = "1"
 assert_fs = "1"
+tempfile = "3"
 proptest = "1"
 
 [lints]

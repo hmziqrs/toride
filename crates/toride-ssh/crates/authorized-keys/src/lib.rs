@@ -128,7 +128,8 @@ impl<'a> AuthorizedKeysService<'a> {
 
             // Set restrictive permissions on new files
             if is_new {
-                set_permissions(&path)?;
+                toride_fs::set_permissions(&path, AUTHORIZED_KEYS_MODE)
+                    .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
             }
 
             Ok(())
@@ -222,59 +223,8 @@ impl<'a> AuthorizedKeysService<'a> {
     }
 }
 
-/// Write `contents` to `path` atomically using a temp file + rename.
-///
-/// The temp file is created in the same directory as `path` to guarantee
-/// the rename is on the same filesystem. Uses `create_new` to prevent
-/// symlink attacks on multi-user systems. Permissions are set to 0o600.
+/// Write `contents` to `path` atomically with 0o600 permissions using `toride_fs`.
 fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let temp_path = parent.join(format!(
-        ".authorized_keys.tmp.{}.{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-
-    // Write to temp file using create_new to prevent symlink attacks.
-    {
-        let mut tmp_file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
-        std::io::Write::write_all(&mut tmp_file, contents.as_bytes())
-            .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
-    }
-
-    // Set permissions before rename
-    set_permissions(&temp_path)?;
-
-    // Atomic rename
-    if let Err(e) = std::fs::rename(&temp_path, path) {
-        let _ = std::fs::remove_file(&temp_path);
-        return Err(Error::AuthorizedKeysWriteFailed(e.to_string()));
-    }
-
-    Ok(())
-}
-
-/// Set file permissions to `AUTHORIZED_KEYS_MODE` (0o600) on unix.
-fn set_permissions(path: &std::path::Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(AUTHORIZED_KEYS_MODE))
-            .map_err(|e| Error::AuthorizedKeysWriteFailed(format!(
-                "failed to set permissions on {}: {e}",
-                path.display()
-            )))?;
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-    }
-    Ok(())
+    toride_fs::atomic_write_with_perms(path, contents, AUTHORIZED_KEYS_MODE)
+        .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))
 }

@@ -1,13 +1,25 @@
 //! Command execution layer.
 //!
 //! Provides a trait-based runner for executing system commands, with a real
-//! implementation using `duct` and a fake implementation for testing.
+//! implementation delegating to [`toride_runner::DuctRunner`] and a fake
+//! implementation delegating to [`toride_runner::FakeRunner`].
+//!
+//! The local [`CommandSpec`] is kept because it carries UFW-specific fields
+//! (`requires_root`, `force_c_locale`, `redact_logs`) that the shared
+//! [`toride_runner::CommandSpec`] does not have. Conversion is handled by
+//! the [`IntoShared`] helper.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+use toride_runner::Runner as _;
+
 use crate::error::{Error, Result};
 use crate::spec::{CommandResult, CommandSpec};
+
+// ────────────────────────────────────────────────────────────────────────────
+// Trait
+// ────────────────────────────────────────────────────────────────────────────
 
 /// Trait for executing commands.
 ///
@@ -19,6 +31,42 @@ pub trait CommandRunner: Send + Sync {
     /// Check if a binary exists on the system.
     fn binary_exists(&self, name: &str) -> bool;
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Shared-spec conversion
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Convert a local [`CommandSpec`] into a [`toride_runner::CommandSpec`].
+///
+/// The `force_c_locale` field is honoured by injecting `LC_ALL=C` and
+/// `LANG=C` environment variables into the shared spec.
+fn to_shared_spec(spec: &CommandSpec) -> toride_runner::CommandSpec {
+    let mut s = toride_runner::CommandSpec::new(&spec.program);
+    for arg in &spec.args {
+        s = s.arg(arg);
+    }
+    if let Some(timeout) = spec.timeout {
+        s = s.timeout(timeout);
+    }
+    if spec.force_c_locale {
+        s = s.env("LC_ALL", "C").env("LANG", "C");
+    }
+    s
+}
+
+/// Convert a shared [`toride_runner::CommandOutput`] into the local
+/// [`CommandResult`].
+fn to_local_result(output: &toride_runner::CommandOutput) -> CommandResult {
+    CommandResult {
+        stdout: output.stdout.clone(),
+        stderr: output.stderr.clone(),
+        exit_code: output.exit_code,
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// DuctRunner (wraps toride_runner::DuctRunner)
+// ────────────────────────────────────────────────────────────────────────────
 
 /// Real command runner using `duct`.
 pub struct DuctRunner;
@@ -46,48 +94,24 @@ impl CommandRunner for DuctRunner {
         };
         let _ = display_args; // Used by tracing if enabled
 
-        let mut cmd = duct::cmd(&spec.program, &spec.args);
-
-        if spec.force_c_locale {
-            cmd = cmd.env("LC_ALL", "C").env("LANG", "C");
-        }
-
+        let shared = to_shared_spec(spec);
         let timeout = spec.timeout.unwrap_or(Duration::from_secs(30));
+        let runner = toride_runner::DuctRunner;
 
-        let handle = cmd
-            .stdout_capture()
-            .stderr_capture()
-            .unchecked()
-            .start()
-            .map_err(|e| Error::CommandSpawnFailed(format!("{}: {e}", spec.program)))?;
-
-        let output_result = match handle.wait_timeout(timeout) {
-            Ok(Some(output)) => Ok(output.clone()),
-            Ok(None) => {
-                // Timeout expired — kill the process tree.
-                let _ = handle.kill();
-                let _ = handle.wait();
-                return Err(Error::CommandTimeout {
+        let output = runner.run(&shared).map_err(|e| {
+            // Distinguish timeout from other errors by inspecting the error variant.
+            let err_str = e.to_string();
+            if err_str.contains("timeout") {
+                Error::CommandTimeout {
                     program: spec.program.clone(),
                     timeout_secs: timeout.as_secs(),
-                });
+                }
+            } else {
+                Error::CommandSpawnFailed(err_str)
             }
-            Err(e) => Err(Error::CommandSpawnFailed(format!(
-                "{}: {e}",
-                spec.program
-            ))),
-        };
+        })?;
 
-        let output = output_result?;
-        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        let exit_code = output.status.code();
-
-        Ok(CommandResult {
-            stdout,
-            stderr,
-            exit_code,
-        })
+        Ok(to_local_result(&output))
     }
 
     fn binary_exists(&self, name: &str) -> bool {
@@ -235,7 +259,7 @@ impl CommandRunner for FakeRunner {
 
     fn binary_exists(&self, name: &str) -> bool {
         // By default, pretend ufw and common tools exist
-        matches!(name, "ufw" | "iptables" | "ip6tables" | "iptables-save" | "ip6tables-save" | "systemctl" | "journalctl" | "nft" | "docker" | "nginx" | "caddy" | "ss")
+        matches!(name, "ufw" | "iptables" | "ip6tables" | "iptables-save" | "ip6tables-save" | "systemctl" | "journalctl" | "nft" | "docker" | "nginx" | "caddy" | "ss" | "traefik" | "traefik-client")
     }
 }
 

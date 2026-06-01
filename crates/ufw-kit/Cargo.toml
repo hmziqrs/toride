@@ -23,7 +23,10 @@ tracing = { workspace = true }
 which = { workspace = true }
 serde = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
-duct = { version = "1", features = ["timeout"] }
+toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-service = { path = "../toride-service" }
 ipnet = "2"
 tempfile = "3"
 similar = "2"

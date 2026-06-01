@@ -5,20 +5,20 @@ expression: render_findings_json(&findings)
 [
   {
     "id": "bin:ufw:exists",
-    "severity": "OK",
+    "severity": "✅ OK",
     "title": "UFW binary found",
     "detail": "The ufw binary is available."
   },
   {
     "id": "ssh:no-rule",
-    "severity": "CRITICAL",
+    "severity": "🔴 CRITICAL",
     "title": "No SSH allow rule found",
     "detail": "UFW is active but no SSH allow rule exists.",
     "fix": "Add SSH allow rule: ufw allow 22/tcp"
   },
   {
     "id": "rule:dangerous:5432",
-    "severity": "WARNING",
+    "severity": "🟣 WARNING",
     "title": "Port 5432 (Postgres) is exposed",
     "detail": "Rule exposes port 5432.",
     "fix": "Restrict access to trusted IPs only."

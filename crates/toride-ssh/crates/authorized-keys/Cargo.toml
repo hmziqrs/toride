@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 toride-ssh-core = { path = "../core" }
+toride-fs = { path = "../../../toride-fs" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

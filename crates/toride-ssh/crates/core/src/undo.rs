@@ -212,34 +212,25 @@ impl UndoStack {
     }
 }
 
-/// Write `contents` to `path` atomically using a temp file + rename.
+/// Write `contents` to `path` atomically using `toride_fs::atomic_write`.
+///
+/// Ensures the parent directory exists, then delegates the actual atomic write
+/// to `toride_fs` via `spawn_blocking` so we don't block the tokio runtime.
 async fn atomic_write(path: &Path, contents: &str) -> UndoResult<()> {
     if let Some(parent) = path.parent() {
         // Ensure the parent directory exists.
         fs::create_dir_all(parent).await?;
     }
 
-    let temp_name = format!(
-        ".toride-undo-tmp-{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    );
-    let temp_path = path.with_file_name(temp_name);
-
-    // Write to temp file.
-    fs::write(&temp_path, contents).await?;
-
-    // Rename (atomic on POSIX when same filesystem).
-    match fs::rename(&temp_path, path).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Clean up temp file on rename failure.
-            let _ = fs::remove_file(&temp_path).await;
-            Err(UndoError::Io(e))
-        }
-    }
+    let path = path.to_path_buf();
+    let contents = contents.to_owned();
+    tokio::task::spawn_blocking(move || {
+        toride_fs::atomic_write(&path, &contents)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    })
+    .await
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+    Ok(())
 }
 
 #[cfg(test)]

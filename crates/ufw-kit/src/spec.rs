@@ -382,31 +382,10 @@ impl fmt::Display for UfwReport {
 }
 
 /// Severity level for doctor findings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Severity {
-    /// Everything is fine.
-    Ok,
-    /// Informational finding.
-    Info,
-    /// Warning — something may be wrong.
-    Warning,
-    /// Error — something is definitely wrong.
-    Error,
-    /// Critical — immediate action needed.
-    Critical,
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Ok => f.write_str("OK"),
-            Self::Info => f.write_str("INFO"),
-            Self::Warning => f.write_str("WARNING"),
-            Self::Error => f.write_str("ERROR"),
-            Self::Critical => f.write_str("CRITICAL"),
-        }
-    }
-}
+///
+/// Re-exported from [`toride_diagnostic_types::Severity`]. The shared type
+/// uses `Important` where earlier versions of ufw-kit used `Error`.
+pub use toride_diagnostic_types::Severity;
 
 // ============================================================================
 // Structs — Rule Specs

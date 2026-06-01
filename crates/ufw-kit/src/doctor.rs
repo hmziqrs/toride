@@ -253,7 +253,7 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
         }
         Err(e) => findings.push(Finding {
             id: "svc:ufw:status-fail",
-            severity: Severity::Error,
+            severity: Severity::Important,
             title: "Could not read UFW status".into(),
             detail: format!("Failed to read UFW status: {e}"),
             fix: Some("Check that ufw is installed and you have sufficient permissions.".into()),
@@ -491,7 +491,7 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
         }
         Err(e) => findings.push(Finding {
             id: "pol:status-fail",
-            severity: Severity::Error,
+            severity: Severity::Important,
             title: "Could not check policies".into(),
             detail: format!("Failed to read verbose status: {e}"),
             fix: None,
@@ -649,7 +649,7 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
         }
         Err(e) => findings.push(Finding {
             id: "rule:status-fail",
-            severity: Severity::Error,
+            severity: Severity::Important,
             title: "Could not check rules".into(),
             detail: format!("Failed to read status: {e}"),
             fix: None,
@@ -1749,7 +1749,7 @@ fn check_framework_file(
     if content.contains("*filter") && !content.contains("COMMIT") {
         findings.push(Finding {
             id: Box::leak(format!("fw:{name}:no-commit-filter").into_boxed_str()),
-            severity: Severity::Error,
+            severity: Severity::Important,
             title: format!("{name} filter table missing COMMIT"),
             detail: format!(
                 "{name} has a *filter table but no COMMIT line. \
@@ -1768,7 +1768,7 @@ fn check_framework_file(
         if !has_nat_commit {
             findings.push(Finding {
                 id: Box::leak(format!("fw:{name}:no-commit-nat").into_boxed_str()),
-                severity: Severity::Error,
+                severity: Severity::Important,
                 title: format!("{name} NAT table missing COMMIT"),
                 detail: format!(
                     "{name} has a *nat table but no COMMIT line after it. \
@@ -1801,7 +1801,7 @@ fn check_framework_file(
             if !seen.insert(block_id.clone()) {
                 findings.push(Finding {
                     id: Box::leak(format!("fw:{name}:duplicate-block").into_boxed_str()),
-                    severity: Severity::Error,
+                    severity: Severity::Important,
                     title: format!("Duplicate managed block '{block_id}' in {name}"),
                     detail: format!(
                         "Managed block '{block_id}' appears more than once in {name}. \

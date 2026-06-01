@@ -37,4 +37,5 @@ pub use atomic::{atomic_write, atomic_write_bytes, atomic_write_with_perms};
 pub use error::{Error, Result};
 pub use expand::{expand_path, expand_tilde};
 pub use lock::{with_lock, with_lock_path};
+pub use permissions::set_permissions;
 pub use read::{read_optional, read_optional_bytes};

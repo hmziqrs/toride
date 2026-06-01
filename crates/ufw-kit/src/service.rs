@@ -1,6 +1,8 @@
 //! System service management for UFW.
 //!
-//! Uses `systemctl` to check service status.
+//! Uses `systemctl` to check service status. Execution is routed through
+//! the shared [`toride_runner::DuctRunner`] via the local [`CommandRunner`]
+//! compatibility shim.
 
 use crate::command::CommandRunner;
 use crate::error::{Error, Result};

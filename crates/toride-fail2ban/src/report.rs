@@ -4,10 +4,39 @@
 //! Every mutating or diagnostic workflow in the crate returns one of these
 //! report types so that callers can inspect results programmatically and
 //! produce human-readable output independently.
+//!
+//! # Shared crate re-exports
+//!
+//! This module re-exports types from `toride-diagnostic-types` for use by
+//! callers that need the shared types. The local `Severity`, `Finding`, and
+//! `DoctorReport` remain the primary public API for backward compatibility.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+
+// ---------------------------------------------------------------------------
+// Re-exports from toride-diagnostic-types
+// ---------------------------------------------------------------------------
+
+/// Re-export of the shared [`toride_diagnostic_types::Severity`] type.
+///
+/// The shared type uses `Important` where this crate uses `Error`. See
+/// [`Severity::Error`] for the local variant.
+pub use toride_diagnostic_types::Severity as SharedSeverity;
+
+/// Re-export of the shared [`toride_diagnostic_types::Finding`] type.
+///
+/// The shared type uses `message` where this crate uses `title`, and
+/// `fix_hint` where this crate uses `fix`. See the local [`Finding`] for the
+/// fail2ban-specific API.
+pub use toride_diagnostic_types::Finding as SharedFinding;
+
+/// Re-export of the shared [`toride_diagnostic_types::DoctorReport`] type.
+///
+/// The shared type has a different API (requires `domain` and `checked_at`).
+/// See the local [`DoctorReport`] for the fail2ban-specific API.
+pub use toride_diagnostic_types::DoctorReport as SharedDoctorReport;
 
 // ---------------------------------------------------------------------------
 // Severity
@@ -113,6 +142,35 @@ impl Finding {
     pub fn fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
         self
+    }
+
+    /// Convert this local finding into the shared [`SharedFinding`] type.
+    ///
+    /// Maps `Severity::Error` to `SharedSeverity::Important`.
+    /// Maps `.title` to `.message`, `.fix` to `.fix_hint`.
+    pub fn to_shared(&self) -> SharedFinding {
+        let shared_severity = match self.severity {
+            Severity::Ok => SharedSeverity::Ok,
+            Severity::Info => SharedSeverity::Info,
+            Severity::Warning => SharedSeverity::Warning,
+            Severity::Error => SharedSeverity::Important,
+            Severity::Critical => SharedSeverity::Critical,
+        };
+        let mut f = SharedFinding::new(&self.id, shared_severity, &self.title)
+            .domain("fail2ban");
+        if !self.detail.is_empty() {
+            f = f.detail(&self.detail);
+        }
+        if let Some(ref fix) = self.fix {
+            f = f.fix_hint(fix);
+        }
+        f
+    }
+}
+
+impl From<&Finding> for SharedFinding {
+    fn from(f: &Finding) -> Self {
+        f.to_shared()
     }
 }
 
@@ -266,6 +324,15 @@ impl DoctorReport {
         self.findings
             .iter()
             .any(|f| f.severity == Severity::Critical)
+    }
+
+    /// Convert this report into a shared [`SharedDoctorReport`].
+    ///
+    /// Maps all local findings to shared findings. The `domain` is set to
+    /// `"fail2ban"` and `checked_at` is set to a placeholder timestamp.
+    pub fn to_shared(&self) -> SharedDoctorReport {
+        let shared_findings: Vec<SharedFinding> = self.findings.iter().map(|f| f.to_shared()).collect();
+        SharedDoctorReport::new("fail2ban", shared_findings)
     }
 }
 

@@ -7,6 +7,7 @@ use std::fs::File;
 use std::path::Path;
 
 use fs2::FileExt;
+use toride_fs::atomic_write as fs_atomic_write;
 
 use crate::backup;
 use crate::error::{Error, Result};
@@ -70,7 +71,8 @@ pub fn ensure_app_profile(
     }
 
     // Atomic write
-    atomic_write(&path, &new_content)?;
+    fs_atomic_write(&path, &new_content)
+        .map_err(|e| Error::AppProfileWriteFailed(format!("atomic write: {e}")))?;
 
     Ok(true)
 }
@@ -167,24 +169,6 @@ fn parse_ports(s: &str) -> Result<Vec<crate::spec::AppPort>> {
     }
 
     Ok(ports)
-}
-
-/// Atomic write using a temporary file.
-fn atomic_write(path: &Path, content: &str) -> Result<()> {
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::AppProfileWriteFailed("no parent directory".into()))?;
-
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .map_err(|e| Error::AppProfileWriteFailed(format!("create temp: {e}")))?;
-
-    std::io::Write::write_all(&mut tmp, content.as_bytes())
-        .map_err(|e| Error::AppProfileWriteFailed(format!("write temp: {e}")))?;
-
-    tmp.persist(path)
-        .map_err(|e| Error::AppProfileWriteFailed(format!("persist: {e}")))?;
-
-    Ok(())
 }
 
 #[cfg(test)]

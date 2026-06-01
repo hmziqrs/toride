@@ -6,17 +6,17 @@ expression: render_findings(&findings)
 
 Summary: 3 OK, 0 info, 2 warnings, 0 errors, 0 critical
 
-[WARNING] Port 5432 (Postgres) is exposed
+[🟣 WARNING] Port 5432 (Postgres) is exposed
   Rule exposes port 5432: ALLOW IN 5432/tcp from anywhere
   Fix: Restrict access to trusted IPs only.
 
-[WARNING] Logging level is high
+[🟣 WARNING] Logging level is high
   Logging level: high. This can generate significant disk I/O.
   Fix: Consider using 'low' or 'medium' logging.
 
-[OK] UFW binary found
+[✅ OK] UFW binary found
   The ufw binary is available.
-[OK] Default incoming policy is secure
+[✅ OK] Default incoming policy is secure
   Default incoming policy: deny
-[OK] SSH access is allowed
+[✅ OK] SSH access is allowed
   An SSH allow rule exists.

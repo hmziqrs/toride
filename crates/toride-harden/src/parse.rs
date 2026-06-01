@@ -187,9 +187,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_findmnt_output() {
+    fn findmnt_output_parsed() {
         let output = "TARGET    SOURCE   FSTYPE  OPTIONS\n/dev/shm  tmpfs    tmpfs   rw,nosuid,nodev,noexec\n";
-        let mounts = parse_findmnt_output(output);
+        let mounts = super::parse_findmnt_output(output);
         assert_eq!(mounts.len(), 1);
         assert_eq!(mounts[0].target, "/dev/shm");
         assert_eq!(mounts[0].options, "rw,nosuid,nodev,noexec");

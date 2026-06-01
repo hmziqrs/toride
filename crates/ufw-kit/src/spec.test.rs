@@ -626,8 +626,8 @@ fn ufw_report_display_should_render_correctly() {
 fn severity_should_be_orderable() {
     assert!(Severity::Ok < Severity::Info);
     assert!(Severity::Info < Severity::Warning);
-    assert!(Severity::Warning < Severity::Error);
-    assert!(Severity::Error < Severity::Critical);
+    assert!(Severity::Warning < Severity::Important);
+    assert!(Severity::Important < Severity::Critical);
 }
 
 // ---------------------------------------------------------------------------

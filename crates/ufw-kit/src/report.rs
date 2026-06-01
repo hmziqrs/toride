@@ -12,7 +12,7 @@ pub fn render_findings(findings: &[Finding]) -> String {
     out.push_str("=== UFW Doctor Report ===\n\n");
 
     let critical = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-    let errors = findings.iter().filter(|f| f.severity == Severity::Error).count();
+    let errors = findings.iter().filter(|f| f.severity == Severity::Important).count();
     let warnings = findings.iter().filter(|f| f.severity == Severity::Warning).count();
     let ok = findings.iter().filter(|f| f.severity == Severity::Ok).count();
     let info = findings.iter().filter(|f| f.severity == Severity::Info).count();
@@ -23,7 +23,7 @@ pub fn render_findings(findings: &[Finding]) -> String {
     );
 
     // Show critical and errors first
-    for finding in findings.iter().filter(|f| f.severity >= Severity::Error) {
+    for finding in findings.iter().filter(|f| f.severity >= Severity::Important) {
         let _ = writeln!(out, "[{}] {}", finding.severity, finding.title);
         let _ = writeln!(out, "  {}", finding.detail);
         if let Some(fix) = &finding.fix {
@@ -95,7 +95,7 @@ pub fn render_findings_markdown(findings: &[Finding]) -> String {
 
     // Summary table
     let critical = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-    let errors = findings.iter().filter(|f| f.severity == Severity::Error).count();
+    let errors = findings.iter().filter(|f| f.severity == Severity::Important).count();
     let warnings = findings.iter().filter(|f| f.severity == Severity::Warning).count();
     let ok = findings.iter().filter(|f| f.severity == Severity::Ok).count();
     let info = findings.iter().filter(|f| f.severity == Severity::Info).count();
@@ -113,7 +113,7 @@ pub fn render_findings_markdown(findings: &[Finding]) -> String {
     // Critical and errors
     let critical_errors: Vec<_> = findings
         .iter()
-        .filter(|f| f.severity >= Severity::Error)
+        .filter(|f| f.severity >= Severity::Important)
         .collect();
     if !critical_errors.is_empty() {
         out.push_str("## Critical / Errors\n\n");
