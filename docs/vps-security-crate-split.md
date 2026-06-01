@@ -1,20 +1,23 @@
 # VPS Security Crate Split: Design Document
 
-> **Status:** Draft v2
+> **Status:** Draft v3 (post-audit)
 > **Date:** 2026-06-01
 > **Scope:** Shared abstractions extraction + new VPS security crates
 
 ## Table of Contents
 
 1. [Executive Summary](#executive-summary)
-2. [Shared Abstractions (Prerequisite)](#shared-abstractions-prerequisite)
-3. [New VPS Security Crates](#new-vps-security-crates)
-4. [Architecture Decisions](#architecture-decisions)
-5. [Full Workspace Structure](#full-workspace-structure)
-6. [Implementation Order](#implementation-order)
-7. [Dependency Graph](#dependency-graph)
-8. [Convention Reference](#convention-reference)
-9. [Appendix: Per-Crate Details](#appendix-per-crate-details)
+2. [Architecture Decisions](#architecture-decisions)
+3. [Shared Abstractions (Prerequisite)](#shared-abstractions-prerequisite)
+4. [Migration Plan](#migration-plan)
+5. [New VPS Security Crates](#new-vps-security-crates)
+6. [Cross-Crate Doctor Checks](#cross-crate-doctor-checks)
+7. [Workspace Dependencies](#workspace-dependencies)
+8. [Full Workspace Structure](#full-workspace-structure)
+9. [Implementation Order](#implementation-order)
+10. [Dependency Graph](#dependency-graph)
+11. [Convention Reference](#convention-reference)
+12. [Appendix: Per-Crate Details](#appendix-per-crate-details)
 
 ---
 
@@ -37,7 +40,7 @@
 |-------|----------|-------------|
 | `toride-runner` | Runner trait, CommandSpec, DuctRunner, FakeRunner, redaction | ~350 |
 | `toride-fs` | atomic writes, file locking, path expansion, permissions | ~280 |
-| `toride-diagnostic-types` | Severity, Finding, binary/permission check helpers | ~120 |
+| `toride-diagnostic-types` | Severity, Finding, DoctorReport, render helpers, binary/permission check helpers | ~150 |
 | `toride-service` | systemd service management (is_active, start, stop, etc.) | ~200 |
 
 **Step 2: Build 10 new VPS security crates** on top of the shared foundation.
@@ -85,18 +88,18 @@ toride (binary+lib)                    # Main TUI application
 |---|-------|----------|------|---------|-------|
 | **Shared** | `toride-runner` | **P0** | Shared | ~7 | — |
 | **Shared** | `toride-fs` | **P0** | Shared | ~6 | — |
-| **Shared** | `toride-diagnostic-types` | **P0** | Shared | ~4 | — |
+| **Shared** | `toride-diagnostic-types` | **P0** | Shared | ~6 | — |
 | **Shared** | `toride-service` | **P0** | Shared | ~3 | — |
-| 1 | `toride-updates` | **P0** | Standalone | ~16 | `unattended-upgrades`, `dnf-automatic` |
-| 2 | `toride-harden` | **P0** | Standalone | ~14 | `sysctl`, `mount`, `findmnt` |
-| 3 | `toride-users` | **P1** | Standalone | ~16 | `useradd`, `visudo`, `google-authenticator` |
-| 4 | `toride-wireguard` | **P1** | Standalone | ~12 | `wg`, `wg-quick` |
-| 5 | `toride-audit` | **P1** | Standalone (features) | ~20 | `auditctl`, `aide`, `rsyslogd`, `logrotate` |
-| 6 | `toride-proxy` | **P1** | Standalone (features) | ~18 | `nginx`, `caddy`, `certbot` |
-| 7 | `toride-backup` | **P2** | Standalone | ~15 | `restic`, `borg` |
-| 8 | `toride-cloud` | **P2** | Standalone | ~12 | `aws`, `gcloud`, `doctl`, `hcloud` |
-| 9 | `toride-monitor` | **P2** | Standalone | ~14 | `iptables`, `conntrack`, `ss` |
-| 10 | `toride-tailscale` | **P2** | Standalone | ~12 | `tailscale` API |
+| 1 | `toride-updates` | **P0** | Standalone | ~18 | `unattended-upgrades`, `dnf-automatic` |
+| 2 | `toride-harden` | **P0** | Standalone | ~18 | `sysctl`, `mount`, `findmnt` |
+| 3 | `toride-users` | **P1** | Standalone | ~19 | `useradd`, `visudo`, `google-authenticator` |
+| 4 | `toride-wireguard` | **P1** | Standalone | ~16 | `wg`, `wg-quick` |
+| 5 | `toride-audit` | **P1** | Standalone (features) | ~24 | `auditctl`, `aide`, `rsyslogd`, `logrotate` |
+| 6 | `toride-proxy` | **P1** | Standalone (features) | ~22 | `nginx`, `caddy`, `certbot` |
+| 7 | `toride-backup` | **P2** | Standalone | ~18 | `restic`, `borg` |
+| 8 | `toride-cloud` | **P2** | Standalone | ~16 | `aws`, `gcloud`, `doctl`, `hcloud` |
+| 9 | `toride-monitor` | **P2** | Standalone | ~18 | `iptables`, `conntrack`, `ss` |
+| 10 | `toride-tailscale` | **P2** | Standalone | ~14 | `tailscale` API |
 
 **Total after: 30 crates** (1 binary, 29 libraries) — up from 16 today.
 **Shared crates save ~950 lines** of duplicated code across existing crates.
@@ -129,13 +132,102 @@ The initial design proposed umbrella+sub-crate patterns (6 crates for audit, 4 f
 | Async required | No | Yes (reqwest) |
 | Config | INI files | JSON via API |
 
-### 5. toride-diagnostic-types is minimal
+### 5. toride-diagnostic-types includes report rendering
 
-Just Severity + Finding + helpers. The Check trait and CheckRegistry are used exclusively by toride-ssh-doctor and stay there.
+Severity + Finding + DoctorReport + render helpers (`render_text`, `render_json`, `render_markdown`). The audit found 3 incompatible rendering implementations across ufw-kit, toride-fail2ban, and toride-status — the shared crate unifies these. The Check trait and CheckRegistry stay in toride-ssh-doctor.
+
+### 6. Every new crate gets parse/render/validate modules
+
+The audit found these modules are critical but were missing from the initial design:
+- `parse` — parse CLI tool output into typed Rust structs (every crate wraps CLI tools)
+- `render` — generate config file content from typed structs (8 of 10 crates write config files)
+- `validate` — validate inputs before writing (prevent typos in sysctl names, bad port ranges, etc.)
+- `diff` — show pending changes before applying (safety-critical for destructive operations)
+
+### 7. Cross-crate doctor checks are first-class concerns
+
+18 cross-crate doctor references were identified (see [Cross-Crate Doctor Checks](#cross-crate-doctor-checks)). These holistic checks — like verifying SSH port is open in UFW before locking passwords — are what justify toride as an integrated tool versus independent utilities.
+
+### 8. No premature test-support crates — fixtures start internal
 
 ---
 
-## Implementation Order
+## Migration Plan
+
+### Per-Crate Migration Impact
+
+**Migration order** (leaf crates first, core last):
+
+| Order | Crate | Lines Deleted | Lines Added | Risk | Primary Shared Crate |
+|------:|-------|--------------|-------------|------|---------------------|
+| 1 | `toride-ssh-authorized-keys` | ~55 | ~10 | 🟢 Low | `toride-fs` |
+| 2 | `toride-ssh-known-hosts` | ~95 | ~25 | 🟢 Low | `toride-fs` |
+| 3 | `toride-ssh-key` | ~80 | ~25 | 🟢 Low | `toride-fs` |
+| 4 | `toride-ssh-config` | ~230 | ~60 | 🟢 Low | `toride-fs` |
+| 5 | `toride-ssh-doctor` | ~50 | ~60 | 🟢 Low | `toride-runner` |
+| 6 | `toride-ssh-certificate` | ~45 | ~55 | 🟡 Medium | `toride-runner` |
+| 7 | `toride-ssh-forward` | ~85 | ~45 | 🟡 Medium | `toride-runner` |
+| 8 | `toride-ssh-core` | ~870 | ~30 | 🔴 High | `toride-runner` |
+| 9 | `toride-fail2ban` | ~550 | ~80 | 🔴 High | `toride-runner` |
+| 10 | `toride-status` | ~180 | ~120 | 🟡 Medium | `toride-runner` |
+| | **Total** | **~2240** | **~510** | | |
+
+### High-Risk Crates
+
+**toride-ssh-core** — Highest blast radius. 8 sibling crates depend on `CliRunner`. `Severity`/`Diagnostic` types move to `toride-diagnostic-types`. `UndoStack`/`atomic_write` move to `toride-fs`. Use compatibility shim: `impl CliRunner for &dyn toride_runner::Runner` for gradual adoption.
+
+**toride-fail2ban** — 17 files affected. `command.rs` (391 lines) deletes entirely (replaced by `toride-runner`). `service.rs` (299 lines) replaced by `toride-service`. `report.rs` loses `Severity`/`Finding` to `toride-diagnostic-types`. Doctor tests (1993 lines) need import path changes only.
+
+**toride-status** — `system.rs` has 15 direct `std::process::Command` calls that bypass any runner trait. Must add runner infrastructure where none exists today.
+
+### Public API Breaking Changes
+
+| Crate | Change | Impact |
+|-------|--------|--------|
+| `toride-ssh-core` | `CliRunner` → `toride_runner::Runner` | 30+ import sites across 8 crates |
+| `toride-ssh-core` | `MockCliRunner` → `FakeRunner` | ~20 test sites |
+| `toride-ssh-core` | `Severity`/`Diagnostic` → `toride_diagnostic_types` | 4 import sites |
+| `toride-fail2ban` | `Runner`/`DuctRunner`/`FakeRunner` → `toride_runner` | ~15 source files |
+| `toride-fail2ban` | `Severity`/`Finding` → `toride_diagnostic_types` | ~200 Finding construction sites (syntax unchanged) |
+| `toride-fail2ban` | `ServiceManager` → `toride_service::ServiceManager` | Constructor signature may change |
+| `toride-ssh-certificate` | `CertificateService::new()` gains `runner` parameter | Aligns with all other service structs |
+| `toride-ssh-forward` | `ForwardService::new()` gains `runner` parameter | All callers must provide a runner |
+| `toride-ssh-known-hosts` | `detect_verify_host_key_dns` changes `pub(crate)` → `pub` | Eliminates copy in doctor |
+
+### Test Strategy
+
+After each crate migration, run that crate's tests plus all dependents:
+
+```
+# After each SSH sub-crate migration
+cargo test -p toride-ssh-<crate>
+
+# After toride-ssh-core (highest blast radius)
+cargo test -p toride-ssh    # full SSH workspace
+
+# After toride-fail2ban
+cargo test -p toride-fail2ban --features client,doctor,config
+
+# After toride-status
+cargo test -p toride-status -p toride
+
+# Final workspace smoke test
+cargo test --workspace --all-features
+cargo build --workspace
+```
+
+Key test files to manually verify:
+- `toride-fail2ban/src/command.test.rs` (549 lines, FakeRunner response mechanism)
+- `toride-fail2ban/src/doctor.test.rs` (1993 lines, import-heavy)
+- `toride-ssh/crates/doctor/src/local.test.rs` (2131 lines, MockCliRunner imports)
+- `toride-ssh/crates/core/src/runner.rs` tests (lines 299-479, FIFO behavior)
+
+### Additional Deliverables During Migration
+
+Alongside the main migration, add these specific functions to shared crates:
+- **`toride-fs::read_optional(path)`** — Replace 30+ `NotFound`-graceful file read sites across 8 crates
+- **`toride-diagnostic-types` render methods** — Add `render_text()`, `render_json()`, `render_markdown()` to de-duplicate report rendering
+- **`toride-ssh-known-hosts`: change `detect_verify_host_key_dns` from `pub(crate)` to `pub`** — Eliminates inlined copy in `toride-ssh-doctor`
 
 ```
 Phase 0 — Shared Abstractions (prerequisite)
@@ -407,6 +499,68 @@ Beyond the generic checklist, each crate has domain-specific risks:
 | `toride-wireguard` | Private keys in config files | Doctor checks permissions on `/etc/wireguard/*.conf` (must be 0600) |
 | `toride-monitor` | Log volume DoS | Rate-limit iptables LOG target; warn on excessive logging |
 | `toride-cloud` | Provider credential exposure | Redact all `AWS_*`, `GOOGLE_*`, `DIGITALOCEAN_*` env vars in logs |
+
+---
+
+## Cross-Crate Doctor Checks
+
+These checks reference another crate's domain — impossible without shared `toride-diagnostic-types`. They are the holistic system-safety checks that justify toride as an integrated tool.
+
+### Lockout Prevention (Critical)
+
+| From | To | Check |
+|------|----|-------|
+| `toride-users` | `ufw-kit` | SSH port open in UFW before locking passwords |
+| `toride-users` | `toride-ssh` | SSH keys exist in `authorized_keys` before locking password |
+| `toride-users` | `toride-fail2ban` | Important accounts in `ignoreip` before provisioning |
+| `toride-wireguard` | `ufw-kit` | UDP `ListenPort` allowed through UFW |
+| `toride-tailscale` | `ufw-kit` | `tailscale0` interface handled correctly by UFW |
+| `toride-proxy` | `ufw-kit` | HTTP/HTTPS ports open; certbot challenge port 80 open |
+
+### Configuration Consistency (Important)
+
+| From | To | Check |
+|------|----|-------|
+| `toride-wireguard` | `toride-harden` | `net.ipv4.ip_forward` enabled for gateway configs |
+| `toride-harden` | `toride-fail2ban` | Jail backends compatible with hardened sysctl |
+| `toride-harden` | `ufw-kit` | IPv6 sysctl aligns with UFW IPv6 settings |
+| `toride-proxy` | `toride-harden` | `tcp_syncookies`/`somaxconn` tuned for reverse proxy |
+| `toride-audit` | `toride-fail2ban` | Auditd logs monitored by fail2ban jails |
+| `toride-audit` | `ufw-kit` | UFW logging level produces audit-relevant events |
+| `toride-cloud` | `ufw-kit` | Cloud + local firewall rules don't conflict |
+
+### Monitoring & Backup (Important)
+
+| From | To | Check |
+|------|----|-------|
+| `toride-monitor` | `ufw-kit` | Monitor doesn't conflict with UFW-managed chains |
+| `toride-monitor` | `toride-fail2ban` | Ban rules not flagged as anomalous |
+| `toride-backup` | `toride-proxy` | TLS certificates in backup source paths |
+| `toride-backup` | `toride-ssh` | SSH host keys in backup source paths |
+| `toride-backup` | `ufw-kit` | UFW config files in backup source paths |
+
+---
+
+## Workspace Dependencies
+
+Pin these in the root `Cargo.toml` `[workspace.dependencies]` to prevent version drift:
+
+| Dependency | Version | Used by | Notes |
+|------------|---------|---------|-------|
+| `duct` | `1` (features: `timeout`) | `toride-runner`, all new crates | Currently split: ufw-kit uses v1, fail2ban uses v0.13 |
+| `fd-lock` | `4` | `toride-fs`, all crates with config writes | Replaces `fs2` (v0.4) used by ufw-kit |
+| `tempfile` | `3` | `toride-fs`, all crates with atomic writes | Currently independent per crate |
+| `similar` | `2` | `toride-harden`, `toride-wireguard`, `toride-audit`, `toride-proxy`, `toride-backup` | For diff module |
+| `zeroize` | `1` | `toride-wireguard`, `toride-proxy`, `toride-users` | Key/secret memory wiping |
+
+### Dependency Consolidation
+
+| Current state | Fix |
+|---------------|-----|
+| `duct` v0.13 in fail2ban, v1 in ufw-kit | Migrate fail2ban to v1, pin as workspace dep |
+| `fs2` v0.4 in ufw-kit, `fd-lock` v4 in fail2ban | Standardize on `fd-lock` everywhere |
+| `which` in every crate independently | Comes from `toride-runner` after extraction |
+| `insta`, `tempfile`, `assert_fs`, `proptest` versions vary | Pin in workspace `[dev-dependencies]` |
 
 ---
 
