@@ -163,3 +163,88 @@ pub struct AuditSummary {
     /// Number of log files managed.
     pub log_files_count: usize,
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_report_empty_is_empty() {
+        let report = AuditReport::empty();
+        assert!(report.is_empty());
+        assert!(!report.has_errors());
+        assert_eq!(report.len(), 0);
+    }
+
+    #[test]
+    fn audit_report_push_adds_findings() {
+        let mut report = AuditReport::empty();
+        report.push(AuditFinding::new("test.1", AuditSeverity::Ok, "All good"));
+        report.push(AuditFinding::new("test.2", AuditSeverity::Info, "FYI"));
+        assert_eq!(report.len(), 2);
+        assert!(!report.is_empty());
+    }
+
+    #[test]
+    fn audit_report_has_errors_detects_error_severity() {
+        let mut report = AuditReport::empty();
+        report.push(AuditFinding::new("test.ok", AuditSeverity::Ok, "Ok"));
+        assert!(!report.has_errors());
+
+        report.push(AuditFinding::new("test.warn", AuditSeverity::Warning, "Hmm"));
+        assert!(!report.has_errors());
+
+        report.push(AuditFinding::new("test.err", AuditSeverity::Error, "Broken"));
+        assert!(report.has_errors());
+    }
+
+    #[test]
+    fn audit_report_has_errors_detects_critical_severity() {
+        let mut report = AuditReport::empty();
+        report.push(AuditFinding::new("test.crit", AuditSeverity::Critical, "Fatal"));
+        assert!(report.has_errors());
+    }
+
+    #[test]
+    fn audit_finding_builder_pattern() {
+        let finding = AuditFinding::new("binary.auditctl.missing", AuditSeverity::Error, "Missing auditctl")
+            .detail("The auditctl binary was not found on PATH")
+            .fix("Install the auditd package: apt install auditd");
+        assert_eq!(finding.id, "binary.auditctl.missing");
+        assert_eq!(finding.severity, AuditSeverity::Error);
+        assert_eq!(finding.title, "Missing auditctl");
+        assert_eq!(finding.detail, "The auditctl binary was not found on PATH");
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some("Install the auditd package: apt install auditd")
+        );
+    }
+
+    #[test]
+    fn audit_finding_detail_and_fix_are_optional() {
+        let finding = AuditFinding::new("test", AuditSeverity::Info, "Title");
+        assert!(finding.detail.is_empty());
+        assert!(finding.fix.is_none());
+    }
+
+    #[test]
+    fn audit_severity_ordering() {
+        assert!(AuditSeverity::Critical > AuditSeverity::Error);
+        assert!(AuditSeverity::Error > AuditSeverity::Warning);
+        assert!(AuditSeverity::Warning > AuditSeverity::Info);
+        assert!(AuditSeverity::Info > AuditSeverity::Ok);
+    }
+
+    #[test]
+    fn audit_severity_display() {
+        assert_eq!(AuditSeverity::Ok.to_string(), "OK");
+        assert_eq!(AuditSeverity::Info.to_string(), "INFO");
+        assert_eq!(AuditSeverity::Warning.to_string(), "WARNING");
+        assert_eq!(AuditSeverity::Error.to_string(), "ERROR");
+        assert_eq!(AuditSeverity::Critical.to_string(), "CRITICAL");
+    }
+}

@@ -86,3 +86,73 @@ where
     tracing::debug!(path = %path.display(), "file lock releasing");
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn with_lock_executes_the_closure() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let lock_path = dir.path().join("test.lock");
+
+        let result = with_lock(&lock_path, || Ok(42)).expect("with_lock should succeed");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn with_lock_creates_lock_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let lock_path = dir.path().join("created.lock");
+
+        assert!(!lock_path.exists(), "lock file should not exist yet");
+
+        with_lock(&lock_path, || Ok(())).expect("with_lock should succeed");
+
+        assert!(lock_path.exists(), "lock file should be created");
+    }
+
+    #[test]
+    fn with_lock_propagates_closure_error() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let lock_path = dir.path().join("error.lock");
+
+        use crate::error::Error;
+        let result: Result<()> = with_lock(&lock_path, || {
+            Err(Error::PathInvalid("test error".to_string()))
+        });
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("test error"),
+            "error should contain the closure error message"
+        );
+    }
+
+    #[test]
+    fn with_lock_path_passes_path_to_closure() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let lock_path = dir.path().join("path.lock");
+
+        let result = with_lock_path(&lock_path, |p| {
+            assert_eq!(p, lock_path);
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn with_lock_can_be_called_sequentially() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let lock_path = dir.path().join("seq.lock");
+
+        let r1 = with_lock(&lock_path, || Ok(1)).expect("first lock should succeed");
+        let r2 = with_lock(&lock_path, || Ok(2)).expect("second lock should succeed");
+
+        assert_eq!(r1, 1);
+        assert_eq!(r2, 2);
+    }
+}

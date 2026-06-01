@@ -79,3 +79,73 @@ pub fn expand_path(path: &str) -> PathBuf {
 fn home_dir() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_tilde_bare_returns_home_dir() {
+        let result = expand_tilde("~");
+        let home = dirs::home_dir().expect("home directory should be available");
+        assert_eq!(result, home);
+    }
+
+    #[test]
+    fn expand_tilde_bare_ends_with_home_dir_name() {
+        let result = expand_tilde("~");
+        let home = dirs::home_dir().expect("home directory should be available");
+        let home_name = home.file_name().expect("home dir should have a file name");
+        assert!(result.ends_with(home_name));
+    }
+
+    #[test]
+    fn expand_tilde_with_subpath_starts_with_home_and_ends_with_subpath() {
+        let result = expand_tilde("~/foo/bar");
+        let home = dirs::home_dir().expect("home directory should be available");
+        assert!(result.starts_with(&home));
+        assert!(result.ends_with("foo/bar"));
+        // The path should be home + foo/bar
+        assert_eq!(result, home.join("foo/bar"));
+    }
+
+    #[test]
+    fn expand_tilde_absolute_path_unchanged() {
+        let result = expand_tilde("/absolute/path");
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn expand_tilde_relative_path_unchanged() {
+        let result = expand_tilde("relative/path");
+        assert_eq!(result, PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn expand_tilde_user_prefix_returns_as_is() {
+        // ~user patterns that cannot be resolved are returned unchanged
+        let result = expand_tilde("~someuser");
+        assert_eq!(result, PathBuf::from("~someuser"));
+    }
+
+    #[test]
+    fn expand_path_home_env_var() {
+        let home = std::env::var("HOME").expect("HOME env var should be set");
+        let result = expand_path("$HOME/test");
+        assert_eq!(result, PathBuf::from(format!("{home}/test")));
+    }
+
+    #[test]
+    fn expand_path_no_vars_returns_unchanged() {
+        let result = expand_path("/no/vars");
+        assert_eq!(result, PathBuf::from("/no/vars"));
+    }
+
+    #[test]
+    fn expand_path_tilde_and_home_var() {
+        // ~/foo does not contain $HOME literally, so only tilde expansion applies
+        let result = expand_path("~/foo");
+        let home = dirs::home_dir().expect("home directory should be available");
+        assert_eq!(result, home.join("foo"));
+    }
+}

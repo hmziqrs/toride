@@ -143,3 +143,97 @@ fn extract_number(s: &str) -> Option<usize> {
         .last()
         .and_then(|v| v.parse().ok())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_aide_check_clean_output_passed() {
+        let output = "AIDE 0.17.4 found NO changes\n";
+        let result = parse_aide_check(output).unwrap();
+        assert!(result.passed);
+        assert_eq!(result.changed, 0);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.removed, 0);
+    }
+
+    #[test]
+    fn parse_aide_check_detects_changed_entries() {
+        let output = "\
+Changed entries:
+f!! /etc/passwd
+Changed entries: 1
+Added entries: 0
+Removed entries: 0
+";
+        let result = parse_aide_check(output).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.changed, 1);
+        assert_eq!(result.changes.len(), 1);
+        assert_eq!(result.changes[0].path, "/etc/passwd");
+        assert_eq!(result.changes[0].change_type, AideChangeType::Changed);
+    }
+
+    #[test]
+    fn parse_aide_check_detects_added_entries() {
+        let output = "Added entries:\nf+++ /etc/newfile\nAdded entries: 1\nChanged entries: 0\nRemoved entries: 0\n";
+        let result = parse_aide_check(output).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.added, 1);
+        assert_eq!(result.changes[0].change_type, AideChangeType::Added);
+    }
+
+    #[test]
+    fn parse_aide_check_detects_removed_entries() {
+        let output = "Removed entries:\nf--- /etc/oldfile\nRemoved entries: 1\nChanged entries: 0\nAdded entries: 0\n";
+        let result = parse_aide_check(output).unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.removed, 1);
+        assert_eq!(result.changes[0].change_type, AideChangeType::Removed);
+    }
+
+    #[test]
+    fn parse_aide_check_f_equals_prefix_is_added() {
+        let output = "f = /etc/something\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
+        let result = parse_aide_check(output).unwrap();
+        assert!(result.passed);
+        assert_eq!(result.changes.len(), 1);
+        assert_eq!(result.changes[0].change_type, AideChangeType::Added);
+    }
+
+    #[test]
+    fn parse_aide_check_raw_output_preserved() {
+        let output = "AIDE 0.17 found NO changes\n";
+        let result = parse_aide_check(output).unwrap();
+        assert_eq!(result.raw_output, output);
+    }
+
+    #[test]
+    fn parse_aide_init_success() {
+        let output = "AIDE database initialized at /var/lib/aide/aide.db";
+        assert!(parse_aide_init(output).unwrap());
+    }
+
+    #[test]
+    fn parse_aide_init_failure() {
+        let output = "Error: could not initialize database";
+        assert!(!parse_aide_init(output).unwrap());
+    }
+
+    #[test]
+    fn parse_aide_init_empty() {
+        assert!(!parse_aide_init("").unwrap());
+    }
+
+    #[test]
+    fn extract_number_parses_trailing_integer() {
+        assert_eq!(extract_number("Changed entries: 5"), Some(5));
+        assert_eq!(extract_number("Changed entries: 0"), Some(0));
+        assert_eq!(extract_number("no number here"), None);
+    }
+}

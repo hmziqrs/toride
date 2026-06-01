@@ -175,3 +175,113 @@ pub fn default_audit_logrotate() -> LogrotateConfig {
         ],
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_logrotate_config_daily() {
+        let config = LogrotateConfig {
+            log_path: "/var/log/audit/*.log".to_owned(),
+            rotate: 5,
+            max_size: None,
+            compress: false,
+            frequency: LogrotateFrequency::Daily,
+            extra_options: vec![],
+        };
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.starts_with("/var/log/audit/*.log {\n"));
+        assert!(rendered.contains("    daily\n"));
+        assert!(rendered.contains("    rotate 5\n"));
+        assert!(!rendered.contains("compress"));
+        assert!(rendered.ends_with("}\n"));
+    }
+
+    #[test]
+    fn render_logrotate_config_weekly_with_compress() {
+        let config = LogrotateConfig {
+            log_path: "/var/log/test.log".to_owned(),
+            rotate: 3,
+            max_size: Some("50M".to_owned()),
+            compress: true,
+            frequency: LogrotateFrequency::Weekly,
+            extra_options: vec![],
+        };
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.contains("    weekly\n"));
+        assert!(rendered.contains("    rotate 3\n"));
+        assert!(rendered.contains("    maxsize 50M\n"));
+        assert!(rendered.contains("    compress\n"));
+        assert!(rendered.contains("    delaycompress\n"));
+    }
+
+    #[test]
+    fn render_logrotate_config_monthly() {
+        let config = LogrotateConfig {
+            log_path: "/var/log/monthly.log".to_owned(),
+            rotate: 12,
+            max_size: None,
+            compress: false,
+            frequency: LogrotateFrequency::Monthly,
+            extra_options: vec![],
+        };
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.contains("    monthly\n"));
+    }
+
+    #[test]
+    fn render_logrotate_config_yearly() {
+        let config = LogrotateConfig {
+            log_path: "/var/log/yearly.log".to_owned(),
+            rotate: 1,
+            max_size: None,
+            compress: false,
+            frequency: LogrotateFrequency::Yearly,
+            extra_options: vec![],
+        };
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.contains("    yearly\n"));
+    }
+
+    #[test]
+    fn render_logrotate_config_includes_extra_options() {
+        let config = LogrotateConfig {
+            log_path: "/var/log/test.log".to_owned(),
+            rotate: 5,
+            max_size: None,
+            compress: false,
+            frequency: LogrotateFrequency::Daily,
+            extra_options: vec!["missingok".to_owned(), "notifempty".to_owned()],
+        };
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.contains("    missingok\n"));
+        assert!(rendered.contains("    notifempty\n"));
+    }
+
+    #[test]
+    fn default_audit_logrotate_has_sensible_defaults() {
+        let config = default_audit_logrotate();
+        assert_eq!(config.log_path, "/var/log/audit/*.log");
+        assert_eq!(config.rotate, 10);
+        assert_eq!(config.max_size.as_deref(), Some("100M"));
+        assert!(config.compress);
+        assert_eq!(config.frequency, LogrotateFrequency::Daily);
+        assert!(!config.extra_options.is_empty());
+        // Verify the rendered output is valid.
+        let rendered = render_logrotate_config(&config);
+        assert!(rendered.contains("daily"));
+        assert!(rendered.contains("rotate 10"));
+        assert!(rendered.contains("maxsize 100M"));
+        assert!(rendered.contains("compress"));
+    }
+
+    #[test]
+    fn logrotate_frequency_default_is_daily() {
+        assert_eq!(LogrotateFrequency::default(), LogrotateFrequency::Daily);
+    }
+}

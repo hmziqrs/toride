@@ -86,3 +86,116 @@ pub fn atomic_write_with_perms(path: &Path, content: &str, perms: u32) -> Result
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
+    use tempfile::TempDir;
+
+    #[test]
+    fn atomic_write_creates_file_with_correct_content() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("output.txt");
+
+        atomic_write(&path, "hello world").expect("atomic_write should succeed");
+
+        let content = fs::read_to_string(&path).expect("file should be readable");
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn atomic_write_is_atomic_old_or_new_content() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("atomic.txt");
+
+        // Write initial content
+        fs::write(&path, "old content").expect("initial write should succeed");
+
+        // Overwrite atomically
+        atomic_write(&path, "new content").expect("atomic_write should succeed");
+
+        // After the write, the file must have exactly the new content
+        let content = fs::read_to_string(&path).expect("file should be readable");
+        assert_eq!(content, "new content");
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("overwrite.txt");
+
+        atomic_write(&path, "first").expect("first write should succeed");
+        atomic_write(&path, "second").expect("second write should succeed");
+
+        let content = fs::read_to_string(&path).expect("file should be readable");
+        assert_eq!(content, "second");
+    }
+
+    #[test]
+    fn atomic_write_with_perms_sets_0o600() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("secret.txt");
+
+        atomic_write_with_perms(&path, "secret data", 0o600)
+            .expect("atomic_write_with_perms should succeed");
+
+        let content = fs::read_to_string(&path).expect("file should be readable");
+        assert_eq!(content, "secret data");
+
+        let mode = fs::metadata(&path)
+            .expect("metadata should be available")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn atomic_write_with_perms_sets_0o644() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("public.txt");
+
+        atomic_write_with_perms(&path, "public data", 0o644)
+            .expect("atomic_write_with_perms should succeed");
+
+        let content = fs::read_to_string(&path).expect("file should be readable");
+        assert_eq!(content, "public data");
+
+        let mode = fs::metadata(&path)
+            .expect("metadata should be available")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o644);
+    }
+
+    #[test]
+    fn atomic_write_bytes_handles_binary_content() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("binary.dat");
+
+        let binary_content: &[u8] = &[0x00, 0xFF, 0x80, 0x7F, 0xDE, 0xAD, 0xBE, 0xEF];
+        atomic_write_bytes(&path, binary_content).expect("atomic_write_bytes should succeed");
+
+        let read_back = fs::read(&path).expect("file should be readable");
+        assert_eq!(read_back, binary_content);
+    }
+
+    #[test]
+    fn atomic_write_bytes_handles_empty_content() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("empty.dat");
+
+        atomic_write_bytes(&path, &[]).expect("atomic_write_bytes with empty content should succeed");
+
+        let read_back = fs::read(&path).expect("file should be readable");
+        assert!(read_back.is_empty());
+    }
+
+    #[test]
+    fn atomic_write_fails_with_no_parent_directory() {
+        let path = Path::new("no_such_dir/output.txt");
+        let result = atomic_write(path, "content");
+        assert!(result.is_err());
+    }
+}

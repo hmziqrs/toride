@@ -126,3 +126,88 @@ pub fn parse_auto(json: &str) -> Result<Vec<SecurityGroup>> {
     // TODO: Implement auto-detection logic.
     Err(Error::ProviderNotFound("cannot determine cloud provider from output".to_string()))
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::Protocol;
+
+    // -- parse_port_range ----------------------------------------------------
+
+    #[test]
+    fn parse_port_range_single_port() {
+        let pr = parse_port_range("80").unwrap();
+        assert_eq!(pr.start, 80);
+        assert_eq!(pr.end, 80);
+        assert!(pr.is_single());
+    }
+
+    #[test]
+    fn parse_port_range_range() {
+        let pr = parse_port_range("8000-9000").unwrap();
+        assert_eq!(pr.start, 8000);
+        assert_eq!(pr.end, 9000);
+        assert!(!pr.is_single());
+    }
+
+    #[test]
+    fn parse_port_range_invalid_returns_error() {
+        assert!(parse_port_range("abc").is_err());
+        assert!(parse_port_range("").is_err());
+        assert!(parse_port_range("80-abc").is_err());
+    }
+
+    #[test]
+    fn parse_port_range_boundary_ports() {
+        let pr = parse_port_range("1").unwrap();
+        assert_eq!(pr.start, 1);
+
+        let pr = parse_port_range("65535").unwrap();
+        assert_eq!(pr.start, 65535);
+    }
+
+    // -- parse_protocol ------------------------------------------------------
+
+    #[test]
+    fn parse_protocol_tcp() {
+        assert_eq!(parse_protocol("tcp"), Protocol::Tcp);
+    }
+
+    #[test]
+    fn parse_protocol_udp() {
+        assert_eq!(parse_protocol("udp"), Protocol::Udp);
+    }
+
+    #[test]
+    fn parse_protocol_icmp() {
+        assert_eq!(parse_protocol("icmp"), Protocol::Icmp);
+    }
+
+    #[test]
+    fn parse_protocol_all() {
+        assert_eq!(parse_protocol("all"), Protocol::All);
+    }
+
+    #[test]
+    fn parse_protocol_case_insensitive() {
+        assert_eq!(parse_protocol("TCP"), Protocol::Tcp);
+        assert_eq!(parse_protocol("Udp"), Protocol::Udp);
+        assert_eq!(parse_protocol("ICMP"), Protocol::Icmp);
+        assert_eq!(parse_protocol("ALL"), Protocol::All);
+        assert_eq!(parse_protocol("Tcp"), Protocol::Tcp);
+    }
+
+    #[test]
+    fn parse_protocol_numeric_returns_other() {
+        assert_eq!(parse_protocol("47"), Protocol::Other(47));
+    }
+
+    #[test]
+    fn parse_protocol_minus_one_returns_all() {
+        assert_eq!(parse_protocol("-1"), Protocol::All);
+    }
+}

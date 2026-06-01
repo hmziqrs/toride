@@ -81,3 +81,93 @@ pub fn validate_aide_config(config: &str) -> crate::Result<()> {
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- validate_audit_rule --------------------------------------------------
+
+    #[test]
+    fn validate_audit_rule_accepts_watch_rule() {
+        assert!(validate_audit_rule("-w /etc/passwd -p wa -k identity").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_accepts_comment() {
+        assert!(validate_audit_rule("# this is a comment").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_accepts_empty_string() {
+        assert!(validate_audit_rule("").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_accepts_a_flag() {
+        assert!(validate_audit_rule("-a always,exit -F arch=b64 -S open -k test").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_accepts_d_flag() {
+        assert!(validate_audit_rule("-d never").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_accepts_w_flag() {
+        assert!(validate_audit_rule("-W /etc/passwd").is_ok());
+    }
+
+    #[test]
+    fn validate_audit_rule_rejects_invalid_rule() {
+        let result = validate_audit_rule("INVALID RULE HERE");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_audit_rule_rejects_unrecognized_prefix() {
+        let result = validate_audit_rule("--bad-flag something");
+        assert!(result.is_err());
+    }
+
+    // -- validate_aide_config -------------------------------------------------
+
+    #[test]
+    fn validate_aide_config_accepts_valid_config() {
+        let config = "database=file:/var/lib/aide/aide.db\n\
+                      database_out=file:/var/lib/aide/aide.db.new\n\
+                      /etc ALL\n\
+                      /var/log ALL\n";
+        assert!(validate_aide_config(config).is_ok());
+    }
+
+    #[test]
+    fn validate_aide_config_rejects_missing_database() {
+        let config = "/etc ALL\n/var/log ALL\n";
+        let result = validate_aide_config(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_aide_config_allows_comments_and_empty_lines() {
+        let config = "# comment\n\n\ndatabase=file:/var/lib/aide/aide.db\n/etc ALL\n";
+        assert!(validate_aide_config(config).is_ok());
+    }
+
+    #[test]
+    fn validate_aide_config_rejects_non_absolute_path() {
+        let config = "database=file:/var/lib/aide/aide.db\nrelative/path ALL\n";
+        let result = validate_aide_config(config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn validate_aide_config_allows_exclamation_prefix() {
+        let config = "database=file:/var/lib/aide/aide.db\n!/tmp ALL\n";
+        assert!(validate_aide_config(config).is_ok());
+    }
+}

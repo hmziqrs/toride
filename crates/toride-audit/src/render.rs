@@ -79,3 +79,74 @@ pub fn render_rsyslog_config(
         .unwrap_or_default();
     format!("{facility}.*\t{log_path}{template_directive}\n")
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn render_audit_rules_joins_with_newlines() {
+        let rules: Vec<String> = vec![
+            "-w /etc/passwd -p wa -k identity".to_owned(),
+            "-w /etc/shadow -p wa -k identity".to_owned(),
+            "# comment".to_owned(),
+        ];
+        let output = render_audit_rules(&rules);
+        assert_eq!(
+            output,
+            "-w /etc/passwd -p wa -k identity\n\
+             -w /etc/shadow -p wa -k identity\n\
+             # comment"
+        );
+    }
+
+    #[test]
+    fn render_audit_rules_empty_vec() {
+        let rules: Vec<String> = vec![];
+        let output = render_audit_rules(&rules);
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn render_aide_config_contains_database_and_monitored_paths() {
+        let paths: Vec<String> = vec![
+            "/etc".to_owned(),
+            "/var/log".to_owned(),
+        ];
+        let output = render_aide_config(
+            "/var/lib/aide/aide.db",
+            "/var/lib/aide/aide.db.new",
+            &paths,
+            "stdout",
+        );
+        assert!(output.contains("database=file:/var/lib/aide/aide.db"));
+        assert!(output.contains("database_out=file:/var/lib/aide/aide.db.new"));
+        assert!(output.contains("report_url=stdout"));
+        assert!(output.contains("/etc ALL"));
+        assert!(output.contains("/var/log ALL"));
+    }
+
+    #[test]
+    fn render_rsyslog_config_with_template() {
+        let output = render_rsyslog_config(
+            "authpriv",
+            "/var/log/audit.log",
+            Some("AuditLogFormat"),
+        );
+        assert!(output.contains("authpriv.*"));
+        assert!(output.contains("/var/log/audit.log"));
+        assert!(output.contains(";AuditLogFormat"));
+    }
+
+    #[test]
+    fn render_rsyslog_config_without_template() {
+        let output = render_rsyslog_config("local6", "/var/log/test.log", None);
+        assert!(output.contains("local6.*"));
+        assert!(output.contains("/var/log/test.log"));
+        assert!(!output.contains(';'));
+    }
+}

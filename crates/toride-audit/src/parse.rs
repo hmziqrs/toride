@@ -127,3 +127,83 @@ pub fn parse_ausearch(output: &str) -> crate::Result<Vec<AusearchEvent>> {
 
     Ok(events)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- parse_auditctl_output ------------------------------------------------
+
+    #[test]
+    fn parse_auditctl_no_rules_returns_empty() {
+        let rules = parse_auditctl_output("No rules").unwrap();
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn parse_auditctl_empty_returns_empty() {
+        let rules = parse_auditctl_output("").unwrap();
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn parse_auditctl_multiline_returns_correct_count() {
+        let input = "-a always,exit -F arch=b64 -S open -k test1\n\
+                     -w /etc/passwd -p wa -k identity\n\
+                     -a always,exit -F arch=b64 -S write -k test2";
+        let rules = parse_auditctl_output(input).unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].raw, "-a always,exit -F arch=b64 -S open -k test1");
+        assert_eq!(rules[1].raw, "-w /etc/passwd -p wa -k identity");
+        assert_eq!(rules[2].raw, "-a always,exit -F arch=b64 -S write -k test2");
+    }
+
+    // -- parse_aureport -------------------------------------------------------
+
+    #[test]
+    fn parse_aureport_empty_returns_empty() {
+        let entries = parse_aureport("").unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_aureport_numbered_entries() {
+        let input = "1. 2025-01-01 00:00:00 test entry one\n\
+                     2. 2025-01-02 12:30:00 test entry two\n\
+                     3. 2025-01-03 08:15:00 test entry three";
+        let entries = parse_aureport(input).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].number, 1);
+        assert_eq!(entries[1].number, 2);
+        assert_eq!(entries[2].number, 3);
+        assert!(entries[0].raw.contains("test entry one"));
+    }
+
+    // -- parse_ausearch -------------------------------------------------------
+
+    #[test]
+    fn parse_ausearch_with_separators() {
+        let input = "type=SYSCALL msg=audit(1234): item\n----\ntype=PATH msg=audit(5678): other";
+        let events = parse_ausearch(input).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[0].raw.contains("SYSCALL"));
+        assert!(events[1].raw.contains("PATH"));
+    }
+
+    #[test]
+    fn parse_ausearch_empty_returns_empty() {
+        let events = parse_ausearch("").unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn parse_ausearch_multiple_dashes() {
+        let input = "event1\n----\nevent2\n----\nevent3";
+        let events = parse_ausearch(input).unwrap();
+        assert_eq!(events.len(), 3);
+    }
+}

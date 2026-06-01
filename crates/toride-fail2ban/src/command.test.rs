@@ -465,12 +465,13 @@ mod proptests {
 
     /// Strategy for a non-sensitive argument (no sensitive keywords).
     fn safe_arg_strategy() -> impl Strategy<Value = String> {
-        "\\PC*".prop_filter("must not contain sensitive keywords", |s| {
+        "\\PC*".prop_filter("must not contain sensitive keywords or redaction marker", |s| {
             let lower = s.to_ascii_lowercase();
             !lower.contains("password")
                 && !lower.contains("token")
                 && !lower.contains("key")
                 && !lower.contains("secret")
+                && !s.starts_with("***")
         })
     }
 

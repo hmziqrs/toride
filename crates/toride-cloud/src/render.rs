@@ -102,3 +102,144 @@ pub fn render_gcp_rule(rule: &FirewallRule) -> String {
     // TODO: Implement GCP CLI argument rendering.
     String::new()
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{PortRange, Protocol, RuleAction};
+
+    fn sample_ingress_rule() -> FirewallRule {
+        FirewallRule {
+            id: None,
+            description: "HTTP traffic".to_string(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(80)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Allow,
+        }
+    }
+
+    fn sample_egress_rule() -> FirewallRule {
+        FirewallRule {
+            id: None,
+            description: "Outbound HTTPS".to_string(),
+            is_ingress: false,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(443)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Allow,
+        }
+    }
+
+    // -- render_firewall_rule ------------------------------------------------
+
+    #[test]
+    fn render_firewall_rule_ingress() {
+        let rule = sample_ingress_rule();
+        let rendered = render_firewall_rule(&rule);
+        assert!(rendered.starts_with("INGRESS"));
+        assert!(rendered.contains("tcp"));
+        assert!(rendered.contains("0.0.0.0/0"));
+        assert!(rendered.contains("80"));
+        assert!(rendered.contains("allow"));
+        assert!(rendered.contains("HTTP traffic"));
+    }
+
+    #[test]
+    fn render_firewall_rule_egress() {
+        let rule = sample_egress_rule();
+        let rendered = render_firewall_rule(&rule);
+        assert!(rendered.starts_with("EGRESS"));
+        assert!(rendered.contains("443"));
+        assert!(rendered.contains("Outbound HTTPS"));
+    }
+
+    #[test]
+    fn render_firewall_rule_no_port_shows_all() {
+        let rule = FirewallRule {
+            id: None,
+            description: String::new(),
+            is_ingress: true,
+            protocol: Protocol::All,
+            port_range: None,
+            cidr: "10.0.0.0/8".to_string(),
+            action: RuleAction::Allow,
+        };
+        let rendered = render_firewall_rule(&rule);
+        assert!(rendered.contains("all"));
+    }
+
+    #[test]
+    fn render_firewall_rule_no_description() {
+        let rule = FirewallRule {
+            id: None,
+            description: String::new(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(22)),
+            cidr: "10.0.0.0/8".to_string(),
+            action: RuleAction::Deny,
+        };
+        let rendered = render_firewall_rule(&rule);
+        assert!(!rendered.contains('"'));
+    }
+
+    // -- render_security_group -----------------------------------------------
+
+    #[test]
+    fn render_security_group_includes_metadata() {
+        let group = crate::spec::SecurityGroup {
+            id: None,
+            name: "web-sg".to_string(),
+            description: "Web security group".to_string(),
+            provider: crate::CloudProvider::Aws,
+            rules: vec![sample_ingress_rule()],
+            tags: vec![],
+        };
+        let rendered = render_security_group(&group);
+        assert!(rendered.contains("web-sg"));
+        assert!(rendered.contains("Web security group"));
+        assert!(rendered.contains("aws"));
+        assert!(rendered.contains("Rules: 1"));
+    }
+
+    #[test]
+    fn render_security_group_no_description_omits_line() {
+        let group = crate::spec::SecurityGroup {
+            id: None,
+            name: "empty-sg".to_string(),
+            description: String::new(),
+            provider: crate::CloudProvider::Gcp,
+            rules: vec![],
+            tags: vec![],
+        };
+        let rendered = render_security_group(&group);
+        assert!(!rendered.contains("Description:"));
+    }
+
+    // -- render_firewall_rules -----------------------------------------------
+
+    #[test]
+    fn render_firewall_rules_ingress_before_egress() {
+        let egress = sample_egress_rule();
+        let ingress = sample_ingress_rule();
+        let rendered = render_firewall_rules(&[egress, ingress]);
+        let ingress_pos = rendered.find("INGRESS").unwrap();
+        let egress_pos = rendered.find("EGRESS").unwrap();
+        assert!(
+            ingress_pos < egress_pos,
+            "INGRESS rules should appear before EGRESS rules"
+        );
+    }
+
+    #[test]
+    fn render_firewall_rules_empty_vec() {
+        let rendered = render_firewall_rules(&[]);
+        assert!(rendered.is_empty());
+    }
+}

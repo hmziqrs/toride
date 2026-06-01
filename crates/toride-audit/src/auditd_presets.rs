@@ -117,3 +117,55 @@ pub fn all_presets() -> Vec<&'static AuditPreset> {
 pub fn find_preset(id: &str) -> Option<&'static AuditPreset> {
     all_presets().into_iter().find(|p| p.id == id)
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_presets_returns_expected_presets() {
+        let presets = all_presets();
+        assert_eq!(presets.len(), 3);
+        let ids: Vec<&str> = presets.iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"cis-level2"));
+        assert!(ids.contains(&"stig"));
+        assert!(ids.contains(&"minimal"));
+    }
+
+    #[test]
+    fn find_preset_finds_known_presets() {
+        assert!(find_preset("cis-level2").is_some());
+        assert!(find_preset("stig").is_some());
+        assert!(find_preset("minimal").is_some());
+    }
+
+    #[test]
+    fn find_preset_returns_none_for_unknown() {
+        assert!(find_preset("nonexistent").is_none());
+        assert!(find_preset("").is_none());
+    }
+
+    #[test]
+    fn each_preset_has_nonempty_rules() {
+        for preset in all_presets() {
+            assert!(
+                !preset.rules.is_empty(),
+                "preset '{}' should have at least one rule",
+                preset.id
+            );
+        }
+    }
+
+    #[test]
+    fn each_preset_has_id_name_description() {
+        for preset in all_presets() {
+            assert!(!preset.id.is_empty(), "preset id must not be empty");
+            assert!(!preset.name.is_empty(), "preset name must not be empty");
+            assert!(!preset.description.is_empty(), "preset description must not be empty");
+        }
+    }
+}

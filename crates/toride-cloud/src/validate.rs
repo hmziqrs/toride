@@ -180,3 +180,151 @@ pub fn validate_port(port: u16) -> Result<()> {
     }
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
+
+    // -- validate_cidr -------------------------------------------------------
+
+    #[test]
+    fn validate_cidr_open_ipv4() {
+        assert!(validate_cidr("0.0.0.0/0").is_ok());
+    }
+
+    #[test]
+    fn validate_cidr_private_ipv4() {
+        assert!(validate_cidr("10.0.0.0/8").is_ok());
+    }
+
+    #[test]
+    fn validate_cidr_missing_prefix_returns_err() {
+        assert!(validate_cidr("10.0.0.0").is_err());
+    }
+
+    #[test]
+    fn validate_cidr_invalid_ip_returns_err() {
+        assert!(validate_cidr("not-an-ip/8").is_err());
+    }
+
+    #[test]
+    fn validate_cidr_valid_ipv6() {
+        assert!(validate_cidr("::1/128").is_ok());
+        assert!(validate_cidr("fe80::/10").is_ok());
+    }
+
+    #[test]
+    fn validate_cidr_prefix_too_large_ipv4() {
+        assert!(validate_cidr("10.0.0.0/33").is_err());
+    }
+
+    // -- validate_port -------------------------------------------------------
+
+    #[test]
+    fn validate_port_zero_returns_err() {
+        assert!(validate_port(0).is_err());
+    }
+
+    #[test]
+    fn validate_port_one_returns_ok() {
+        assert!(validate_port(1).is_ok());
+    }
+
+    #[test]
+    fn validate_port_max_returns_ok() {
+        assert!(validate_port(65535).is_ok());
+    }
+
+    // -- validate_firewall_rule ----------------------------------------------
+
+    fn valid_rule() -> FirewallRule {
+        FirewallRule {
+            id: None,
+            description: "Allow HTTP".to_string(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(80)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Allow,
+        }
+    }
+
+    #[test]
+    fn validate_firewall_rule_valid() {
+        assert!(validate_firewall_rule(&valid_rule()).is_ok());
+    }
+
+    #[test]
+    fn validate_firewall_rule_invalid_cidr() {
+        let mut rule = valid_rule();
+        rule.cidr = "not-valid".to_string();
+        assert!(validate_firewall_rule(&rule).is_err());
+    }
+
+    #[test]
+    fn validate_firewall_rule_port_zero() {
+        let mut rule = valid_rule();
+        rule.port_range = Some(PortRange::single(0));
+        assert!(validate_firewall_rule(&rule).is_err());
+    }
+
+    #[test]
+    fn validate_firewall_rule_inverted_range() {
+        let mut rule = valid_rule();
+        rule.port_range = Some(PortRange::range(100, 50));
+        assert!(validate_firewall_rule(&rule).is_err());
+    }
+
+    // -- validate_security_group ---------------------------------------------
+
+    #[test]
+    fn validate_security_group_valid() {
+        let group = SecurityGroup {
+            id: None,
+            name: "test-sg".to_string(),
+            description: "Test".to_string(),
+            provider: crate::CloudProvider::Aws,
+            rules: vec![valid_rule()],
+            tags: vec![],
+        };
+        assert!(validate_security_group(&group).is_ok());
+    }
+
+    #[test]
+    fn validate_security_group_detects_duplicates() {
+        let rule = valid_rule();
+        let group = SecurityGroup {
+            id: None,
+            name: "dup-sg".to_string(),
+            description: "Duplicate test".to_string(),
+            provider: crate::CloudProvider::Aws,
+            rules: vec![rule.clone(), rule.clone()],
+            tags: vec![],
+        };
+        let result = validate_security_group(&group);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("duplicate"),
+            "Error message should mention duplicates: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn validate_security_group_empty_rules_is_ok() {
+        let group = SecurityGroup {
+            id: None,
+            name: "empty-sg".to_string(),
+            description: String::new(),
+            provider: crate::CloudProvider::Aws,
+            rules: vec![],
+            tags: vec![],
+        };
+        assert!(validate_security_group(&group).is_ok());
+    }
+}

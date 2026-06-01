@@ -132,3 +132,125 @@ impl Finding {
         self
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CloudProvider;
+
+    // -- CloudReport ---------------------------------------------------------
+
+    #[test]
+    fn cloud_report_new_is_empty() {
+        let report = CloudReport::new(CloudProvider::Aws);
+        assert!(report.is_empty());
+        assert!(report.findings.is_empty());
+        assert!(report.security_groups.is_empty());
+    }
+
+    #[test]
+    fn cloud_report_is_empty_true_when_nothing_added() {
+        let report = CloudReport::new(CloudProvider::Gcp);
+        assert!(report.is_empty());
+    }
+
+    #[test]
+    fn cloud_report_push_adds_finding() {
+        let mut report = CloudReport::new(CloudProvider::Aws);
+        let finding = Finding::new("test.001", Severity::Info, "Test finding");
+        report.push(finding);
+        assert!(!report.is_empty());
+        assert_eq!(report.findings.len(), 1);
+    }
+
+    #[test]
+    fn cloud_report_has_errors_false_when_no_errors() {
+        let report = CloudReport::new(CloudProvider::Aws);
+        assert!(!report.has_errors());
+    }
+
+    #[test]
+    fn cloud_report_has_errors_true_with_error_severity() {
+        let mut report = CloudReport::new(CloudProvider::Aws);
+        report.push(Finding::new("err.001", Severity::Error, "Something broke"));
+        assert!(report.has_errors());
+    }
+
+    #[test]
+    fn cloud_report_has_errors_true_with_critical_severity() {
+        let mut report = CloudReport::new(CloudProvider::Aws);
+        report.push(Finding::new("crit.001", Severity::Critical, "Everything is on fire"));
+        assert!(report.has_errors());
+    }
+
+    #[test]
+    fn cloud_report_has_errors_false_with_only_warnings() {
+        let mut report = CloudReport::new(CloudProvider::Aws);
+        report.push(Finding::new("warn.001", Severity::Warning, "Minor issue"));
+        assert!(!report.has_errors());
+    }
+
+    // -- Finding builder pattern ---------------------------------------------
+
+    #[test]
+    fn finding_new_sets_mandatory_fields() {
+        let f = Finding::new("aws.sg.open", Severity::Warning, "Open ingress");
+        assert_eq!(f.id, "aws.sg.open");
+        assert_eq!(f.severity, Severity::Warning);
+        assert_eq!(f.title, "Open ingress");
+        assert!(f.detail.is_empty());
+        assert!(f.fix.is_none());
+    }
+
+    #[test]
+    fn finding_builder_chains_detail_and_fix() {
+        let f = Finding::new("test.001", Severity::Error, "Bad config")
+            .detail("The CIDR block is too permissive")
+            .fix("Restrict the CIDR to your VPC range");
+        assert_eq!(f.detail, "The CIDR block is too permissive");
+        assert_eq!(f.fix, Some("Restrict the CIDR to your VPC range".to_string()));
+    }
+
+    // -- Severity ordering ---------------------------------------------------
+
+    #[test]
+    fn severity_ordering_critical_is_highest() {
+        assert!(Severity::Critical > Severity::Error);
+        assert!(Severity::Critical > Severity::Warning);
+        assert!(Severity::Critical > Severity::Info);
+        assert!(Severity::Critical > Severity::Ok);
+    }
+
+    #[test]
+    fn severity_ordering_error_above_warning() {
+        assert!(Severity::Error > Severity::Warning);
+        assert!(Severity::Error > Severity::Info);
+        assert!(Severity::Error > Severity::Ok);
+    }
+
+    #[test]
+    fn severity_ordering_warning_above_info() {
+        assert!(Severity::Warning > Severity::Info);
+        assert!(Severity::Warning > Severity::Ok);
+    }
+
+    #[test]
+    fn severity_ordering_info_above_ok() {
+        assert!(Severity::Info > Severity::Ok);
+    }
+
+    // -- Severity Display ----------------------------------------------------
+
+    #[test]
+    fn severity_display_formats() {
+        assert_eq!(Severity::Ok.to_string(), "OK");
+        assert_eq!(Severity::Info.to_string(), "INFO");
+        assert_eq!(Severity::Warning.to_string(), "WARNING");
+        assert_eq!(Severity::Error.to_string(), "ERROR");
+        assert_eq!(Severity::Critical.to_string(), "CRITICAL");
+    }
+}

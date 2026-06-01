@@ -58,3 +58,106 @@ pub fn check_owner_is_root(path: &Path) -> Result<bool> {
     let uid = fs::metadata(path)?.uid();
     Ok(uid == 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use tempfile::TempDir;
+
+    #[test]
+    fn check_not_world_writable_passes_for_0o644_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("secure.txt");
+
+        fs::write(&path, "data").expect("write should succeed");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644))
+            .expect("set_permissions should succeed");
+
+        let result = check_not_world_writable(&path);
+        assert!(result.is_ok(), "0o644 file should not be world-writable");
+    }
+
+    #[test]
+    fn check_not_world_writable_fails_for_0o666_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("insecure.txt");
+
+        fs::write(&path, "data").expect("write should succeed");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666))
+            .expect("set_permissions should succeed");
+
+        let result = check_not_world_writable(&path);
+        assert!(result.is_err(), "0o666 file should be flagged as world-writable");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("world-writable"),
+            "error message should mention world-writable: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn check_not_world_writable_passes_for_0o600_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("private.txt");
+
+        fs::write(&path, "data").expect("write should succeed");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .expect("set_permissions should succeed");
+
+        let result = check_not_world_writable(&path);
+        assert!(result.is_ok(), "0o600 file should not be world-writable");
+    }
+
+    #[test]
+    fn check_not_world_writable_fails_for_nonexistent_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("missing.txt");
+
+        let result = check_not_world_writable(&path);
+        assert!(result.is_err(), "non-existent file should return an error");
+    }
+
+    #[test]
+    fn set_permissions_changes_file_mode() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("perms.txt");
+
+        fs::write(&path, "data").expect("write should succeed");
+
+        set_permissions(&path, 0o755).expect("set_permissions should succeed");
+
+        let mode = fs::metadata(&path)
+            .expect("metadata should be available")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o755);
+    }
+
+    #[test]
+    fn set_permissions_to_0o600() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("owner_only.txt");
+
+        fs::write(&path, "data").expect("write should succeed");
+
+        set_permissions(&path, 0o600).expect("set_permissions should succeed");
+
+        let mode = fs::metadata(&path)
+            .expect("metadata should be available")
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn set_permissions_fails_for_nonexistent_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let path = dir.path().join("missing.txt");
+
+        let result = set_permissions(&path, 0o644);
+        assert!(result.is_err(), "setting permissions on non-existent file should fail");
+    }
+}
