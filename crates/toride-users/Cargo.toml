@@ -1,0 +1,57 @@
+[package]
+name = "toride-users"
+version = "0.1.0"
+edition = "2024"
+description = "OS-level user, sudo, PAM, and 2FA management"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+
+# === Capability features ===
+
+## `useradd`/`usermod`/`userdel` wrapper, group management, command runner.
+client = ["dep:duct"]
+
+## Service management for user-related daemons.
+service = ["client"]
+
+## Diagnostic engine for user/access control security checks.
+doctor = ["service"]
+
+## Config file parsing and rendering.
+config = ["client", "dep:regex", "dep:dirs"]
+
+## TOTP/2FA enrollment via `google-authenticator`.
+totp = ["client"]
+
+## Serde serialization for spec and report types.
+serde = ["dep:serde", "dep:serde_json"]
+
+## CLI argument parsing.
+cli = ["dep:clap"]
+
+[dependencies]
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+
+# --- Optional (feature-gated) ---
+duct = { version = "1", features = ["timeout"], optional = true }
+dirs = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "toride-diagnostic-types"
+version = "0.1.0"
+edition = "2024"
+description = "Shared diagnostic types: Severity, Finding, DoctorReport, and render helpers"
+license = "MIT"
+
+[features]
+default = []
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta = "1"
+proptest = "1"
+
+[lints]
+workspace = true

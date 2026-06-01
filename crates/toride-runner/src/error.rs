@@ -1,0 +1,48 @@
+//! Crate-wide error types for toride-runner.
+
+/// Convenience alias for `Result<T, Error>`.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// All errors produced by toride-runner.
+#[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
+pub enum Error {
+    /// An I/O error occurred.
+    #[error("io error: {0}")]
+    Io(String),
+
+    /// A required binary could not be found on the system.
+    #[error("binary not found: {0}")]
+    BinaryNotFound(String),
+
+    /// A command exited with a non-zero status.
+    #[error("command failed (exit {exit_code:?}): {program} {args}\nstderr: {stderr}")]
+    CommandFailed {
+        /// Program name.
+        program: String,
+        /// Arguments passed.
+        args: String,
+        /// Exit code, if available.
+        exit_code: Option<i32>,
+        /// Standard error output.
+        stderr: String,
+    },
+
+    /// Command execution timed out.
+    #[error("command timed out: {0}")]
+    CommandTimeout(String),
+
+    /// Command output could not be parsed.
+    #[error("failed to parse command output: {0}")]
+    OutputParse(String),
+
+    /// Catch-all for other errors.
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Self::Io(err.to_string())
+    }
+}

@@ -1,0 +1,70 @@
+[package]
+name = "toride-proxy"
+version = "0.1.0"
+edition = "2024"
+description = "Reverse proxy, TLS certificate, and WAF management"
+license = "MIT"
+
+[features]
+default = ["client", "doctor", "nginx"]
+
+# === Capability features ===
+
+## Proxy client wrapper, command execution via duct, service management.
+client = ["dep:duct"]
+
+## Diagnostic engine for proxy installations.
+doctor = ["service"]
+
+## Service management via toride-service.
+service = ["client"]
+
+## Nginx reverse proxy configuration and management.
+nginx = ["client", "dep:regex"]
+
+## Caddy reverse proxy configuration and management.
+caddy = ["client"]
+
+## TLS certificate lifecycle management.
+certs = ["client"]
+
+## Web Application Firewall stub.
+waf = []
+
+## Configuration file parsing and rendering.
+config = ["client", "dep:regex"]
+
+## Serialize/Deserialize on types.
+serde = ["dep:serde", "dep:serde_json"]
+
+## CLI argument parsing.
+cli = ["dep:clap"]
+
+[dependencies]
+# --- Always required ---
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+
+# --- Optional (feature-gated) ---
+toride-service = { path = "../toride-service", optional = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+similar = "2"
+zeroize = "1"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+toride-runner = { path = "../toride-runner", features = ["fake"] }
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true

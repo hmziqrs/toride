@@ -1,0 +1,22 @@
+[package]
+name = "toride-fs"
+version = "0.1.0"
+edition = "2024"
+description = "Shared filesystem utilities: atomic writes, locking, path expansion"
+license = "MIT"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+tempfile = "3"
+fd-lock = "4"
+
+[dev-dependencies]
+insta = "1"
+assert_fs = "1"
+tempfile = "3"
+proptest = "1"
+
+[lints]
+workspace = true

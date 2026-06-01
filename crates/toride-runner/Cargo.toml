@@ -1,0 +1,28 @@
+[package]
+name = "toride-runner"
+version = "0.1.0"
+edition = "2024"
+description = "Shared command runner trait, implementations, and utilities"
+license = "MIT"
+
+[features]
+default = ["duct-runner"]
+duct-runner = ["dep:duct"]
+fake = []
+serde = ["dep:serde", "dep:serde_json"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+proptest = "1"
+
+[lints]
+workspace = true

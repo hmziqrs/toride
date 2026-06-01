@@ -1,0 +1,67 @@
+[package]
+name = "toride-audit"
+version = "0.1.0"
+edition = "2024"
+description = "Linux audit daemon, file integrity monitoring, and log management"
+license = "MIT"
+
+[features]
+default = ["client", "doctor", "auditd"]
+
+# === Capability features ===
+
+## audit daemon client wrapper, DuctRunner, service management.
+client = ["dep:duct"]
+
+## Diagnostic engine for audit installations.
+doctor = ["service"]
+
+## Service management (start/stop/restart auditd).
+service = ["client"]
+
+## Linux audit daemon (auditd) management.
+auditd = ["client"]
+
+## File integrity monitoring (AIDE).
+integrity = ["client"]
+
+## Log aggregation and management (rsyslog, journald, logrotate).
+logs = ["client"]
+
+## Intrusion detection system integration stub.
+ids = []
+
+## Configuration file parsing and management.
+config = ["client", "dep:regex"]
+
+# === Meta / downstream features ===
+
+## Serialization support for types.
+serde = ["dep:serde", "dep:serde_json"]
+
+## CLI argument parsing.
+cli = ["dep:clap"]
+
+[dependencies]
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-service = { path = "../toride-service", optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+similar = "2"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,177 @@
+//! Logrotate management.
+//!
+//! Provides functions for managing logrotate configuration for
+//! audit-related log files.
+
+use std::fs;
+
+use crate::{AuditPaths, Error, Result};
+
+// ---------------------------------------------------------------------------
+// LogrotateConfig
+// ---------------------------------------------------------------------------
+
+/// Parsed representation of a logrotate configuration block.
+#[derive(Debug, Clone)]
+pub struct LogrotateConfig {
+    /// Path to the log file(s) being rotated.
+    pub log_path: String,
+    /// Rotate files this many times before deletion.
+    pub rotate: u32,
+    /// Maximum size before rotation (e.g. "100M").
+    pub max_size: Option<String>,
+    /// Whether to compress rotated files.
+    pub compress: bool,
+    /// Whether to rotate on a daily/weekly/monthly basis.
+    pub frequency: LogrotateFrequency,
+    /// Additional options as raw strings.
+    pub extra_options: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// LogrotateFrequency
+// ---------------------------------------------------------------------------
+
+/// Log rotation frequency.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogrotateFrequency {
+    /// Rotate daily.
+    #[default]
+    Daily,
+    /// Rotate weekly.
+    Weekly,
+    /// Rotate monthly.
+    Monthly,
+    /// Rotate yearly.
+    Yearly,
+}
+
+// ---------------------------------------------------------------------------
+// Logrotate management functions
+// ---------------------------------------------------------------------------
+
+/// Write a logrotate configuration for audit logs.
+///
+/// Creates a configuration file in `/etc/logrotate.d/` for the specified
+/// log path.
+///
+/// # Arguments
+///
+/// * `paths` - Audit paths containing the logrotate_d directory.
+/// * `name` - Configuration file name.
+/// * `config` - The logrotate configuration.
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigWrite`] if the file cannot be written.
+pub fn write_logrotate_config(
+    paths: &AuditPaths,
+    name: &str,
+    config: &LogrotateConfig,
+) -> Result<()> {
+    let path = paths.logrotate_d.join(name);
+
+    if path.exists() {
+        crate::backup::create_backup(&path)?;
+    }
+
+    fs::create_dir_all(&paths.logrotate_d)?;
+
+    let content = render_logrotate_config(config);
+    fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    Ok(())
+}
+
+/// Remove a logrotate configuration file.
+///
+/// Creates a backup before removing.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the file cannot be removed.
+pub fn remove_logrotate_config(paths: &AuditPaths, name: &str) -> Result<()> {
+    let path = paths.logrotate_d.join(name);
+
+    if path.exists() {
+        crate::backup::create_backup(&path)?;
+        fs::remove_file(&path)?;
+    }
+
+    Ok(())
+}
+
+/// List all logrotate configuration files.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the directory cannot be read.
+pub fn list_logrotate_configs(paths: &AuditPaths) -> Result<Vec<String>> {
+    if !paths.logrotate_d.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&paths.logrotate_d)? {
+        let entry = entry?;
+        if entry.path().is_file() {
+            files.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+
+    files.sort();
+    Ok(files)
+}
+
+/// Render a logrotate configuration to a string.
+#[must_use]
+pub fn render_logrotate_config(config: &LogrotateConfig) -> String {
+    let mut out = String::new();
+
+    out.push_str(&config.log_path);
+    out.push_str(" {\n");
+
+    match config.frequency {
+        LogrotateFrequency::Daily => out.push_str("    daily\n"),
+        LogrotateFrequency::Weekly => out.push_str("    weekly\n"),
+        LogrotateFrequency::Monthly => out.push_str("    monthly\n"),
+        LogrotateFrequency::Yearly => out.push_str("    yearly\n"),
+    }
+
+    out.push_str(&format!("    rotate {}\n", config.rotate));
+
+    if let Some(size) = &config.max_size {
+        out.push_str(&format!("    maxsize {size}\n"));
+    }
+
+    if config.compress {
+        out.push_str("    compress\n");
+        out.push_str("    delaycompress\n");
+    }
+
+    for opt in &config.extra_options {
+        out.push_str(&format!("    {opt}\n"));
+    }
+
+    out.push_str("}\n");
+    out
+}
+
+/// Create a default logrotate configuration for audit logs.
+#[must_use]
+pub fn default_audit_logrotate() -> LogrotateConfig {
+    LogrotateConfig {
+        log_path: "/var/log/audit/*.log".to_owned(),
+        rotate: 10,
+        max_size: Some("100M".to_owned()),
+        compress: true,
+        frequency: LogrotateFrequency::Daily,
+        extra_options: vec![
+            "missingok".to_owned(),
+            "notifempty".to_owned(),
+            "sharedscripts".to_owned(),
+            "postrotate".to_owned(),
+            "    systemctl reload auditd > /dev/null 2>&1 || true".to_owned(),
+            "endscript".to_owned(),
+        ],
+    }
+}

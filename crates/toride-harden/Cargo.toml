@@ -1,0 +1,39 @@
+[package]
+name = "toride-harden"
+version = "0.1.0"
+edition = "2024"
+description = "System hardening via sysctl kernel parameters and security profiles"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+client = ["dep:duct", "toride-runner/duct-runner"]
+doctor = ["service"]
+service = ["client"]
+config = ["client"]
+serde = ["dep:serde", "dep:serde_json"]
+cli = ["dep:clap"]
+
+[dependencies]
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+similar = "2"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+toride-runner = { path = "../toride-runner", features = ["fake"] }
+
+[lints]
+workspace = true

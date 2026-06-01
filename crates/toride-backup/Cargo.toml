@@ -1,0 +1,58 @@
+[package]
+name = "toride-backup"
+version = "0.1.0"
+edition = "2024"
+description = "Backup scheduling and management via restic or borg"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+
+# === Capability features ===
+
+## restic/borg CLI wrappers, backup operations, restore workflows.
+client = ["dep:duct"]
+
+## Diagnostic engine for backup installations.
+doctor = ["service"]
+
+## Service management layer (systemd timers, cron).
+## Implies `client` because service management may need to run commands.
+service = ["client"]
+
+## Config parsing, spec validation, retention policy management.
+## Implies `client` because config operations use the command runner.
+config = ["client", "dep:regex"]
+
+## Serde serialization for specs and reports.
+serde = ["dep:serde", "dep:serde_json"]
+
+## CLI argument parsing.
+cli = ["dep:clap"]
+
+[dependencies]
+# --- Always required ---
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+dirs = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+
+# --- Optional (feature-gated) ---
+toride-service = { path = "../toride-service", optional = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true

@@ -1,0 +1,41 @@
+[package]
+name = "toride-wireguard"
+version = "0.1.0"
+edition = "2024"
+description = "WireGuard VPN tunnel management"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+client = ["dep:duct"]
+doctor = ["service"]
+service = ["client"]
+config = ["client", "dep:regex"]
+serde = ["dep:serde", "dep:serde_json"]
+cli = ["dep:clap"]
+
+[dependencies]
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-service = { path = "../toride-service", optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+duct = { version = "0.13", optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true, optional = true }
+regex = { version = "1", optional = true }
+similar = "2"
+zeroize = "1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true

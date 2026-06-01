@@ -1,0 +1,38 @@
+[package]
+name = "toride-tailscale"
+version = "0.1.0"
+edition = "2024"
+description = "Tailscale mesh VPN management via HTTP API"
+license = "MIT"
+
+[features]
+default = ["client", "doctor"]
+client = ["dep:duct", "dep:reqwest", "dep:tokio"]
+doctor = ["service"]
+service = ["client"]
+serde = ["dep:serde"]
+cli = ["dep:clap"]
+
+[dependencies]
+toride-runner = { path = "../toride-runner" }
+toride-fs = { path = "../toride-fs" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-service = { path = "../toride-service", optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+which = { workspace = true }
+duct = { version = "1", features = ["timeout"], optional = true }
+serde = { workspace = true, features = ["derive"], optional = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+
+[dev-dependencies]
+insta = "1"
+tempfile = "3"
+assert_fs = "1"
+proptest = "1"
+
+[lints]
+workspace = true
