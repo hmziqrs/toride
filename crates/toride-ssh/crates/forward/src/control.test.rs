@@ -1,6 +1,7 @@
 #![allow(clippy::unreadable_literal)]
 
 use super::*;
+use serial_test::serial;
 
 #[test]
 fn parse_local_forward_line() {
@@ -653,6 +654,7 @@ fn install_fake_ssh(script: &str) -> (tempfile::TempDir, String) {
 /// the cancel command succeeds.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn cancel_forward_success() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_LIST_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -672,6 +674,7 @@ async fn cancel_forward_success() {
 /// returned by `ssh -O list`.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn cancel_forward_forward_not_found() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_LIST_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -734,6 +737,7 @@ exit 1
 /// cleaned up.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn exit_session_success() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_EXIT_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -762,6 +766,7 @@ async fn exit_session_success() {
 /// and return the underlying error.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn exit_session_stale_socket_cleanup() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_EXIT_FAIL_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -803,6 +808,7 @@ async fn exit_session_stale_socket_cleanup() {
 /// any SSH command is spawned.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn exit_session_invalid_control_path() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
@@ -859,6 +865,7 @@ esac
 /// patterns, then verifies all are discovered with correct host extraction.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_discovers_valid_sockets() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -918,6 +925,7 @@ async fn list_sessions_discovers_valid_sockets() {
 /// (from both ssh_dir and /tmp) is filtered out.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_none_alive() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_DEAD_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -948,6 +956,7 @@ async fn list_sessions_none_alive() {
 /// Empty ssh_dir with no matching socket files.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_empty_ssh_dir() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -980,6 +989,7 @@ async fn list_sessions_empty_ssh_dir() {
 /// in the path succeed the check, others fail.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_mixed_alive_and_dead() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_SELECTIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -1044,6 +1054,7 @@ async fn list_sessions_mixed_alive_and_dead() {
 /// PID extraction from socket filenames using `ssh-<hash>-<pid>` pattern.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_extracts_pid_from_filename() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -1077,6 +1088,7 @@ async fn list_sessions_extracts_pid_from_filename() {
 /// by `is_socket_or_candidate` and discovered by `list_sessions`.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_accepts_candidate_files() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -1112,6 +1124,7 @@ async fn list_sessions_accepts_candidate_files() {
 /// Non-existent ssh_dir: function handles missing directory gracefully.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_nonexistent_ssh_dir() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
@@ -1140,6 +1153,7 @@ async fn list_sessions_nonexistent_ssh_dir() {
 /// even if they match the glob pattern.
 #[cfg(unix)]
 #[tokio::test]
+#[serial]
 async fn list_sessions_rejects_files_with_extensions() {
     let (_dir, new_path) = install_fake_ssh(FAKE_SSH_CHECK_ALIVE_SCRIPT);
     let orig_path = std::env::var("PATH").unwrap_or_default();
