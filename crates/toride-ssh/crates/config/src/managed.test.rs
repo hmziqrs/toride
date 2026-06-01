@@ -1,5 +1,5 @@
 use super::*;
-use crate::config::ast::{parse as parse_ast, ConfigAst};
+use crate::ast::{parse as parse_ast, ConfigAst};
 
 fn make_ast_with_managed() -> ConfigAst {
     parse_ast(

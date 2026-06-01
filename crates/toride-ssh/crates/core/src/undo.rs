@@ -5,10 +5,10 @@
 //! operations:
 //!
 //! ```rust,no_run
-//! use toride_ssh_core::undo::UndoStack;
+//! use toride_ssh_core::undo::{UndoStack, UndoResult};
 //! use std::path::Path;
 //!
-//! # async fn example(config_path: &Path) -> toride_ssh_core::Result<()> {
+//! # async fn example(config_path: &Path) -> UndoResult<()> {
 //! let mut undo = UndoStack::new(20);
 //! undo.snapshot(config_path).await?;
 //! // ... perform mutation ...

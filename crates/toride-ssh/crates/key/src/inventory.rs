@@ -1237,6 +1237,7 @@ Host hsm2
         }
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_matching_fingerprint_is_filtered_out() {
         let existing = vec![make_key("AAAA", KeySource::Filesystem)];
@@ -1249,6 +1250,7 @@ Host hsm2
         );
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_no_match_is_kept() {
         let existing = vec![make_key("AAAA", KeySource::Filesystem)];
@@ -1259,6 +1261,7 @@ Host hsm2
         assert_eq!(result[0].fingerprint.as_ref().unwrap().hash, "BBBB");
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_partial_match() {
         let existing = vec![make_key("AAAA", KeySource::Filesystem)];
@@ -1278,6 +1281,7 @@ Host hsm2
         assert!(hashes.contains(&"CCCC"));
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_empty_agent_list() {
         let existing = vec![make_key("AAAA", KeySource::Filesystem)];
@@ -1290,6 +1294,7 @@ Host hsm2
         );
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_empty_existing_list() {
         let existing: Vec<SshKey> = vec![];
@@ -1306,6 +1311,7 @@ Host hsm2
         );
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_agent_key_without_fingerprint_is_kept() {
         let existing = vec![make_key("AAAA", KeySource::Filesystem)];
@@ -1319,6 +1325,7 @@ Host hsm2
         );
     }
 
+    #[cfg(feature = "agent-integration")]
     #[test]
     fn filter_agent_keys_existing_key_without_fingerprint_does_not_match() {
         let existing = vec![make_key_no_fp(KeySource::Filesystem)];

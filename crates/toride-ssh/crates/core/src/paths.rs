@@ -40,8 +40,7 @@ impl Default for SshPaths {
 
 impl SshPaths {
     /// Create an `SshPaths` rooted at an arbitrary directory (for tests).
-    #[cfg(test)]
-    pub(crate) fn with_dir(dir: &std::path::Path) -> Self {
+    pub fn with_dir(dir: &std::path::Path) -> Self {
         Self {
             ssh_dir: dir.to_path_buf(),
             config_path: dir.join("config"),

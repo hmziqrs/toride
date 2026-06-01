@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn install_key_to_remote_rejects_missing_key() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let result = rt.block_on(install_key_to_remote(
             Path::new("/nonexistent/key"),
             "user@host",
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn uninstall_key_from_remote_rejects_missing_key() {
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let result = rt.block_on(uninstall_key_from_remote(
             Path::new("/nonexistent/key"),
             "user@host",
@@ -329,7 +329,7 @@ mod tests {
         std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         // ssh is not registered as existing.
         let result = rt.block_on(uninstall_key_from_remote(
             &key_path,
@@ -352,7 +352,7 @@ mod tests {
         std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
         // The check command returns NOTFOUND.
         runner.push_run_response("ssh", Ok("NOTFOUND\n".to_owned()));
@@ -374,7 +374,7 @@ mod tests {
         std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
         // First call: check command returns FOUND.
         runner.push_run_response("ssh", Ok("FOUND\n".to_owned()));
@@ -398,7 +398,7 @@ mod tests {
         std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
         // Check command returns FOUND.
         runner.push_run_response("ssh", Ok("FOUND\n".to_owned()));
@@ -450,7 +450,7 @@ mod tests {
         std::fs::write(&pub_path, "\n").unwrap(); // empty/malformed pubkey
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
 
         let result = rt.block_on(uninstall_key_from_remote(

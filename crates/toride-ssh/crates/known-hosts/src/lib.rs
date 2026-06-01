@@ -1013,7 +1013,7 @@ mod tests {
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         assert!(svc.contains("example.com").await.unwrap());
         assert!(!svc.contains("other.com").await.unwrap());
@@ -1030,7 +1030,7 @@ mod tests {
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         assert!(svc.contains("192.168.1.1").await.unwrap());
         assert!(!svc.contains("10.0.0.1").await.unwrap());
@@ -1047,7 +1047,7 @@ mod tests {
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         // Target "example.com:2222" should match the bracketed pattern "[example.com]:2222".
         assert!(svc.contains("example.com:2222").await.unwrap());
@@ -1066,7 +1066,7 @@ mod tests {
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         assert!(svc.contains("host1.example.com").await.unwrap());
         assert!(svc.contains("host2.example.com").await.unwrap());
@@ -1084,7 +1084,7 @@ mod tests {
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let entries = svc.list().await.unwrap();
         assert_eq!(entries.len(), 1);
@@ -1208,7 +1208,7 @@ host-b ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let entries = svc.list().await.unwrap();
         assert_eq!(entries.len(), 2);
@@ -1232,7 +1232,7 @@ host-b ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         svc.remove("host-a").await.unwrap();
 
@@ -1252,7 +1252,7 @@ host-b ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let result = svc.remove("nonexistent").await;
         assert!(result.is_err());
@@ -1320,7 +1320,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.push_run_response(
             "ssh-keygen",
             Ok(format!(
@@ -1340,7 +1340,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         std::fs::write(&kh_path, "").unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         // ssh-keygen -F returns exit code 1 for not found — mock as error.
         runner.push_run_response(
             "ssh-keygen",
@@ -1365,7 +1365,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         // First call: user known_hosts (empty).
         runner.push_run_response(
             "ssh-keygen",
@@ -1487,7 +1487,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let entries = svc.list_global().await.unwrap();
         assert_eq!(entries.len(), 1);
@@ -1498,7 +1498,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
     async fn list_global_returns_empty_when_file_missing() {
         let dir = tempfile::tempdir().unwrap();
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let entries = svc.list_global().await.unwrap();
         assert!(entries.is_empty());
@@ -1525,7 +1525,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let entries = svc.list_all().await.unwrap();
         assert_eq!(entries.len(), 2);
@@ -1549,7 +1549,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
 
         // Mock ssh-keygen -F for find() — return the stored entry.
         runner.push_run_response(
@@ -1583,7 +1583,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
 
         // Mock ssh-keygen -F — same key.
         runner.push_run_response(
@@ -1615,7 +1615,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
 
         // ssh-keygen -F returns only the ed25519 key.
         runner.push_run_response(
@@ -1649,7 +1649,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
 
         // ssh-keygen -F returns both keys.
         runner.push_run_response(
@@ -1682,7 +1682,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         let dir = tempfile::tempdir().unwrap();
         // No config file — should return default known_hosts path.
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let result = svc.resolve_user_known_hosts_file("example.com").await.unwrap();
         assert_eq!(result, dir.path().join("known_hosts"));
@@ -1699,7 +1699,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let result = svc.resolve_user_known_hosts_file("example.com").await.unwrap();
         assert_eq!(result, PathBuf::from("/custom/known_hosts"));
@@ -1716,7 +1716,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let result = svc.resolve_user_known_hosts_file("example.com").await.unwrap();
         // "none" maps to /dev/null.
@@ -1734,7 +1734,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         .unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let result = svc.resolve_user_known_hosts_file("any-host").await.unwrap();
         assert_eq!(result, PathBuf::from("/global/custom/known_hosts"));
@@ -2051,7 +2051,7 @@ random noise
     async fn verify_host_key_dns_status_unknown_when_no_config() {
         let dir = tempfile::tempdir().unwrap();
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let status = svc.verify_host_key_dns_status().await.unwrap();
         assert_eq!(status, DnsVerifyStatus::Unknown);
@@ -2064,7 +2064,7 @@ random noise
         std::fs::write(&config_path, "VerifyHostKeyDNS yes\n").unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let status = svc.verify_host_key_dns_status().await.unwrap();
         assert_eq!(status, DnsVerifyStatus::Enabled);
@@ -2077,7 +2077,7 @@ random noise
         std::fs::write(&config_path, "VerifyHostKeyDNS ask\n").unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         let svc = KnownHostsService::new(&paths, &runner);
         let status = svc.verify_host_key_dns_status().await.unwrap();
         assert_eq!(status, DnsVerifyStatus::Ask);
@@ -2091,7 +2091,7 @@ random noise
     async fn generate_sshfp_records_parses_output() {
         let dir = tempfile::tempdir().unwrap();
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
-        let runner = crate::MockCliRunner::new();
+        let runner = toride_ssh_core::MockCliRunner::new();
         runner.push_run_response(
             "ssh-keygen",
             Ok(
