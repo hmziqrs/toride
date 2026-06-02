@@ -253,13 +253,14 @@ fn copy_bg(src: &Buffer, dst: &mut Buffer, area: Rect) {
 
 // ── Animated border ───────────────────────────────────────────────────────────
 
-/// Compute the border rect as the union of content areas expanded by 1 cell,
-/// clamped to the frame area.
+/// Compute the border rect as the union of content areas expanded by 2 cells
+/// of padding, clamped to the frame area.
 fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Rect {
-    let x = logo_area.x.saturating_sub(1).max(frame_area.x);
-    let y = logo_area.y.saturating_sub(1).max(frame_area.y);
-    let right = (keys_area.right() + 1).min(frame_area.right());
-    let bottom = (keys_area.bottom() + 1).min(frame_area.bottom());
+    let pad = 2u16;
+    let x = logo_area.x.saturating_sub(pad).max(frame_area.x);
+    let y = logo_area.y.saturating_sub(pad).max(frame_area.y);
+    let right = (keys_area.right() + pad).min(frame_area.right());
+    let bottom = (keys_area.bottom() + pad).min(frame_area.bottom());
     Rect {
         x,
         y,
@@ -268,8 +269,9 @@ fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Re
     }
 }
 
-/// Build a repeating color gradient from a base color using HSL manipulation.
-/// Ported from exabind's `select_category_color_cycle()`.
+/// Build a seamless looping color gradient from a base color using HSL manipulation.
+/// Ported from exabind's `select_category_color_cycle()`, with a final wrap-around
+/// segment that interpolates back to the base color for smooth looping at corners.
 fn build_color_cycle(base_color: Color) -> Vec<Color> {
     let (h, s, l) = color_to_hsl(&base_color);
 
@@ -298,6 +300,14 @@ fn build_color_cycle(base_color: Color) -> Vec<Color> {
         colors.push(target);
         prev = target;
     }
+
+    // Wrap-around: interpolate from last keyframe back to base color
+    // so the cycle loops seamlessly at the join point (top-left corner).
+    let wrap_steps = 7;
+    for i in 1..wrap_steps {
+        colors.push(prev.lerp(&base_color, i as f32 / wrap_steps as f32));
+    }
+
     colors
 }
 
@@ -305,7 +315,7 @@ fn build_color_cycle(base_color: Color) -> Vec<Color> {
 ///
 /// Walks the perimeter clockwise (top→right→bottom→left), drawing box-drawing
 /// characters with foreground colors that cycle over time, producing a flowing
-/// rainbow effect at ~30 cells/second.
+/// rainbow effect at ~12 cells/second.
 fn draw_animated_border(
     buf: &mut Buffer,
     border_rect: Rect,
@@ -316,7 +326,7 @@ fn draw_animated_border(
         return;
     }
 
-    let idx = (elapsed_secs * 30.0) as usize;
+    let idx = (elapsed_secs * 12.0) as usize;
     let cycle_len = color_cycle.len();
     let mut perimeter_idx = 0usize;
 
