@@ -1,19 +1,25 @@
 use std::time::Instant;
 
+use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     buffer::Buffer,
-    layout::Rect,
+    layout::{Constraint, Layout, Position, Rect},
+    prelude::Widget,
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
+use ratatui_interact::components::{Button, ButtonState, ButtonStyle, ButtonVariant};
+use ratatui_interact::events::get_mouse_pos;
+use ratatui_interact::state::FocusManager;
+use ratatui_interact::traits::ClickRegionRegistry;
 use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
 use crate::action::Action;
 use crate::ui::gradient::GradientCache;
 use crate::ui::responsive::{self, Viewport};
-use crate::ui::theme::{self, Palette};
+use crate::ui::theme::{self, Palette, KEY_BG};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EDITION: &str = "SINGLE-HOST";
@@ -28,10 +34,22 @@ const LOGO: &[&str] = &[
     "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ ╚══════╝",
 ];
 
+/// Button labels for compact and minimal viewports.
+const BTN_LABELS_COMPACT: &[&str] = &["↵ continue", "? help", "q quit"];
+const BTN_LABELS_MINIMAL: &[&str] = &["↵", "?", "q"];
+const BTN_GAPS: &[u16] = &[0, 2, 2];
+
+/// Actions associated with each button index.
+const BTN_ACTIONS: &[Action] = &[Action::Continue, Action::Help, Action::Quit];
+
 pub struct WelcomeScreen {
     gradient_cache: GradientCache,
     anim_start: Instant,
     color_cycle: Vec<Color>,
+    buttons: [ButtonState; 3],
+    focus: FocusManager<usize>,
+    click_registry: ClickRegionRegistry<Action>,
+    hover_pos: Option<(u16, u16)>,
 }
 
 impl Default for WelcomeScreen {
@@ -43,10 +61,22 @@ impl Default for WelcomeScreen {
 impl WelcomeScreen {
     #[must_use]
     pub fn new() -> Self {
+        let mut focus = FocusManager::new();
+        focus.register_all([0, 1, 2]);
+
+        let mut buttons = [ButtonState::enabled(), ButtonState::enabled(), ButtonState::enabled()];
+        if let Some(&idx) = focus.current() {
+            buttons[idx].focused = true;
+        }
+
         Self {
             gradient_cache: GradientCache::new(),
             anim_start: Instant::now(),
             color_cycle: build_color_cycle(theme::CHARM.accent),
+            buttons,
+            focus,
+            click_registry: ClickRegionRegistry::new(),
+            hover_pos: None,
         }
     }
 
@@ -54,14 +84,78 @@ impl WelcomeScreen {
         self.gradient_cache.invalidate();
     }
 
+    /// Handle a key event. Supports direct shortcuts (q, ?, Enter), Tab/Shift+Tab
+    /// for focus cycling, and Arrow keys.
     #[must_use]
-    pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
-        use ratatui::crossterm::event::KeyCode;
+    pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        // Direct shortcuts always work
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-            KeyCode::Char('?') => Some(Action::Help),
-            KeyCode::Enter | KeyCode::Char(' ') => Some(Action::Continue),
+            KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
+            KeyCode::Char('?') => return Some(Action::Help),
+            KeyCode::Enter | KeyCode::Char(' ') => return Some(Action::Continue),
+            _ => {}
+        }
+
+        // Focus cycling
+        match code {
+            KeyCode::Tab => {
+                self.cycle_focus_next();
+                return None;
+            }
+            KeyCode::BackTab => {
+                self.cycle_focus_prev();
+                return None;
+            }
+            KeyCode::Right => {
+                self.cycle_focus_next();
+                return None;
+            }
+            KeyCode::Left => {
+                self.cycle_focus_prev();
+                return None;
+            }
             _ => None,
+        }
+    }
+
+    /// Handle a mouse event. Returns an Action if a button was clicked.
+    #[must_use]
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        let (col, row) = get_mouse_pos(&mouse);
+
+        match mouse.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(..) => {
+                self.hover_pos = Some((col, row));
+                None
+            }
+            MouseEventKind::Down(_) => {
+                self.click_registry.handle_click(col, row).cloned()
+            }
+            MouseEventKind::Up(..) => {
+                // Clear all pressed states
+                for btn in &mut self.buttons {
+                    btn.pressed = false;
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn cycle_focus_next(&mut self) {
+        self.focus.next();
+        self.sync_focus_to_buttons();
+    }
+
+    fn cycle_focus_prev(&mut self) {
+        self.focus.prev();
+        self.sync_focus_to_buttons();
+    }
+
+    fn sync_focus_to_buttons(&mut self) {
+        let focused = self.focus.current().copied();
+        for (i, btn) in self.buttons.iter_mut().enumerate() {
+            btn.focused = focused == Some(i);
         }
     }
 
@@ -95,15 +189,15 @@ impl WelcomeScreen {
             _g2,
             keys_area,
             _bottom,
-        ] = ratatui::layout::Layout::vertical([
-            ratatui::layout::Constraint::Fill(1),
-            ratatui::layout::Constraint::Length(6),
-            ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Length(1),
-            ratatui::layout::Constraint::Fill(1),
+        ] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
         ])
         .areas(center);
 
@@ -129,7 +223,7 @@ impl WelcomeScreen {
 
         // ── Prompt ────────────────────────────────────────────────────────
         let prompt_text = if viewport >= Viewport::Compact {
-            "Press any key, or click anywhere, to enter."
+            "Press any key, or click a button, to enter."
         } else {
             "Press any key to enter."
         };
@@ -142,36 +236,94 @@ impl WelcomeScreen {
             prompt_area,
         );
 
-        // ── Keybindings ───────────────────────────────────────────────────
-        let key_style = p.key_style();
-        let lbl_style = p.label_style();
+        // ── Interactive buttons ───────────────────────────────────────────
+        self.render_buttons(frame, keys_area, p, elapsed, viewport);
+    }
 
-        let keys_line = if viewport >= Viewport::Compact {
-            let gap = Span::raw("     ");
-            Line::from(vec![
-                Span::styled(" ↵ ", key_style),
-                Span::raw(" "),
-                Span::styled("continue", lbl_style),
-                gap.clone(),
-                Span::styled(" ? ", key_style),
-                Span::raw(" "),
-                Span::styled("help", lbl_style),
-                gap.clone(),
-                Span::styled(" q ", key_style),
-                Span::raw(" "),
-                Span::styled("quit", lbl_style),
-            ])
+    fn render_buttons(
+        &mut self,
+        frame: &mut Frame,
+        keys_area: Rect,
+        p: Palette,
+        elapsed: f32,
+        viewport: Viewport,
+    ) {
+        let labels = if viewport >= Viewport::Compact {
+            BTN_LABELS_COMPACT
         } else {
-            // Minimal — badges only, no labels
-            Line::from(vec![
-                Span::styled(" ↵ ", key_style),
-                Span::raw(" "),
-                Span::styled(" ? ", key_style),
-                Span::raw(" "),
-                Span::styled(" q ", key_style),
-            ])
+            BTN_LABELS_MINIMAL
         };
-        frame.render_widget(Paragraph::new(keys_line).centered(), keys_area);
+
+        // Compute button widths
+        let btn_widths: Vec<u16> = labels
+            .iter()
+            .zip(self.buttons.iter())
+            .map(|(label, state)| Button::new(label, state).min_width())
+            .collect();
+
+        let total_btn: u16 = btn_widths.iter().sum();
+        let total_gap: u16 = BTN_GAPS.iter().sum();
+        let total_width = total_btn + total_gap;
+
+        // Center the button row within keys_area
+        let btn_row_x = keys_area.x.saturating_sub(total_width / 2)
+            + keys_area.width / 2;
+
+        // Clear click registry for this frame
+        self.click_registry.clear();
+
+        let cycle_len = self.color_cycle.len();
+        let elapsed_idx = (elapsed * 12.0) as usize;
+
+        let mut cursor_x = btn_row_x;
+        for (i, (label, width)) in labels.iter().zip(btn_widths.iter()).enumerate() {
+            // Check hover
+            let is_hovered = self.hover_pos.is_some_and(|(mx, my)| {
+                let btn_rect = Rect::new(cursor_x, keys_area.y, *width, 1);
+                btn_rect.contains(Position::new(mx, my))
+            });
+
+            // Temporarily set focused for hover rendering
+            let was_focused = self.buttons[i].focused;
+            if is_hovered {
+                self.buttons[i].focused = true;
+            }
+
+            // Animated focused bg color
+            let btn_style = if self.buttons[i].focused || is_hovered {
+                let anim_bg = self.color_cycle[(elapsed_idx + i * 7) % cycle_len];
+                let mut s = ButtonStyle::new(ButtonVariant::SingleLine);
+                s.focused_fg = p.bg;
+                s.focused_bg = anim_bg;
+                s.unfocused_fg = p.text;
+                s.unfocused_bg = KEY_BG;
+                s.pressed_fg = p.bg;
+                s.pressed_bg = p.accent2;
+                s
+            } else {
+                let mut s = ButtonStyle::new(ButtonVariant::SingleLine);
+                s.focused_fg = p.bg;
+                s.focused_bg = p.accent;
+                s.unfocused_fg = p.text;
+                s.unfocused_bg = KEY_BG;
+                s.pressed_fg = p.bg;
+                s.pressed_bg = p.accent2;
+                s
+            };
+
+            let btn_area = Rect::new(cursor_x, keys_area.y, *width, 1);
+            Button::new(label, &self.buttons[i])
+                .style(btn_style)
+                .render(btn_area, frame.buffer_mut());
+
+            // Register click region
+            self.click_registry.register(btn_area, BTN_ACTIONS[i].clone());
+
+            // Restore original focused state
+            self.buttons[i].focused = was_focused;
+
+            cursor_x += width + BTN_GAPS[i];
+        }
     }
 }
 
@@ -257,7 +409,7 @@ fn draw_animated_border(
     let color_at = |pidx: usize| -> Color { color_cycle[(idx + pidx) % cycle_len] };
 
     let set_cell = |buf: &mut Buffer, x: u16, y: u16, ch: char, pidx: usize| {
-        if let Some(cell) = buf.cell_mut(ratatui::layout::Position::new(x, y)) {
+        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
             cell.set_char(ch);
             cell.set_fg(color_at(pidx));
         }

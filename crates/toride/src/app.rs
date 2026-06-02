@@ -90,8 +90,13 @@ impl App {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         match mouse.kind {
-            MouseEventKind::Down(_) if matches!(self.screen, Screen::Welcome) => {
-                Some(Action::Continue)
+            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Moved
+                if matches!(self.screen, Screen::Welcome) =>
+            {
+                self.welcome.handle_mouse(mouse)
+            }
+            MouseEventKind::Drag(..) if matches!(self.screen, Screen::Welcome) => {
+                self.welcome.handle_mouse(mouse)
             }
             MouseEventKind::ScrollDown if matches!(self.screen, Screen::Status) => {
                 self.status.scroll_down();
