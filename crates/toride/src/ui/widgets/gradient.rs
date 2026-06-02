@@ -82,7 +82,7 @@ impl AnimatedBorder {
 
 // ── Gradient computation ───────────────────────────────────────────────────────
 
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_lossless,
@@ -154,7 +154,7 @@ fn build_color_cycle(base_color: Color) -> Vec<Color> {
 
     let mut colors = vec![base_color];
     let mut prev = base_color;
-    #[allow(clippy::cast_precision_loss)] // step counts are small (< 50)
+    #[expect(clippy::cast_precision_loss, reason = "step counts are small (< 50)")]
     for &(steps, target) in keyframes {
         let steps_f = steps as f32;
         for i in 1..steps {
@@ -167,10 +167,9 @@ fn build_color_cycle(base_color: Color) -> Vec<Color> {
     // Wrap-around: interpolate from last keyframe back to base color
     // so the cycle loops seamlessly at the join point (top-left corner).
     let wrap_steps = 7;
-    #[allow(clippy::cast_precision_loss)] // wrap_steps and i are always < 50
+    #[expect(clippy::cast_precision_loss, reason = "wrap_steps and i are always < 50")]
     let wrap_f = wrap_steps as f32;
     for i in 1..wrap_steps {
-        #[allow(clippy::cast_precision_loss)]
         colors.push(prev.lerp(&base_color, i as f32 / wrap_f));
     }
 
@@ -192,7 +191,7 @@ fn draw_animated_border(
         return;
     }
 
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "animation index from elapsed time")]
     let idx = (elapsed_secs * 12.0) as usize;
     let cycle_len = color_cycle.len();
     let mut perimeter_idx = 0usize;
@@ -249,7 +248,7 @@ fn draw_animated_border(
 /// Render a radial gradient directly into the frame buffer with animated
 /// parameters for transitions. Unlike `render_gradient_bg`, this bypasses the
 /// `GradientCache` and writes straight to `buf` every frame.
-#[allow(
+#[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_lossless,

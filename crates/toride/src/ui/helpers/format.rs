@@ -55,7 +55,7 @@ const GB: u64 = MB * 1024;
 const TB: u64 = GB * 1024;
 const PB: u64 = TB * 1024;
 
-#[allow(clippy::cast_precision_loss)]
+#[expect(clippy::cast_precision_loss, reason = "u64→f64 for byte formatting display")]
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= PB {
         format!("{:.1} PiB", bytes as f64 / PB as f64)

@@ -168,19 +168,22 @@ impl StatusScreen {
                 return self.render_loading(frame, content_area, p, footer_area);
             }
         }
-        #[allow(clippy::cast_possible_truncation)]
-        let line_count = self.cached_lines.as_ref().unwrap().len() as u16;
 
         let content_block = Block::default()
             .padding(Padding::horizontal(1))
             .style(Style::new().bg(p.bg_inset));
         let inner = content_block.inner(content_area);
         let viewport_height = inner.height as usize;
-        #[allow(clippy::cast_possible_truncation)]
+
+        // Compute visible window — extract count before borrowing lines
+        #[expect(clippy::cast_possible_truncation, reason = "line count fits in u16 for TUI display")]
+        let line_count = self.cached_lines.as_ref().expect("cached_lines populated above").len() as u16;
+        #[expect(clippy::cast_possible_truncation, reason = "viewport height fits in u16")]
         self.clamp_scroll(line_count, viewport_height as u16);
 
-        let lines = self.cached_lines.as_ref().unwrap();
-        let visible: Vec<Line<'_>> = lines
+        let visible: Vec<Line<'_>> = self.cached_lines
+            .as_ref()
+            .expect("cached_lines populated above")
             .iter()
             .skip(self.scroll)
             .take(viewport_height)
@@ -237,7 +240,7 @@ impl StatusScreen {
 
 // ── Status line builder ──────────────────────────────────────────────────────
 
-#[allow(clippy::too_many_lines)]
+#[expect(clippy::too_many_lines, reason = "status display builder — will be split into sub-components")]
 fn build_status_lines(
     status: &TorideStatus,
     viewport: Viewport,
@@ -246,7 +249,7 @@ fn build_status_lines(
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     let section_style = Style::new().fg(p.accent).bold();
-    let label_style = Style::new().fg(p.text);
+    let label_style = Style::new().fg(p.text_dim);
     let value_style = Style::new().fg(p.text);
     let header_padding = if viewport >= Viewport::Compact { 2 } else { 1 };
 
