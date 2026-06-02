@@ -1,20 +1,18 @@
 use ratatui::{
     Frame,
-    buffer::Buffer,
-    layout::{Constraint, Flex, Layout, Position, Rect},
-    style::{Color, Style},
+    layout::{Constraint, Layout},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 use crate::action::Action;
+use crate::ui::gradient::GradientCache;
 use crate::ui::responsive::{self, Viewport};
 use crate::ui::theme::{self, Palette};
 
-const KEY_BG: Color = Color::Rgb(32, 26, 50);
-
 pub struct HelpScreen {
-    gradient_cache: Option<(Rect, Buffer)>,
+    gradient_cache: GradientCache,
 }
 
 impl Default for HelpScreen {
@@ -26,12 +24,12 @@ impl Default for HelpScreen {
 impl HelpScreen {
     pub fn new() -> Self {
         Self {
-            gradient_cache: None,
+            gradient_cache: GradientCache::new(),
         }
     }
 
     pub fn invalidate_cache(&mut self) {
-        self.gradient_cache = None;
+        self.gradient_cache.invalidate();
     }
 
     pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
@@ -57,27 +55,10 @@ impl HelpScreen {
 
         // Gradient background
         let buf = frame.buffer_mut();
-        let needs_regen = !self
-            .gradient_cache
-            .as_ref()
-            .is_some_and(|(cached_area, _)| *cached_area == area);
-        if needs_regen {
-            let mut gradient = Buffer::empty(area);
-            render_gradient_bg(&mut gradient, area, p);
-            copy_bg(&gradient, buf, area);
-            self.gradient_cache = Some((area, gradient));
-        } else if let Some((_, ref gradient)) = self.gradient_cache {
-            copy_bg(gradient, buf, area);
-        }
+        self.gradient_cache.render_or_copy(buf, area, p);
 
         // Adaptive center column
-        let [_, center, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            responsive::center_column(),
-            Constraint::Fill(1),
-        ])
-        .flex(Flex::Center)
-        .areas(area);
+        let center = responsive::center_area(area);
 
         // Vertical layout
         let [
@@ -110,8 +91,8 @@ impl HelpScreen {
         );
 
         // ── Keybindings ─────────────────────────────────────────────────
-        let key_style = Style::new().fg(p.text).bg(KEY_BG);
-        let lbl_style = Style::new().fg(p.text);
+        let key_style = p.key_style();
+        let lbl_style = p.label_style();
 
         let entries: Vec<Line<'_>> = if viewport >= Viewport::Compact {
             vec![
@@ -155,56 +136,4 @@ fn keybinding_line<'a>(
         Span::raw("  "),
         Span::styled(desc.to_string(), lbl_style),
     ])
-}
-
-// ── Gradient background ──────────────────────────────────────────────────────
-
-fn render_gradient_bg(buf: &mut Buffer, area: Rect, p: Palette) {
-    let (cr, cg, cb) = rgb_components(p.bg);
-    let er = (cr as f64 * 0.6) as u8;
-    let eg = (cg as f64 * 0.6) as u8;
-    let eb = (cb as f64 * 0.6) as u8;
-
-    let cx = (area.left() + area.right()) / 2;
-    let cy = (area.top() + area.bottom()) / 2;
-    let max_dist = ((cx.saturating_sub(area.left()) as f64)
-        .hypot(cy.saturating_sub(area.top()) as f64))
-    .max(1.0);
-
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let dx = (x as i32 - cx as i32).abs() as f64;
-            let dy = (y as i32 - cy as i32).abs() as f64;
-            let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
-            let r = lerp(cr as f64, er as f64, t) as u8;
-            let g = lerp(cg as f64, eg as f64, t) as u8;
-            let b = lerp(cb as f64, eb as f64, t) as u8;
-            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                cell.set_bg(Color::Rgb(r, g, b));
-            }
-        }
-    }
-}
-
-fn rgb_components(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => (0, 0, 0),
-    }
-}
-
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a * (1.0 - t) + b * t
-}
-
-fn copy_bg(src: &Buffer, dst: &mut Buffer, area: Rect) {
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(s) = src.cell(Position::new(x, y))
-                && let Some(d) = dst.cell_mut(Position::new(x, y))
-            {
-                d.set_bg(s.bg);
-            }
-        }
-    }
 }

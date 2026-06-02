@@ -80,6 +80,18 @@ pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
     true
 }
 
+/// Compute the centered content column area from the full frame area.
+pub fn center_area(area: Rect) -> Rect {
+    let [_, center, _] = ratatui::layout::Layout::horizontal([
+        ratatui::layout::Constraint::Fill(1),
+        center_column(),
+        ratatui::layout::Constraint::Fill(1),
+    ])
+    .flex(ratatui::layout::Flex::Center)
+    .areas(area);
+    center
+}
+
 // ── Content truncation ───────────────────────────────────────────────────────
 
 /// Truncate a string to `max_width` Unicode-width columns, appending ".." if it

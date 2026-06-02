@@ -48,15 +48,12 @@ impl App {
             Action::Quit => self.should_quit = true,
             Action::Continue => {
                 self.screen = Screen::Status;
-                self.status.invalidate_cache();
             }
             Action::Help => {
                 self.screen = Screen::Help;
-                self.help.invalidate_cache();
             }
             Action::Back => {
                 self.screen = Screen::Welcome;
-                self.welcome.invalidate_cache();
             }
         }
     }
@@ -71,18 +68,9 @@ impl App {
 
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         match self.screen {
-            Screen::Welcome => self.welcome_handle_key(code),
+            Screen::Welcome => self.welcome.handle_key(code),
             Screen::Status => self.status_handle_key(code),
             Screen::Help => self.help.handle_key(code),
-        }
-    }
-
-    fn welcome_handle_key(&self, code: KeyCode) -> Option<Action> {
-        match code {
-            KeyCode::Char('q') | KeyCode::Esc => Some(Action::Quit),
-            KeyCode::Char('?') => Some(Action::Help),
-            KeyCode::Enter | KeyCode::Char(' ') => Some(Action::Continue),
-            _ => None,
         }
     }
 
@@ -96,9 +84,7 @@ impl App {
                 self.status.scroll_up();
                 None
             }
-            KeyCode::Char('b') | KeyCode::Esc => Some(Action::Back),
-            KeyCode::Char('q') => Some(Action::Quit),
-            _ => None,
+            _ => self.status.handle_key(code),
         }
     }
 
@@ -187,8 +173,8 @@ impl App {
                     }
                 }
 
-                // Animation tick (~30fps for welcome screen border)
-                _ = anim_tick.tick() => {}
+                // Animation tick (~30fps for welcome screen border only)
+                _ = anim_tick.tick(), if matches!(self.screen, Screen::Welcome) => {}
             }
 
             if self.should_quit {

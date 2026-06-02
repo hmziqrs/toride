@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 
 /// All semantic colour slots — one `Palette` per theme, mirroring themes.js.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,5 +209,24 @@ impl Theme {
             Theme::Nord,
             Theme::Gruvbox,
         ]
+    }
+}
+
+// ── Keybinding style constants ────────────────────────────────────────────────
+
+/// Background color for keyboard shortcut badges.
+pub const KEY_BG: Color = Color::Rgb(32, 26, 50);
+
+impl Palette {
+    /// Style for keyboard shortcut badges (e.g. " ↵ ", " q ").
+    #[must_use]
+    pub fn key_style(self) -> Style {
+        Style::new().fg(self.text).bg(KEY_BG)
+    }
+
+    /// Style for label text next to keybinding badges.
+    #[must_use]
+    pub fn label_style(self) -> Style {
+        Style::new().fg(self.text_muted)
     }
 }

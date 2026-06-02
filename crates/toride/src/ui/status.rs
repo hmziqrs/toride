@@ -1,7 +1,6 @@
 use ratatui::{
     Frame,
-    buffer::Buffer,
-    layout::{Constraint, Flex, Layout, Position, Rect},
+    layout::{Constraint, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
@@ -9,15 +8,16 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::status::TorideStatus;
+use crate::ui::gradient::GradientCache;
 use crate::ui::responsive::{self, Viewport};
 use crate::ui::theme::{self, Palette};
 
-const KEY_BG: Color = Color::Rgb(32, 26, 50);
 const HEADER_HEIGHT: u16 = 3;
 const FOOTER_HEIGHT: u16 = 3;
 
 pub struct StatusScreen {
-    gradient_cache: Option<(Rect, Buffer)>,
+    gradient_cache: GradientCache,
+    cached_lines: Option<Vec<Line<'static>>>,
     scroll: usize,
     status: Option<TorideStatus>,
 }
@@ -31,7 +31,8 @@ impl Default for StatusScreen {
 impl StatusScreen {
     pub fn new() -> Self {
         Self {
-            gradient_cache: None,
+            gradient_cache: GradientCache::new(),
+            cached_lines: None,
             scroll: 0,
             status: None,
         }
@@ -39,10 +40,11 @@ impl StatusScreen {
 
     pub fn set_status(&mut self, status: TorideStatus) {
         self.status = Some(status);
+        self.cached_lines = None;
     }
 
     pub fn invalidate_cache(&mut self) {
-        self.gradient_cache = None;
+        self.gradient_cache.invalidate();
     }
 
     pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
@@ -83,27 +85,10 @@ impl StatusScreen {
 
         // Gradient background
         let buf = frame.buffer_mut();
-        let needs_regen = !self
-            .gradient_cache
-            .as_ref()
-            .is_some_and(|(cached_area, _)| *cached_area == area);
-        if needs_regen {
-            let mut gradient = Buffer::empty(area);
-            render_gradient_bg(&mut gradient, area, p);
-            copy_bg(&gradient, buf, area);
-            self.gradient_cache = Some((area, gradient));
-        } else if let Some((_, ref gradient)) = self.gradient_cache {
-            copy_bg(gradient, buf, area);
-        }
+        self.gradient_cache.render_or_copy(buf, area, p);
 
         // Adaptive center column
-        let [_, center, _] = Layout::horizontal([
-            Constraint::Fill(1),
-            responsive::center_column(),
-            Constraint::Fill(1),
-        ])
-        .flex(Flex::Center)
-        .areas(area);
+        let center = responsive::center_area(area);
 
         // Vertical layout: header, content, footer
         let [header_area, content_area, footer_area] = Layout::vertical([
@@ -130,33 +115,33 @@ impl StatusScreen {
         );
 
         // ── Content ─────────────────────────────────────────────────────
-        let lines = if let Some(ref status) = self.status {
-            build_status_lines(status, content_area.width as usize, viewport, p)
-        } else {
-            vec![Line::from(Span::styled(
-                "  Collecting status...",
-                Style::new().fg(p.text_dim),
-            ))]
-        };
+        if self.cached_lines.is_none() {
+            self.cached_lines = if let Some(ref status) = self.status {
+                Some(build_status_lines(status, viewport, p))
+            } else {
+                Some(vec![Line::from(Span::styled(
+                    "  Collecting status...",
+                    Style::new().fg(p.text_dim),
+                ))])
+            };
+        }
+        let line_count = self.cached_lines.as_ref().unwrap().len() as u16;
 
         let content_block = Block::default()
-            .borders(Borders::NONE)
             .padding(Padding::horizontal(1))
             .style(Style::new().bg(p.bg_inset));
-
         let inner = content_block.inner(content_area);
         let viewport_height = inner.height as usize;
+        self.clamp_scroll(line_count, viewport_height as u16);
 
-        self.clamp_scroll(lines.len() as u16, viewport_height as u16);
-
+        let lines = self.cached_lines.as_ref().unwrap();
         let visible: Vec<Line<'_>> = lines
-            .into_iter()
+            .iter()
             .skip(self.scroll)
             .take(viewport_height)
+            .cloned()
             .collect();
-
-        frame.render_widget(content_block, content_area);
-        frame.render_widget(Paragraph::new(visible), inner);
+        frame.render_widget(Paragraph::new(visible).block(content_block), content_area);
 
         // ── Footer ──────────────────────────────────────────────────────
         let footer_block = Block::default()
@@ -164,8 +149,8 @@ impl StatusScreen {
             .border_style(Style::new().fg(p.border))
             .style(Style::new().bg(p.bg_alt));
 
-        let key_style = Style::new().fg(p.text).bg(KEY_BG);
-        let lbl_style = Style::new().fg(p.text_muted);
+        let key_style = p.key_style();
+        let lbl_style = p.label_style();
 
         let footer_line = if viewport >= Viewport::Compact {
             let gap = Span::raw("     ");
@@ -207,13 +192,12 @@ impl StatusScreen {
 
 // ── Status line builder ──────────────────────────────────────────────────────
 
-fn build_status_lines<'a>(
+fn build_status_lines(
     status: &TorideStatus,
-    _width: usize,
     viewport: Viewport,
     p: Palette,
-) -> Vec<Line<'a>> {
-    let mut lines: Vec<Line<'a>> = Vec::new();
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
     let section_style = Style::new().fg(p.accent).bold();
     let label_style = Style::new().fg(p.text);
@@ -496,26 +480,30 @@ fn build_status_lines<'a>(
 
 // ── Line builders ────────────────────────────────────────────────────────────
 
-fn kv_line<'a>(label: &str, value: &str, label_style: Style, value_style: Style) -> Line<'a> {
+fn kv_line(label: &str, value: &str, label_style: Style, value_style: Style) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("    {label}: "), label_style),
+        Span::raw("    "),
+        Span::styled(label.to_string(), label_style),
+        Span::raw(": "),
         Span::styled(value.to_string(), value_style),
     ])
 }
 
-fn color_kv_line<'a>(
+fn color_kv_line(
     label: &str,
     value: &str,
     label_style: Style,
     value_color: Color,
-) -> Line<'a> {
+) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("    {label}: "), label_style),
+        Span::raw("    "),
+        Span::styled(label.to_string(), label_style),
+        Span::raw(": "),
         Span::styled(value.to_string(), Style::new().fg(value_color)),
     ])
 }
 
-fn yn_kv_line<'a>(label: &str, value: bool, label_style: Style, p: Palette) -> Line<'a> {
+fn yn_kv_line(label: &str, value: bool, label_style: Style, p: Palette) -> Line<'static> {
     let (text, color) = if value {
         ("yes", p.ok)
     } else {
@@ -577,56 +565,4 @@ fn format_duration(secs: u64) -> String {
     }
     parts.push(format!("{seconds}s"));
     parts.join(" ")
-}
-
-// ── Gradient background ──────────────────────────────────────────────────────
-
-fn render_gradient_bg(buf: &mut Buffer, area: Rect, p: Palette) {
-    let (cr, cg, cb) = rgb_components(p.bg);
-    let er = (cr as f64 * 0.6) as u8;
-    let eg = (cg as f64 * 0.6) as u8;
-    let eb = (cb as f64 * 0.6) as u8;
-
-    let cx = (area.left() + area.right()) / 2;
-    let cy = (area.top() + area.bottom()) / 2;
-    let max_dist = ((cx.saturating_sub(area.left()) as f64)
-        .hypot(cy.saturating_sub(area.top()) as f64))
-    .max(1.0);
-
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            let dx = (x as i32 - cx as i32).abs() as f64;
-            let dy = (y as i32 - cy as i32).abs() as f64;
-            let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
-            let r = lerp(cr as f64, er as f64, t) as u8;
-            let g = lerp(cg as f64, eg as f64, t) as u8;
-            let b = lerp(cb as f64, eb as f64, t) as u8;
-            if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
-                cell.set_bg(Color::Rgb(r, g, b));
-            }
-        }
-    }
-}
-
-fn rgb_components(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => (0, 0, 0),
-    }
-}
-
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a * (1.0 - t) + b * t
-}
-
-fn copy_bg(src: &Buffer, dst: &mut Buffer, area: Rect) {
-    for y in area.top()..area.bottom() {
-        for x in area.left()..area.right() {
-            if let Some(s) = src.cell(Position::new(x, y))
-                && let Some(d) = dst.cell_mut(Position::new(x, y))
-            {
-                d.set_bg(s.bg);
-            }
-        }
-    }
 }

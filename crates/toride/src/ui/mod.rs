@@ -1,3 +1,4 @@
+pub mod gradient;
 pub mod help;
 pub mod responsive;
 pub mod status;
