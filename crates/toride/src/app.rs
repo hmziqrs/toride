@@ -128,7 +128,9 @@ impl App {
         let mut events = EventStream::new();
         let mut status_rx: Option<oneshot::Receiver<TorideStatus>> = None;
         let refresh_interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        let anim_tick = tokio::time::interval(std::time::Duration::from_millis(33)); // ~30fps
         tokio::pin!(refresh_interval);
+        tokio::pin!(anim_tick);
 
         loop {
             terminal.draw(|f| self.view(f))?;
@@ -184,6 +186,9 @@ impl App {
                         });
                     }
                 }
+
+                // Animation tick (~30fps for welcome screen border)
+                _ = anim_tick.tick() => {}
             }
 
             if self.should_quit {

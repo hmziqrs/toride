@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -6,6 +8,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
 use crate::action::Action;
 use crate::ui::responsive::{self, Viewport};
@@ -28,6 +31,8 @@ const LOGO: &[&str] = &[
 
 pub struct WelcomeScreen {
     gradient_cache: Option<(Rect, Buffer)>,
+    anim_start: Instant,
+    color_cycle: Vec<Color>,
 }
 
 impl Default for WelcomeScreen {
@@ -41,6 +46,8 @@ impl WelcomeScreen {
     pub fn new() -> Self {
         Self {
             gradient_cache: None,
+            anim_start: Instant::now(),
+            color_cycle: build_color_cycle(theme::CHARM.accent),
         }
     }
 
@@ -117,6 +124,11 @@ impl WelcomeScreen {
             Constraint::Fill(1),
         ])
         .areas(center);
+
+        // ── Animated border ───────────────────────────────────────────────
+        let border_rect = content_border_rect(logo_area, keys_area, area);
+        let elapsed = self.anim_start.elapsed().as_secs_f32();
+        draw_animated_border(buf, border_rect, &self.color_cycle, elapsed);
 
         // ── Logo ──────────────────────────────────────────────────────────
         let logo_style = Style::new().fg(p.accent).bold();
@@ -236,5 +248,121 @@ fn copy_bg(src: &Buffer, dst: &mut Buffer, area: Rect) {
                 d.set_bg(s.bg);
             }
         }
+    }
+}
+
+// ── Animated border ───────────────────────────────────────────────────────────
+
+/// Compute the border rect as the union of content areas expanded by 1 cell,
+/// clamped to the frame area.
+fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Rect {
+    let x = logo_area.x.saturating_sub(1).max(frame_area.x);
+    let y = logo_area.y.saturating_sub(1).max(frame_area.y);
+    let right = (keys_area.right() + 1).min(frame_area.right());
+    let bottom = (keys_area.bottom() + 1).min(frame_area.bottom());
+    Rect {
+        x,
+        y,
+        width: right.saturating_sub(x),
+        height: bottom.saturating_sub(y),
+    }
+}
+
+/// Build a repeating color gradient from a base color using HSL manipulation.
+/// Ported from exabind's `select_category_color_cycle()`.
+fn build_color_cycle(base_color: Color) -> Vec<Color> {
+    let (h, s, l) = color_to_hsl(&base_color);
+
+    let color_l = color_from_hsl(h, s, 80.0);
+    let color_d = color_from_hsl(h, s, 40.0);
+    let color_hue_neg = color_from_hsl((h - 25.0).rem_euclid(360.0), s, (l + 10.0).min(100.0));
+    let color_sat_neg = color_from_hsl(h, (s - 20.0).max(0.0), (l + 10.0).min(100.0));
+    let color_hue_pos = color_from_hsl((h + 25.0).rem_euclid(360.0), s, (l + 10.0).min(100.0));
+    let color_sat_pos = color_from_hsl(h, (s + 20.0).min(100.0), (l + 10.0).min(100.0));
+
+    let keyframes: &[(usize, Color)] = &[
+        (4, color_d),
+        (2, color_l),
+        (4, color_hue_neg),
+        (7, color_sat_neg),
+        (7, color_hue_pos),
+        (7, color_sat_pos),
+    ];
+
+    let mut colors = vec![base_color];
+    let mut prev = base_color;
+    for &(steps, target) in keyframes {
+        for i in 1..=steps {
+            colors.push(prev.lerp(&target, i as f32 / steps as f32));
+        }
+        colors.push(target);
+        prev = target;
+    }
+    colors
+}
+
+/// Draw an animated color-cycling border around `border_rect`.
+///
+/// Walks the perimeter clockwise (top→right→bottom→left), drawing box-drawing
+/// characters with foreground colors that cycle over time, producing a flowing
+/// rainbow effect at ~30 cells/second.
+fn draw_animated_border(
+    buf: &mut Buffer,
+    border_rect: Rect,
+    color_cycle: &[Color],
+    elapsed_secs: f32,
+) {
+    if border_rect.width < 3 || border_rect.height < 3 {
+        return;
+    }
+
+    let idx = (elapsed_secs * 30.0) as usize;
+    let cycle_len = color_cycle.len();
+    let mut perimeter_idx = 0usize;
+
+    let color_at = |pidx: usize| -> Color { color_cycle[(idx + pidx) % cycle_len] };
+
+    let set_cell = |buf: &mut Buffer, x: u16, y: u16, ch: char, pidx: usize| {
+        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+            cell.set_char(ch);
+            cell.set_fg(color_at(pidx));
+        }
+    };
+
+    let x0 = border_rect.x;
+    let y0 = border_rect.y;
+    let x1 = border_rect.right() - 1;
+    let y1 = border_rect.bottom() - 1;
+
+    // Top edge: left → right
+    set_cell(buf, x0, y0, '┌', perimeter_idx);
+    perimeter_idx += 1;
+    for x in (x0 + 1)..x1 {
+        set_cell(buf, x, y0, '─', perimeter_idx);
+        perimeter_idx += 1;
+    }
+    set_cell(buf, x1, y0, '┐', perimeter_idx);
+    perimeter_idx += 1;
+
+    // Right edge: top → bottom
+    for y in (y0 + 1)..y1 {
+        set_cell(buf, x1, y, '│', perimeter_idx);
+        perimeter_idx += 1;
+    }
+
+    // Bottom edge: right → left
+    set_cell(buf, x1, y1, '┘', perimeter_idx);
+    perimeter_idx += 1;
+    for x in ((x0 + 1)..x1).rev() {
+        set_cell(buf, x, y1, '─', perimeter_idx);
+        perimeter_idx += 1;
+    }
+    set_cell(buf, x0, y1, '└', perimeter_idx);
+    perimeter_idx += 1;
+
+    // Left edge: bottom → top
+    for y in ((y0 + 1)..y1).rev() {
+        set_cell(buf, x0, y, '│', perimeter_idx);
+        perimeter_idx += 1;
     }
 }
