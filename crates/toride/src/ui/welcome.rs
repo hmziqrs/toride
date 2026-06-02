@@ -32,6 +32,9 @@ const LOGO: &[&str] = &[
 /// Horizontal gaps between the three buttons (after btn 0, 1, 2).
 const BTN_GAPS: &[u16] = &[0, 2, 2];
 
+/// Actions associated with each button index.
+const BTN_ACTIONS: &[Action] = &[Action::Continue, Action::Help, Action::Quit];
+
 pub struct WelcomeScreen {
     gradient_cache: GradientCache,
     border: AnimatedBorder,
@@ -81,7 +84,13 @@ impl WelcomeScreen {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
             KeyCode::Char('?') => return Some(Action::Help),
-            KeyCode::Enter | KeyCode::Char(' ') => return Some(Action::Continue),
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let action = match self.focus.current() {
+                    Some(&idx) => BTN_ACTIONS[idx],
+                    None => Action::Continue,
+                };
+                return Some(action);
+            }
             _ => {}
         }
 
