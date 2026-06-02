@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::gradient::GradientCache;
+use crate::ui::widgets::gradient::GradientCache;
 use crate::ui::responsive::{self, Viewport};
 use crate::ui::theme::{self, Palette};
 

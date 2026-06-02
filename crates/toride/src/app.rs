@@ -8,10 +8,10 @@ use tokio::sync::oneshot;
 
 use crate::action::Action;
 use crate::status::TorideStatus;
-use crate::ui::help::HelpScreen;
-use crate::ui::status::StatusScreen;
+use crate::ui::screens::help::HelpScreen;
+use crate::ui::screens::status::StatusScreen;
 use crate::ui::transition::{TransitionCache, TransitionState};
-use crate::ui::welcome::WelcomeScreen;
+use crate::ui::screens::welcome::WelcomeScreen;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Screen {
@@ -132,7 +132,7 @@ impl App {
                     ts.params.center_offset.1 * eased as f64,
                 )
             };
-            crate::ui::gradient::render_transition_gradient(
+            crate::ui::widgets::gradient::render_transition_gradient(
                 frame.buffer_mut(),
                 area,
                 p,

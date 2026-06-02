@@ -8,8 +8,8 @@ use ratatui::{
 use ratatui_interact::components::{Button, ButtonState, ButtonStyle, ButtonVariant};
 use ratatui_interact::events::get_mouse_pos;
 
-use super::responsive::Viewport;
-use super::theme::{Palette, KEY_BG};
+use crate::ui::responsive::Viewport;
+use crate::ui::theme::{Palette, KEY_BG};
 
 // ── Interactive button ─────────────────────────────────────────────────────────
 

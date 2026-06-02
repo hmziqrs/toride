@@ -7,7 +7,7 @@ use ratatui::{
 };
 use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
-use super::theme::Palette;
+use crate::ui::theme::Palette;
 
 // ── Gradient cache ─────────────────────────────────────────────────────────────
 

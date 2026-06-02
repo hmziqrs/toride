@@ -11,8 +11,8 @@ use ratatui::{
 use ratatui_interact::state::FocusManager;
 
 use crate::action::Action;
-use crate::ui::gradient::{AnimatedBorder, GradientCache};
-use crate::ui::interactive_button::InteractiveButton;
+use crate::ui::components::interactive_button::InteractiveButton;
+use crate::ui::widgets::gradient::{AnimatedBorder, GradientCache};
 use crate::ui::responsive::{self, Viewport};
 use crate::ui::theme::{self, Palette};
 
