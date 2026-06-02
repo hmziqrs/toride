@@ -1,8 +1,11 @@
+use std::time::Instant;
+
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
     style::Color,
 };
+use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
 use super::theme::Palette;
 
@@ -45,6 +48,35 @@ impl GradientCache {
 impl Default for GradientCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Animated border ────────────────────────────────────────────────────────────
+
+/// Animated color-cycling border that draws box-drawing characters around a
+/// rect, with foreground colours flowing clockwise at ~12 cells/second.
+///
+/// Pure UI widget — no business logic coupling. Call [`AnimatedBorder::draw`]
+/// once per frame with the target rect.
+pub struct AnimatedBorder {
+    color_cycle: Vec<Color>,
+    anim_start: Instant,
+}
+
+impl AnimatedBorder {
+    /// Create a new border that cycles from `base_color`.
+    #[must_use]
+    pub fn new(base_color: Color) -> Self {
+        Self {
+            color_cycle: build_color_cycle(base_color),
+            anim_start: Instant::now(),
+        }
+    }
+
+    /// Draw the animated border into `buf` around `rect`.
+    pub fn draw(&self, buf: &mut Buffer, rect: Rect) {
+        let elapsed = self.anim_start.elapsed().as_secs_f32();
+        draw_animated_border(buf, rect, &self.color_cycle, elapsed);
     }
 }
 
@@ -93,6 +125,122 @@ fn copy_bg_to_buf(colors: &[Color], buf: &mut Buffer, area: Rect) {
             }
             i += 1;
         }
+    }
+}
+
+// ── Animated border internals ──────────────────────────────────────────────────
+
+/// Build a seamless looping color gradient from a base color using HSL manipulation.
+/// Ported from exabind's `select_category_color_cycle()`, with a final wrap-around
+/// segment that interpolates back to the base color for smooth looping at corners.
+fn build_color_cycle(base_color: Color) -> Vec<Color> {
+    let (h, s, l) = color_to_hsl(&base_color);
+
+    let color_l = color_from_hsl(h, s, 80.0);
+    let color_d = color_from_hsl(h, s, 40.0);
+    let color_hue_neg = color_from_hsl((h - 25.0).rem_euclid(360.0), s, (l + 10.0).min(100.0));
+    let color_sat_neg = color_from_hsl(h, (s - 20.0).max(0.0), (l + 10.0).min(100.0));
+    let color_hue_pos = color_from_hsl((h + 25.0).rem_euclid(360.0), s, (l + 10.0).min(100.0));
+    let color_sat_pos = color_from_hsl(h, (s + 20.0).min(100.0), (l + 10.0).min(100.0));
+
+    let keyframes: &[(usize, Color)] = &[
+        (4, color_d),
+        (2, color_l),
+        (4, color_hue_neg),
+        (7, color_sat_neg),
+        (7, color_hue_pos),
+        (7, color_sat_pos),
+    ];
+
+    let mut colors = vec![base_color];
+    let mut prev = base_color;
+    #[allow(clippy::cast_precision_loss)] // step counts are small (< 50)
+    for &(steps, target) in keyframes {
+        let steps_f = steps as f32;
+        for i in 1..steps {
+            colors.push(prev.lerp(&target, i as f32 / steps_f));
+        }
+        colors.push(target);
+        prev = target;
+    }
+
+    // Wrap-around: interpolate from last keyframe back to base color
+    // so the cycle loops seamlessly at the join point (top-left corner).
+    let wrap_steps = 7;
+    #[allow(clippy::cast_precision_loss)] // wrap_steps and i are always < 50
+    let wrap_f = wrap_steps as f32;
+    for i in 1..wrap_steps {
+        #[allow(clippy::cast_precision_loss)]
+        colors.push(prev.lerp(&base_color, i as f32 / wrap_f));
+    }
+
+    colors
+}
+
+/// Draw an animated color-cycling border around `border_rect`.
+///
+/// Walks the perimeter clockwise (top→right→bottom→left), drawing box-drawing
+/// characters with foreground colors that cycle over time, producing a flowing
+/// rainbow effect at ~12 cells/second.
+fn draw_animated_border(
+    buf: &mut Buffer,
+    border_rect: Rect,
+    color_cycle: &[Color],
+    elapsed_secs: f32,
+) {
+    if border_rect.width < 3 || border_rect.height < 3 {
+        return;
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let idx = (elapsed_secs * 12.0) as usize;
+    let cycle_len = color_cycle.len();
+    let mut perimeter_idx = 0usize;
+
+    let color_at = |pidx: usize| -> Color { color_cycle[(idx + pidx) % cycle_len] };
+
+    let set_cell = |buf: &mut Buffer, x: u16, y: u16, ch: char, pidx: usize| {
+        if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
+            cell.set_char(ch);
+            cell.set_fg(color_at(pidx));
+        }
+    };
+
+    let x0 = border_rect.x;
+    let y0 = border_rect.y;
+    let x1 = border_rect.right() - 1;
+    let y1 = border_rect.bottom() - 1;
+
+    // Top edge: left → right
+    set_cell(buf, x0, y0, '┌', perimeter_idx);
+    perimeter_idx += 1;
+    for x in (x0 + 1)..x1 {
+        set_cell(buf, x, y0, '─', perimeter_idx);
+        perimeter_idx += 1;
+    }
+    set_cell(buf, x1, y0, '┐', perimeter_idx);
+    perimeter_idx += 1;
+
+    // Right edge: top → bottom
+    for y in (y0 + 1)..y1 {
+        set_cell(buf, x1, y, '│', perimeter_idx);
+        perimeter_idx += 1;
+    }
+
+    // Bottom edge: right → left
+    set_cell(buf, x1, y1, '┘', perimeter_idx);
+    perimeter_idx += 1;
+    for x in ((x0 + 1)..x1).rev() {
+        set_cell(buf, x, y1, '─', perimeter_idx);
+        perimeter_idx += 1;
+    }
+    set_cell(buf, x0, y1, '└', perimeter_idx);
+    perimeter_idx += 1;
+
+    // Left edge: bottom → top
+    for y in ((y0 + 1)..y1).rev() {
+        set_cell(buf, x0, y, '│', perimeter_idx);
+        perimeter_idx += 1;
     }
 }
 
