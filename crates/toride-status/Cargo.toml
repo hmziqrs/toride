@@ -8,7 +8,7 @@ name = "toride_status"
 path = "src/lib.rs"
 
 [features]
-default = ["sysinfo-provider"]
+default = ["sysinfo-provider", "battery"]
 sysinfo-provider = []
 linux-procfs = ["procfs"]
 linux-sensors = ["lm-sensors"]
