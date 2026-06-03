@@ -90,8 +90,7 @@ use raw_cpuid as _raw_cpuid;
 use nvml_wrapper as _nvml;
 
 #[cfg(feature = "battery")]
-#[allow(unused_imports)]
-use starship_battery as _battery;
+use starship_battery::{self, Manager, State};
 
 #[cfg(feature = "hardware-dmi")]
 #[allow(unused_imports)]
@@ -156,24 +155,6 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     }
 }
 
-/// Parse a "hh:mm" or "hh:mm:ss" time string into total seconds.
-fn parse_hhmm_to_secs(s: &str) -> Option<u64> {
-    let parts: Vec<&str> = s.split(':').collect();
-    match parts.len() {
-        3 => {
-            let h: u64 = parts[0].parse().ok()?;
-            let m: u64 = parts[1].parse().ok()?;
-            let s: u64 = parts[2].parse().ok()?;
-            Some(h * 3600 + m * 60 + s)
-        }
-        2 => {
-            let h: u64 = parts[0].parse().ok()?;
-            let m: u64 = parts[1].parse().ok()?;
-            Some(h * 3600 + m * 60)
-        }
-        _ => None,
-    }
-}
 
 // ── OS info helpers ──────────────────────────────────────────────────────
 
@@ -1081,135 +1062,43 @@ fn build_os_info() -> OsInfo {
 }
 
 /// Read battery status from the OS.
-#[cfg(target_os = "macos")]
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // mV->V and mAh->Wh conversions; values are bounded battery readings
+#[cfg(feature = "battery")]
 fn read_battery_os() -> Option<BatteryInfo> {
-    use std::process::Command;
+    use starship_battery::units::energy::watt_hour;
+    use starship_battery::units::electric_potential::volt;
+    use starship_battery::units::ratio::percent;
+    use starship_battery::units::time::second;
 
-    // ── pmset: charge percent, state, and time estimates ──
-    let output = Command::new("pmset")
-        .arg("-g")
-        .arg("batt")
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout);
-    let percent_line = text.lines().find(|l| l.contains('%'))?;
-    let pct_str = percent_line
-        .split_whitespace()
-        .find(|w| w.ends_with('%'))?;
-    let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
-    let state = if text.contains("discharging") {
-        "Discharging"
-    } else if text.contains("charging") || text.contains("AC attached") {
-        "Charging"
-    } else {
-        "Unknown"
+    let manager = Manager::new().ok()?;
+    let battery = manager.batteries().ok()?.next()?.ok()?;
+
+    let charge_percent = battery.state_of_charge().get::<percent>() as f32;
+    let state = match battery.state() {
+        State::Charging => "Charging",
+        State::Discharging => "Discharging",
+        State::Empty => "Empty",
+        State::Full => "Full",
+        _ => "Unknown",
     };
 
-    // Parse pmset -g batt for time remaining (e.g. " - 2:35 remaining")
-    let mut time_to_empty_secs: Option<u64> = None;
-    let mut time_to_full_secs: Option<u64> = None;
-    for line in text.lines() {
-        if let Some(rest) = line.strip_prefix('-').or_else(|| line.strip_prefix(" -")) {
-            let rest = rest.trim();
-            if let Some(time_part) = rest.split("remaining").next() {
-                let time_str = time_part.trim();
-                if let Some(secs) = parse_hhmm_to_secs(time_str) {
-                    if secs > 0 {
-                        time_to_empty_secs = Some(secs);
-                    }
-                }
-            } else if let Some(time_part) = rest.split("until charged").next() {
-                let time_str = time_part.trim();
-                if let Some(secs) = parse_hhmm_to_secs(time_str) {
-                    if secs > 0 {
-                        time_to_full_secs = Some(secs);
-                    }
-                }
-            }
-        }
-    }
+    let time_to_empty_secs = battery
+        .time_to_empty()
+        .map(|t| t.get::<second>() as u64);
+    let time_to_full_secs = battery
+        .time_to_full()
+        .map(|t| t.get::<second>() as u64);
 
-    // ── system_profiler SPPowerDataType: detailed battery info ──
-    let mut voltage: Option<f32> = None;
-    let mut cycle_count: Option<u32> = None;
-    let mut manufacturer: Option<String> = None;
-    let mut model: Option<String> = None;
-    let mut health_percent: Option<f32> = None;
-    let mut energy_wh: Option<f32> = None;
-    let mut energy_full_wh: Option<f32> = None;
-    let mut energy_full_design_wh: Option<f32> = None;
-
-    if let Ok(sp_output) = Command::new("system_profiler")
-        .args(["SPPowerDataType", "-json"])
-        .output()
-    {
-        if let Ok(sp_text) = String::from_utf8(sp_output.stdout) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_text) {
-                if let Some(powers) = json["SPPowerDataType"].as_array() {
-                    for power_section in powers {
-                        if let Some(batteries) = power_section["sppower_battery_health_info"].as_array() {
-                            for bat_info in batteries {
-                                // cycle_count
-                                if cycle_count.is_none() {
-                                    cycle_count = bat_info["cycle_count"].as_u64().map(|cc| cc as u32);
-                                }
-                                // manufacturer
-                                if manufacturer.is_none() {
-                                    manufacturer = bat_info["manufacturer"].as_str().map(std::string::ToString::to_string);
-                                }
-                                // model / device_name
-                                if model.is_none() {
-                                    model = bat_info["device_name"].as_str().map(std::string::ToString::to_string);
-                                }
-                                // voltage: sppower_voltage is in mV
-                                if voltage.is_none() {
-                                    if let Some(mv) = bat_info["sppower_voltage"].as_f64() {
-                                        voltage = Some((mv / 1000.0) as f32);
-                                    }
-                                }
-                                // health: max_capacity / design_capacity * 100
-                                let max_cap = bat_info["max_capacity"].as_f64();
-                                let design_cap = bat_info["design_capacity"].as_f64();
-                                if health_percent.is_none() {
-                                    if let (Some(max), Some(design)) = (max_cap, design_cap) {
-                                        if design > 0.0 {
-                                            health_percent = Some((max / design * 100.0) as f32);
-                                        }
-                                    }
-                                }
-                                // energy_wh: current_capacity (mAh) * voltage (V) / 1000 -> Wh
-                                if energy_wh.is_none() {
-                                    if let (Some(cur_cap), Some(v)) = (bat_info["current_capacity"].as_f64(), voltage) {
-                                        energy_wh = Some((cur_cap * f64::from(v) / 1000.0) as f32);
-                                    }
-                                }
-                                // energy_full_wh: max_capacity (mAh) * voltage (V) / 1000 -> Wh
-                                if energy_full_wh.is_none() {
-                                    if let (Some(max_val), Some(v)) = (max_cap, voltage) {
-                                        energy_full_wh = Some((max_val * f64::from(v) / 1000.0) as f32);
-                                    }
-                                }
-                                // energy_full_design_wh: design_capacity (mAh) * voltage (V) / 1000 -> Wh
-                                if energy_full_design_wh.is_none() {
-                                    if let (Some(des_val), Some(v)) = (design_cap, voltage) {
-                                        energy_full_design_wh = Some((des_val * f64::from(v) / 1000.0) as f32);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let voltage = Some(battery.voltage().get::<volt>() as f32);
+    let cycle_count = battery.cycle_count();
+    let health_percent = Some(battery.state_of_health().get::<percent>() as f32);
+    let energy_wh = Some(battery.energy().get::<watt_hour>() as f32);
+    let energy_full_wh = Some(battery.energy_full().get::<watt_hour>() as f32);
+    let energy_full_design_wh = Some(battery.energy_full_design().get::<watt_hour>() as f32);
+    let manufacturer = battery.vendor().map(std::string::ToString::to_string);
+    let model = battery.model().map(std::string::ToString::to_string);
 
     Some(BatteryInfo {
-        charge_percent: pct,
+        charge_percent,
         state: state.to_string(),
         time_to_empty_secs,
         time_to_full_secs,
@@ -1224,113 +1113,8 @@ fn read_battery_os() -> Option<BatteryInfo> {
     })
 }
 
-/// Read battery status from the OS.
-#[cfg(target_os = "linux")]
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)] // micro-unit->unit conversions; values are bounded battery readings
-fn read_battery_os() -> Option<BatteryInfo> {
-    use std::fs;
-    use std::path::Path;
-
-    /// Helper: read a sysfs file, trim, parse as T. Returns None on any error.
-    fn read_sysfs_parse<T: std::str::FromStr>(dir: &Path, name: &str) -> Option<T> {
-        fs::read_to_string(dir.join(name))
-            .ok()?
-            .trim()
-            .parse::<T>()
-            .ok()
-    }
-
-    /// Helper: read a sysfs file as a trimmed string. Returns None on any error.
-    fn read_sysfs_string(dir: &Path, name: &str) -> Option<String> {
-        fs::read_to_string(dir.join(name))
-            .ok()
-            .map(|s| s.trim().to_string())
-    }
-
-    let supply_dir = Path::new("/sys/class/power_supply");
-    let entries = fs::read_dir(supply_dir).ok()?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if !name_str.starts_with("BAT") && name_str != "battery" {
-            continue;
-        }
-        if let Ok(type_content) = fs::read_to_string(path.join("type")) {
-            if type_content.trim() != "Battery" {
-                continue;
-            }
-        }
-
-        let pct: f32 = read_sysfs_parse(&path, "capacity")?;
-        let status = read_sysfs_string(&path, "status")
-            .unwrap_or_else(|| "Unknown".to_string());
-
-        // time_to_empty_secs: file value is in seconds
-        let time_to_empty_secs: Option<u64> = read_sysfs_parse(&path, "time_to_empty");
-        // time_to_full_secs: file value is in seconds
-        let time_to_full_secs: Option<u64> = read_sysfs_parse(&path, "time_to_full");
-        // voltage: file value in microvolts, convert to volts
-        let voltage: Option<f32> = read_sysfs_parse::<f64>(&path, "voltage_now")
-            .map(|v| (v / 1_000_000.0) as f32);
-        // cycle_count
-        let cycle_count: Option<u32> = read_sysfs_parse(&path, "cycle_count");
-        // manufacturer
-        let manufacturer: Option<String> = read_sysfs_string(&path, "manufacturer");
-        // model
-        let model: Option<String> = read_sysfs_string(&path, "model_name");
-
-        // energy values: files in microjoules, convert to watt-hours
-        // energy_wh = energy_now (microjoules) / 1_000_000.0 (joules) / 3600.0 (hours)
-        //   but on Linux sysfs, energy_now and energy_full are in microwatt-hours (uWh)
-        //   when the unit file says "uWh", or microamp-hours (uAh) combined with voltage.
-        // The standard is microwatt-hours for energy_* files, so divide by 1_000_000 for Wh.
-        let energy_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_now")
-            .map(|e| (e / 1_000_000.0) as f32);
-        let energy_full_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_full")
-            .map(|e| (e / 1_000_000.0) as f32);
-        let energy_full_design_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_full_design")
-            .map(|e| (e / 1_000_000.0) as f32);
-
-        // health_percent = energy_full / energy_full_design * 100
-        let health_percent: Option<f32> = {
-            let full: Option<f64> = read_sysfs_parse(&path, "energy_full");
-            let design: Option<f64> = read_sysfs_parse(&path, "energy_full_design");
-            if let (Some(f), Some(d)) = (full, design) {
-                if d > 0.0 {
-                    Some((f / d * 100.0) as f32)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        };
-
-        return Some(BatteryInfo {
-            charge_percent: pct,
-            state: status,
-            time_to_empty_secs,
-            time_to_full_secs,
-            voltage,
-            cycle_count,
-            health_percent,
-            energy_wh,
-            energy_full_wh,
-            energy_full_design_wh,
-            manufacturer,
-            model,
-        });
-    }
-    None
-}
-
-/// Read battery status from the OS.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Read battery status from the OS (no crate support).
+#[cfg(not(feature = "battery"))]
 fn read_battery_os() -> Option<BatteryInfo> {
     None
 }

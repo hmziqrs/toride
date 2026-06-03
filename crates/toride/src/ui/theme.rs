@@ -1,4 +1,4 @@
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 
 /// All semantic colour slots — one `Palette` per theme, mirroring themes.js.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +163,12 @@ pub const GRUVBOX: Palette = Palette {
 
 // ── Theme enum ────────────────────────────────────────────────────────────────
 
+impl Default for Palette {
+    fn default() -> Self {
+        CHARM
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
     Catppuccin,
@@ -209,5 +215,81 @@ impl Theme {
             Theme::Nord,
             Theme::Gruvbox,
         ]
+    }
+}
+
+// ── Keybinding style constants ────────────────────────────────────────────────
+
+/// Background color for keyboard shortcut badges.
+pub const KEY_BG: Color = Color::Rgb(32, 26, 50);
+
+impl Palette {
+    /// Style for keyboard shortcut badges (e.g. " ↵ ", " q ").
+    #[must_use]
+    pub fn key_style(self) -> Style {
+        Style::new().fg(self.text).bg(KEY_BG)
+    }
+
+    /// Style for label text next to keybinding badges.
+    #[must_use]
+    pub fn label_style(self) -> Style {
+        Style::new().fg(self.text_muted)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_theme_is_charm() {
+        assert_eq!(Theme::default(), Theme::Charm);
+    }
+
+    #[test]
+    fn all_returns_six_themes_in_order() {
+        let all = Theme::all();
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[0], Theme::Catppuccin);
+        assert_eq!(all[1], Theme::TokyoNight);
+        assert_eq!(all[2], Theme::RosePine);
+        assert_eq!(all[3], Theme::Charm);
+        assert_eq!(all[4], Theme::Nord);
+        assert_eq!(all[5], Theme::Gruvbox);
+    }
+
+    #[test]
+    fn each_palette_bg_is_rgb() {
+        for &theme in Theme::all() {
+            let palette = theme.palette();
+            assert!(
+                matches!(palette.bg, Color::Rgb(_, _, _)),
+                "{theme:?}.palette().bg is not Rgb"
+            );
+        }
+    }
+
+    #[test]
+    fn label_non_empty_for_all_themes() {
+        for &theme in Theme::all() {
+            let label = theme.label();
+            assert!(
+                !label.is_empty(),
+                "{theme:?}.label() returned an empty string"
+            );
+        }
+    }
+
+    #[test]
+    fn key_style_and_label_style_differ() {
+        for &theme in Theme::all() {
+            let palette = theme.palette();
+            let ks = palette.key_style();
+            let ls = palette.label_style();
+            assert_ne!(
+                ks, ls,
+                "{theme:?}: key_style and label_style should be different"
+            );
+        }
     }
 }

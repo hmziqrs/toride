@@ -1,0 +1,158 @@
+pub mod help;
+pub mod status;
+pub mod welcome;
+
+pub use help::HelpScreen;
+pub use status::StatusScreen;
+pub use welcome::WelcomeScreen;
+
+use crossterm::event::{KeyCode, MouseEvent};
+use ratatui::Frame;
+
+use crate::action::Action;
+use crate::ui::theme::Palette;
+
+/// Shared interface for all TUI screens.
+///
+/// Each screen implements this trait so that [`App`](crate::app::App) can
+/// dispatch input events, rendering, and lifecycle calls through a single
+/// consistent API instead of scattered `match` blocks.
+///
+/// The name `AppScreen` avoids collision with [`crate::navigation::Screen`]
+/// (the routing enum).
+pub trait AppScreen {
+    /// Handle a key press, returning an [`Action`] if the screen requests
+    /// navigation or a global behaviour.
+    fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
+
+    /// Handle a mouse event. Default: ignore.
+    fn handle_mouse(&mut self, _mouse: MouseEvent) -> Option<Action> {
+        None
+    }
+
+    /// Handle an action that was *not* consumed by [`App::update`](crate::app::App::update).
+    /// Screens use this to route internally-handled actions like [`Action::ScrollDown`]
+    /// / [`Action::ScrollUp`]. Default: no-op.
+    fn handle_action(&mut self, _action: Action) {}
+
+    /// Render the full screen (background gradient + content).
+    fn view(&mut self, frame: &mut Frame, palette: Palette);
+
+    /// Render only the foreground layer (content over an existing background).
+    /// Used during animated transitions.
+    fn view_foreground(&mut self, frame: &mut Frame, palette: Palette);
+
+    /// Invalidate cached rendering data (e.g. gradient background).
+    fn invalidate_cache(&mut self);
+
+    /// Whether this screen currently needs animation ticks.
+    /// Return `true` when the screen has an active animation (shimmer,
+    /// spinner, etc.). Default: `false`.
+    fn needs_animation(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::ui::screens::AppScreen;
+    use crate::ui::theme::CHARM;
+
+    /// Helper: create a test terminal with the given viewport size.
+    fn test_terminal(w: u16, h: u16) -> Terminal<TestBackend> {
+        let backend = TestBackend::new(w, h);
+        Terminal::new(backend).unwrap()
+    }
+
+    /// Render a screen into a test terminal and return the buffer as a string.
+    fn render_to_string<S: AppScreen>(screen: &mut S, w: u16, h: u16) -> String {
+        let mut terminal = test_terminal(w, h);
+        terminal.draw(|f| screen.view(f, CHARM)).unwrap();
+        terminal.backend().to_string()
+    }
+
+    // ── WelcomeScreen snapshot ──────────────────────────────────────────────
+
+    #[test]
+    fn welcome_screen_snapshot() {
+        let mut screen = super::welcome::WelcomeScreen::new();
+        let output = render_to_string(&mut screen, 80, 24);
+        insta::assert_snapshot!("welcome_screen_80x24", output);
+    }
+
+    #[test]
+    fn welcome_screen_too_small() {
+        let mut screen = super::welcome::WelcomeScreen::new();
+        let output = render_to_string(&mut screen, 20, 8);
+        // Should show "Terminal too small" message
+        assert!(
+            output.contains("too small"),
+            "expected 'too small' message, got: {output}"
+        );
+    }
+
+    #[test]
+    fn welcome_screen_minimal_viewport() {
+        let mut screen = super::welcome::WelcomeScreen::new();
+        let output = render_to_string(&mut screen, 30, 10);
+        insta::assert_snapshot!("welcome_screen_30x10", output);
+    }
+
+    // ── HelpScreen snapshot ────────────────────────────────────────────────
+
+    #[test]
+    fn help_screen_snapshot() {
+        let mut screen = super::help::HelpScreen::new();
+        let output = render_to_string(&mut screen, 80, 24);
+        insta::assert_snapshot!("help_screen_80x24", output);
+    }
+
+    #[test]
+    fn help_screen_minimal_viewport() {
+        let mut screen = super::help::HelpScreen::new();
+        let output = render_to_string(&mut screen, 35, 12);
+        insta::assert_snapshot!("help_screen_35x12", output);
+    }
+
+    // ── StatusScreen loading snapshot ───────────────────────────────────────
+
+    #[test]
+    fn status_screen_loading_snapshot() {
+        let mut screen = super::status::StatusScreen::new();
+        // No status set -- shows loading spinner
+        let output = render_to_string(&mut screen, 80, 24);
+        insta::assert_snapshot!("status_screen_loading_80x24", output);
+    }
+
+    #[test]
+    fn status_screen_with_mock_data_snapshot() {
+        // Collect a real status snapshot to populate the screen.
+        // This is an integration-style test that verifies rendering with
+        // real system data. The snapshot will vary per machine but provides
+        // a regression baseline.
+        let status = toride_status::TorideStatus::collect();
+
+        let mut screen = super::status::StatusScreen::new();
+        screen.set_status(status);
+        let output = render_to_string(&mut screen, 80, 24);
+        // Verify key sections are rendered
+        assert!(
+            output.contains("System Status"),
+            "header should contain 'System Status'"
+        );
+        assert!(output.contains("Hostname"), "should contain 'Hostname'");
+    }
+
+    #[test]
+    fn status_screen_too_small() {
+        let mut screen = super::status::StatusScreen::new();
+        let output = render_to_string(&mut screen, 20, 8);
+        assert!(
+            output.contains("too small"),
+            "expected 'too small' message, got: {output}"
+        );
+    }
+}

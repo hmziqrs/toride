@@ -93,9 +93,9 @@ fn main() {
 
 fn print_check(name: &str, status: CheckStatus, message: &str) {
     let icon = match status {
-        CheckStatus::Pass => "\u{2705}", // green check
+        CheckStatus::Pass => "\u{2705}",         // green check
         CheckStatus::Warn => "\u{26a0}\u{fe0f}", // warning
-        CheckStatus::Fail => "\u{274c}", // red X
+        CheckStatus::Fail => "\u{274c}",         // red X
     };
     // Shorten the name by stripping the category prefix for cleaner display
     let short_name = name.split('.').next_back().unwrap_or(name);

@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example hardware_inventory`
 
-use toride_status::units::{format_bytes, Bytes, Celsius, Hertz};
+use toride_status::units::{Bytes, Celsius, Hertz, format_bytes};
 use toride_status::{Preset, TorideStatus};
 
 fn main() {
@@ -19,11 +19,15 @@ fn main() {
     let si = &sys.static_info;
     println!("System:");
     println!("  Hostname:       {}", si.hostname);
-    println!("  OS:             {} {}",
+    println!(
+        "  OS:             {} {}",
         si.os.name.as_deref().unwrap_or("Unknown"),
         si.os.version.as_deref().unwrap_or("?"),
     );
-    println!("  Kernel:         {}", si.kernel_version.as_deref().unwrap_or("?"));
+    println!(
+        "  Kernel:         {}",
+        si.kernel_version.as_deref().unwrap_or("?")
+    );
     println!("  Arch:           {}", si.os.arch);
 
     // CPU
@@ -45,7 +49,10 @@ fn main() {
     if !sys.cpu_cores.is_empty() {
         println!("  Per-core usage:");
         for core in &sys.cpu_cores {
-            println!("    {}: {:.1}% ({} MHz)", core.name, core.usage, core.frequency);
+            println!(
+                "    {}: {:.1}% ({} MHz)",
+                core.name, core.usage, core.frequency
+            );
         }
     }
 
@@ -146,5 +153,4 @@ fn main() {
             None => println!("  {}: N/A", sensor.label),
         }
     }
-
 }

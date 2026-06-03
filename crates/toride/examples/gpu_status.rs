@@ -5,8 +5,8 @@
 //!
 //! Run with: `cargo run --example gpu_status`
 
-use toride_status::units::{Bytes, Celsius};
 use toride_status::TorideStatus;
+use toride_status::units::{Bytes, Celsius};
 
 fn main() {
     let status = TorideStatus::collect();
@@ -80,7 +80,11 @@ fn main() {
 
         // Temperature
         if let Some(temp) = gpu.temperature {
-            println!("  Temperature:        {} ({:.1} F)", Celsius(temp), Celsius(temp).to_fahrenheit());
+            println!(
+                "  Temperature:        {} ({:.1} F)",
+                Celsius(temp),
+                Celsius(temp).to_fahrenheit()
+            );
         }
 
         // Fan

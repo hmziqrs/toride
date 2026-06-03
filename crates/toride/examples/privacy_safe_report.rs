@@ -21,10 +21,7 @@ fn main() {
     println!("Field-by-field comparison:");
     println!();
 
-    println!(
-        "  {:<25} {:<30} {}",
-        "Field", "Safe Mode", "Full Mode"
-    );
+    println!("  {:<25} {:<30} {}", "Field", "Safe Mode", "Full Mode");
     println!("  {:->25} {:->30} {:->30}", "", "", "");
 
     println!(
@@ -37,9 +34,7 @@ fn main() {
     );
     println!(
         "  {:<25} {:<30} {}",
-        "memory.total_bytes",
-        safe.system.memory.total_bytes,
-        full.system.memory.total_bytes,
+        "memory.total_bytes", safe.system.memory.total_bytes, full.system.memory.total_bytes,
     );
     println!(
         "  {:<25} {:<30} {}",
@@ -49,15 +44,11 @@ fn main() {
     );
     println!(
         "  {:<25} {:<30} {}",
-        "os_info.arch",
-        safe.system.os_info.arch,
-        full.system.os_info.arch,
+        "os_info.arch", safe.system.os_info.arch, full.system.os_info.arch,
     );
     println!(
         "  {:<25} {:<30} {}",
-        "process count",
-        safe.system.processes.total_count,
-        full.system.processes.total_count,
+        "process count", safe.system.processes.total_count, full.system.processes.total_count,
     );
     println!(
         "  {:<25} {:<30} {}",
@@ -99,10 +90,9 @@ fn main() {
     }
 
     // Check disk serial numbers
-    if let (Some(safe_disk), Some(full_disk)) = (
-        safe.system.disks.first(),
-        full.system.disks.first(),
-    ) {
+    if let (Some(safe_disk), Some(full_disk)) =
+        (safe.system.disks.first(), full.system.disks.first())
+    {
         println!(
             "  {:<25} {:<30} {}",
             "disk[0].serial",

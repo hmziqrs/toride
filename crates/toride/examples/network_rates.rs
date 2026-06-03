@@ -19,7 +19,10 @@ fn main() {
 
     // First collect to establish baseline
     let (status, _) = collector.collect();
-    println!("Interfaces found: {}", status.system.network_interfaces.len());
+    println!(
+        "Interfaces found: {}",
+        status.system.network_interfaces.len()
+    );
     println!();
 
     for i in 0..iterations {
