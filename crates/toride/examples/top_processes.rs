@@ -2,8 +2,8 @@
 //!
 //! Run with: `cargo run --example top_processes`
 
-use toride_status::units::format_bytes;
 use toride_status::TorideStatus;
+use toride_status::units::format_bytes;
 
 fn main() {
     let status = TorideStatus::collect();
@@ -105,7 +105,10 @@ fn main() {
                 );
             }
             if sorted_kids.len() > 3 {
-                println!("    \u{2514}\u{2500} ... and {} more", sorted_kids.len() - 3);
+                println!(
+                    "    \u{2514}\u{2500} ... and {} more",
+                    sorted_kids.len() - 3
+                );
             }
         }
     }

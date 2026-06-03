@@ -2,8 +2,8 @@
 //!
 //! Run with: `cargo run --example simple_snapshot`
 
-use toride_status::units::{format_bytes, format_duration};
 use toride_status::SysProbe;
+use toride_status::units::{format_bytes, format_duration};
 
 fn main() {
     let probe = SysProbe::new();
@@ -20,7 +20,10 @@ fn main() {
     let os_name = sys.os_info.name.as_deref().unwrap_or("Unknown");
     let os_ver = sys.os_info.version.as_deref().unwrap_or("?");
     let kernel = sys.os_info.kernel_version.as_deref().unwrap_or("?");
-    println!("OS:       {os_name} {os_ver} (kernel {kernel}, {})", sys.os_info.arch);
+    println!(
+        "OS:       {os_name} {os_ver} (kernel {kernel}, {})",
+        sys.os_info.arch
+    );
 
     // CPU
     match sys.cpu_usage {
@@ -28,7 +31,10 @@ fn main() {
         None => println!("CPU:      unavailable"),
     }
     if let Some(cores) = sys.physical_cores {
-        println!("Cores:    {cores} physical, {} logical", sys.cpu_cores.len());
+        println!(
+            "Cores:    {cores} physical, {} logical",
+            sys.cpu_cores.len()
+        );
     }
 
     // Memory
@@ -60,7 +66,10 @@ fn main() {
 
     // Load average
     if let Some(load) = &sys.load_average {
-        println!("Load:     {:.2} / {:.2} / {:.2} (1/5/15m)", load.one, load.five, load.fifteen);
+        println!(
+            "Load:     {:.2} / {:.2} / {:.2} (1/5/15m)",
+            load.one, load.five, load.fifteen
+        );
     }
 
     println!();

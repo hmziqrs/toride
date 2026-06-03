@@ -11,4 +11,110 @@ pub enum Action {
     Back,
     /// Quit the application.
     Quit,
+    /// Scroll content down (j / Down / mouse-wheel).
+    ScrollDown,
+    /// Scroll content up (k / Up / mouse-wheel).
+    ScrollUp,
+    /// Cycle to the next colour theme (Ctrl+T).
+    CycleTheme,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that all Action variants implement Copy, Clone, Debug, PartialEq, Eq
+    /// by exercising each trait. If the derive is removed, this will fail to compile.
+    fn assert_copy_clone_debug_partial_eq_eq(a: Action, b: Action) {
+        // Copy
+        let _copy: Action = a;
+        // Clone
+        let _cloned = a.clone();
+        // Debug
+        let _debug = format!("{a:?}");
+        // PartialEq
+        let _eq = a == b;
+        // Eq is implied by PartialEq + derive; we just verify it compiles.
+        let _: bool = a == b;
+    }
+
+    #[test]
+    fn all_variants_satisfy_traits() {
+        let variants = [
+            Action::Continue,
+            Action::Help,
+            Action::Back,
+            Action::Quit,
+            Action::ScrollDown,
+            Action::ScrollUp,
+            Action::CycleTheme,
+        ];
+
+        for v in &variants {
+            assert_copy_clone_debug_partial_eq_eq(*v, *v);
+        }
+    }
+
+    #[test]
+    fn equality_same_variant() {
+        assert_eq!(Action::Continue, Action::Continue);
+        assert_eq!(Action::Quit, Action::Quit);
+        assert_eq!(Action::ScrollDown, Action::ScrollDown);
+    }
+
+    #[test]
+    fn inequality_different_variants() {
+        assert_ne!(Action::Continue, Action::Quit);
+        assert_ne!(Action::Help, Action::Back);
+        assert_ne!(Action::ScrollDown, Action::ScrollUp);
+    }
+
+    #[test]
+    fn clone_produces_equal_value() {
+        let original = Action::ScrollDown;
+        let cloned = original.clone();
+        assert_eq!(original, cloned);
+    }
+
+    #[test]
+    fn debug_output_is_not_empty() {
+        let variants = [
+            Action::Continue,
+            Action::Help,
+            Action::Back,
+            Action::Quit,
+            Action::ScrollDown,
+            Action::ScrollUp,
+            Action::CycleTheme,
+        ];
+        for v in &variants {
+            let debug = format!("{v:?}");
+            assert!(
+                !debug.is_empty(),
+                "Debug output should not be empty for {v:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_clone_assigns_equal_value() {
+        let a = Action::Quit;
+        let b = a;
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn debug_format_contains_variant_name() {
+        let debug = format!("{:?}", Action::ScrollDown);
+        assert!(
+            debug.contains("ScrollDown"),
+            "expected Debug output to contain 'ScrollDown', got: {debug}"
+        );
+    }
+
+    #[test]
+    fn partial_eq_inequality_and_equality() {
+        assert_ne!(Action::Continue, Action::Quit);
+        assert_eq!(Action::ScrollDown, Action::ScrollDown);
+    }
 }

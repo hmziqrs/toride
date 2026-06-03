@@ -87,10 +87,7 @@ fn main() {
         if !top_cpu.is_empty() {
             println!("  Top CPU:");
             for p in &top_cpu {
-                println!(
-                    "    PID {:<7} {:>6.1}%  {}",
-                    p.pid, p.cpu_usage, p.name,
-                );
+                println!("    PID {:<7} {:>6.1}%  {}", p.pid, p.cpu_usage, p.name,);
             }
         }
 

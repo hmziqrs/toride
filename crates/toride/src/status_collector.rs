@@ -62,3 +62,82 @@ impl Default for StatusCollector {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_is_not_pending() {
+        let collector = StatusCollector::new();
+        assert!(
+            !collector.is_pending(),
+            "new collector should not be pending"
+        );
+    }
+
+    #[test]
+    fn default_matches_new() {
+        let new_collector = StatusCollector::new();
+        let default_collector = StatusCollector::default();
+        assert_eq!(new_collector.is_pending(), default_collector.is_pending());
+    }
+
+    #[tokio::test]
+    async fn start_makes_pending() {
+        let mut collector = StatusCollector::new();
+        assert!(!collector.is_pending());
+        collector.start();
+        assert!(
+            collector.is_pending(),
+            "after start(), collector should be pending"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_is_idempotent() {
+        let mut collector = StatusCollector::new();
+        collector.start();
+        assert!(collector.is_pending());
+        // Second start should be a no-op (doesn't replace the receiver)
+        collector.start();
+        assert!(collector.is_pending());
+    }
+
+    #[tokio::test]
+    async fn poll_returns_status_after_collection() {
+        let mut collector = StatusCollector::new();
+        collector.start();
+        // Give the spawned task time to complete
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let result = collector.poll().await;
+        assert!(
+            result.is_some(),
+            "poll should return Some after collection completes"
+        );
+        let status = result.unwrap();
+        assert!(
+            !status.system.hostname.is_empty(),
+            "collected status should have a hostname"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_clears_pending() {
+        let mut collector = StatusCollector::new();
+        collector.start();
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let _ = collector.poll().await;
+        assert!(!collector.is_pending(), "poll should clear pending state");
+    }
+
+    #[tokio::test]
+    async fn poll_returns_none_when_not_started() {
+        let mut collector = StatusCollector::new();
+        let result = collector.poll().await;
+        assert!(
+            result.is_none(),
+            "poll on unstarted collector should return None"
+        );
+    }
+}

@@ -1,15 +1,10 @@
 use crossterm::event::MouseEventKind;
-use ratatui::{
-    buffer::Buffer,
-    layout::Position,
-    layout::Rect,
-    prelude::Widget,
-};
+use ratatui::{buffer::Buffer, layout::Position, layout::Rect, prelude::Widget};
 use ratatui_interact::components::{Button, ButtonState, ButtonStyle, ButtonVariant};
 use ratatui_interact::events::get_mouse_pos;
 
 use crate::ui::responsive::Viewport;
-use crate::ui::theme::{Palette, KEY_BG};
+use crate::ui::theme::{KEY_BG, Palette};
 
 // ── Interactive button ─────────────────────────────────────────────────────────
 
@@ -46,11 +41,7 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
     /// `label_compact` is shown when `viewport >= Compact`, otherwise
     /// `label_minimal` is used.
     #[must_use]
-    pub fn new(
-        label_compact: &'static str,
-        label_minimal: &'static str,
-        action: A,
-    ) -> Self {
+    pub fn new(label_compact: &'static str, label_minimal: &'static str, action: A) -> Self {
         Self {
             label_compact,
             label_minimal,
@@ -116,13 +107,7 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
     }
 
     /// Render the button at `rect` and store `rect` for future hit-testing.
-    pub fn render(
-        &mut self,
-        buf: &mut Buffer,
-        rect: Rect,
-        p: Palette,
-        viewport: Viewport,
-    ) {
+    pub fn render(&mut self, buf: &mut Buffer, rect: Rect, p: Palette, viewport: Viewport) {
         self.area = rect;
 
         let label = self.label(viewport);

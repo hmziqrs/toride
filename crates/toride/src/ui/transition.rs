@@ -77,9 +77,7 @@ impl TransitionCache {
             .map_or(0, |d| d.subsec_nanos());
 
         // Spread the nanos out so nearby timestamps diverge.
-        let next_seed = base_nanos
-            .wrapping_mul(0x6c07_8965)
-            .wrapping_add(1); // ensure non-zero
+        let next_seed = base_nanos.wrapping_mul(0x6c07_8965).wrapping_add(1); // ensure non-zero
 
         TransitionCache {
             seeds: HashMap::new(),
@@ -93,11 +91,7 @@ impl TransitionCache {
     /// back navigation share a gradient.
     pub fn get_or_create_seed(&mut self, from: ScreenKey, to: ScreenKey) -> u32 {
         // Normalise the key so (a,b) and (b,a) map to the same entry.
-        let key = if from <= to {
-            (from, to)
-        } else {
-            (to, from)
-        };
+        let key = if from <= to { (from, to) } else { (to, from) };
 
         if let Some(&seed) = self.seeds.get(&key) {
             return seed;
@@ -129,12 +123,7 @@ pub struct TransitionState {
 
 impl TransitionState {
     /// Create a new transition, pulling (or generating) the seed from `cache`.
-    pub fn new(
-        from: ScreenKey,
-        to: ScreenKey,
-        cache: &mut TransitionCache,
-        reverse: bool,
-    ) -> Self {
+    pub fn new(from: ScreenKey, to: ScreenKey, cache: &mut TransitionCache, reverse: bool) -> Self {
         let seed = cache.get_or_create_seed(from, to);
         let params = params_from_seed(seed);
 
@@ -158,5 +147,120 @@ impl TransitionState {
     /// Whether the transition has completed.
     pub fn is_done(&self) -> bool {
         self.progress() >= 1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── params_from_seed ────────────────────────────────────────────────────────
+
+    #[test]
+    fn params_from_seed_deterministic() {
+        let a = params_from_seed(42);
+        let b = params_from_seed(42);
+        assert!((a.center_offset.0 - b.center_offset.0).abs() < f64::EPSILON);
+        assert!((a.center_offset.1 - b.center_offset.1).abs() < f64::EPSILON);
+        assert!((a.edge_delta - b.edge_delta).abs() < f64::EPSILON);
+        assert!((a.brightness_dip - b.brightness_dip).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn params_from_seed_different_seeds_differ() {
+        let a = params_from_seed(1);
+        let b = params_from_seed(2);
+        // Different seeds should produce different parameters (extremely unlikely collision)
+        let differ = (a.center_offset.0 - b.center_offset.0).abs() > f64::EPSILON
+            || (a.center_offset.1 - b.center_offset.1).abs() > f64::EPSILON
+            || (a.edge_delta - b.edge_delta).abs() > f64::EPSILON
+            || (a.brightness_dip - b.brightness_dip).abs() > f64::EPSILON;
+        assert!(differ, "different seeds should produce different params");
+    }
+
+    #[test]
+    fn params_from_seed_edge_delta_range() {
+        for seed in [0, 1, 42, u32::MAX] {
+            let p = params_from_seed(seed);
+            assert!(
+                p.edge_delta >= -0.2 && p.edge_delta <= -0.1,
+                "edge_delta should be in [-0.2, -0.1], got {}",
+                p.edge_delta
+            );
+        }
+    }
+
+    #[test]
+    fn params_from_seed_brightness_dip_range() {
+        for seed in [0, 1, 42, u32::MAX] {
+            let p = params_from_seed(seed);
+            assert!(
+                p.brightness_dip >= -0.1 && p.brightness_dip <= -0.03,
+                "brightness_dip should be in [-0.1, -0.03], got {}",
+                p.brightness_dip
+            );
+        }
+    }
+
+    #[test]
+    fn params_from_seed_magnitude_range() {
+        // center_offset magnitude should be in 0.02..0.08
+        for seed in [0, 1, 42, u32::MAX] {
+            let p = params_from_seed(seed);
+            let mag = (p.center_offset.0.hypot(p.center_offset.1));
+            assert!(
+                mag >= 0.02 - 1e-10 && mag <= 0.08 + 1e-10,
+                "magnitude should be in [0.02, 0.08], got {}",
+                mag
+            );
+        }
+    }
+
+    // ── TransitionCache ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn cache_get_or_create_seed_returns_seed() {
+        let mut cache = TransitionCache::new();
+        let seed = cache.get_or_create_seed(0, 1);
+        // Seed should be non-zero (next_seed starts at base_nanos * .. + 1)
+        assert_ne!(seed, 0);
+    }
+
+    #[test]
+    fn cache_symmetry_ab_equals_ba() {
+        let mut cache = TransitionCache::new();
+        let seed_ab = cache.get_or_create_seed(1, 2);
+        let seed_ba = cache.get_or_create_seed(2, 1);
+        assert_eq!(seed_ab, seed_ba, "A->B and B->A should share the same seed");
+    }
+
+    #[test]
+    fn cache_returns_same_seed_on_repeat() {
+        let mut cache = TransitionCache::new();
+        let seed1 = cache.get_or_create_seed(0, 1);
+        let seed2 = cache.get_or_create_seed(0, 1);
+        assert_eq!(seed1, seed2, "same edge should return same seed");
+    }
+
+    #[test]
+    fn cache_different_edges_different_seeds() {
+        let mut cache = TransitionCache::new();
+        let seed_01 = cache.get_or_create_seed(0, 1);
+        let seed_02 = cache.get_or_create_seed(0, 2);
+        assert_ne!(
+            seed_01, seed_02,
+            "different edges should have different seeds"
+        );
+    }
+
+    #[test]
+    fn cache_seeds_increment() {
+        let mut cache = TransitionCache::new();
+        let s1 = cache.get_or_create_seed(0, 1);
+        let s2 = cache.get_or_create_seed(0, 2);
+        let s3 = cache.get_or_create_seed(0, 3);
+        // Seeds should be monotonically increasing by SEED_PRIME
+        assert_eq!(s2, s1.wrapping_add(SEED_PRIME));
+        assert_eq!(s3, s2.wrapping_add(SEED_PRIME));
     }
 }

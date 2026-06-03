@@ -1,0 +1,28 @@
+---
+source: crates/toride/src/ui/screens/mod.rs
+expression: output
+---
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                      Help                                      "
+"                                                                                "
+"                            Enter   Show system status                          "
+"                                ?   Show this help                              "
+"                                     q   Quit                                   "
+"                              j / Down   Scroll down                            "
+"                                k / Up   Scroll up                              "
+"                            b / Esc   Back to welcome                           "
+"                                                                                "
+"                                                                                "
+"                                     b  back                                    "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "
+"                                                                                "

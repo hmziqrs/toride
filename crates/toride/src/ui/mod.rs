@@ -8,7 +8,7 @@ pub mod widgets;
 
 // Re-export commonly used types for convenience
 pub use components::InteractiveButton;
-pub use screens::{HelpScreen, StatusScreen, WelcomeScreen};
+pub use screens::{AppScreen, HelpScreen, StatusScreen, WelcomeScreen};
 pub use theme::Palette;
 pub use transition::{TransitionCache, TransitionState};
 pub use widgets::{AnimatedBorder, GradientCache};

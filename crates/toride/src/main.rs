@@ -13,7 +13,11 @@ fn main() -> Result<()> {
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(stdout(), terminal::LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(
+            stdout(),
+            terminal::LeaveAlternateScreen,
+            DisableMouseCapture
+        );
         original_hook(panic_info);
     }));
 
@@ -30,7 +34,11 @@ fn main() -> Result<()> {
         .block_on(App::new().run(terminal));
 
     let _ = terminal::disable_raw_mode();
-    let _ = execute!(stdout(), terminal::LeaveAlternateScreen, DisableMouseCapture);
+    let _ = execute!(
+        stdout(),
+        terminal::LeaveAlternateScreen,
+        DisableMouseCapture
+    );
 
     result
 }

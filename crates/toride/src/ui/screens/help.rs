@@ -1,3 +1,4 @@
+use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
@@ -7,9 +8,10 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::widgets::gradient::GradientCache;
 use crate::ui::responsive::{self, Viewport};
-use crate::ui::theme::{self, Palette};
+use crate::ui::screens::AppScreen;
+use crate::ui::theme::Palette;
+use crate::ui::widgets::gradient::GradientCache;
 
 pub struct HelpScreen {
     gradient_cache: GradientCache,
@@ -21,19 +23,8 @@ impl Default for HelpScreen {
     }
 }
 
-impl HelpScreen {
-    pub fn new() -> Self {
-        Self {
-            gradient_cache: GradientCache::new(),
-        }
-    }
-
-    pub fn invalidate_cache(&mut self) {
-        self.gradient_cache.invalidate();
-    }
-
-    pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
-        use ratatui::crossterm::event::KeyCode;
+impl AppScreen for HelpScreen {
+    fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         match code {
             KeyCode::Char('b') | KeyCode::Esc => Some(Action::Back),
             KeyCode::Char('q') => Some(Action::Quit),
@@ -41,29 +32,49 @@ impl HelpScreen {
         }
     }
 
-    pub fn view(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM, false);
-    }
-
-    pub fn view_foreground(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM, true);
-    }
-
-    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
+    fn view(&mut self, frame: &mut Frame, palette: Palette) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
-        if responsive::render_too_small(frame, p) {
+        if responsive::render_too_small(frame, palette) {
             return;
         }
 
-        // Gradient background
-        if !skip_bg {
-            let buf = frame.buffer_mut();
-            self.gradient_cache.render_or_copy(buf, area, p);
+        let buf = frame.buffer_mut();
+        self.gradient_cache.render_or_copy(buf, area, palette);
+
+        Self::render_content(frame, palette, viewport);
+    }
+
+    fn view_foreground(&mut self, frame: &mut Frame, palette: Palette) {
+        let area = frame.area();
+        let viewport = Viewport::from_area(area);
+
+        if responsive::render_too_small(frame, palette) {
+            return;
         }
 
-        // Adaptive center column
+        Self::render_content(frame, palette, viewport);
+    }
+
+    fn invalidate_cache(&mut self) {
+        self.gradient_cache.invalidate();
+    }
+
+    fn needs_animation(&self) -> bool {
+        false
+    }
+}
+
+impl HelpScreen {
+    pub fn new() -> Self {
+        Self {
+            gradient_cache: GradientCache::new(),
+        }
+    }
+
+    fn render_content(frame: &mut Frame, p: Palette, viewport: Viewport) {
+        let area = frame.area();
         let center = responsive::center_area(area);
 
         // Vertical layout
@@ -131,15 +142,56 @@ impl HelpScreen {
     }
 }
 
-fn keybinding_line<'a>(
-    key: &str,
-    desc: &str,
-    key_style: Style,
-    lbl_style: Style,
-) -> Line<'a> {
+fn keybinding_line<'a>(key: &str, desc: &str, key_style: Style, lbl_style: Style) -> Line<'a> {
     Line::from(vec![
         Span::styled(format!(" {key} "), key_style),
         Span::raw("  "),
         Span::styled(desc.to_string(), lbl_style),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::KeyCode;
+
+    use super::HelpScreen;
+    use crate::action::Action;
+    use crate::ui::screens::AppScreen;
+
+    #[test]
+    fn new_creates_screen() {
+        let _screen = HelpScreen::new();
+    }
+
+    #[test]
+    fn handle_key_back_on_b() {
+        let mut screen = HelpScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('b')), Some(Action::Back));
+    }
+
+    #[test]
+    fn handle_key_back_on_esc() {
+        let mut screen = HelpScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Esc), Some(Action::Back));
+    }
+
+    #[test]
+    fn handle_key_quit_on_q() {
+        let mut screen = HelpScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('q')), Some(Action::Quit));
+    }
+
+    #[test]
+    fn handle_key_none_for_other_keys() {
+        let mut screen = HelpScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('a')), None);
+        assert_eq!(screen.handle_key(KeyCode::Enter), None);
+        assert_eq!(screen.handle_key(KeyCode::Up), None);
+    }
+
+    #[test]
+    fn needs_animation_returns_false() {
+        let screen = HelpScreen::new();
+        assert!(!screen.needs_animation());
+    }
 }

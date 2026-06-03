@@ -1,0 +1,14 @@
+---
+source: crates/toride/src/ui/screens/mod.rs
+expression: output
+---
+"████████╗ ██████╗ ██████╗ ██.."
+"╚══██╔══╝██╔═══██╗██╔══██╗██.."
+"   ██║   ██║   ██║██████╔╝██.."
+"   ██║   ██║   ██║██╔══██╗██.."
+"   ██║   ╚██████╔╝██║  ██║██.."
+"│                            │"
+"│砦  ·  0.1.0  ·  SINGLE-HOST│" Hidden by multi-width symbols: [(2, " ")]
+"│   Press any key to enter.  │"
+"│                            │"
+"└────────────── ↵  ? ── q ───┘"

@@ -12,9 +12,10 @@ use ratatui_interact::state::FocusManager;
 
 use crate::action::Action;
 use crate::ui::components::interactive_button::InteractiveButton;
-use crate::ui::widgets::gradient::{AnimatedBorder, GradientCache};
 use crate::ui::responsive::{self, Viewport};
-use crate::ui::theme::{self, Palette};
+use crate::ui::screens::AppScreen;
+use crate::ui::theme::Palette;
+use crate::ui::widgets::gradient::{AnimatedBorder, GradientCache};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const EDITION: &str = "SINGLE-HOST";
@@ -49,37 +50,8 @@ impl Default for WelcomeScreen {
     }
 }
 
-impl WelcomeScreen {
-    #[must_use]
-    pub fn new() -> Self {
-        let buttons = [
-            InteractiveButton::new("↵ continue", "↵", Action::Continue),
-            InteractiveButton::new("? help", "?", Action::Help),
-            InteractiveButton::new("q quit", "q", Action::Quit),
-        ];
-
-        let mut focus = FocusManager::new();
-        focus.register_all([0, 1, 2]);
-
-        let mut screen = Self {
-            gradient_cache: GradientCache::new(),
-            border: AnimatedBorder::new(theme::CHARM.accent),
-            buttons,
-            focus,
-            shimmer_start: Instant::now(),
-        };
-        screen.sync_focus_to_buttons();
-        screen
-    }
-
-    pub fn invalidate_cache(&mut self) {
-        self.gradient_cache.invalidate();
-    }
-
-    /// Handle a key event. Supports direct shortcuts (q, ?, Enter), Tab/Shift+Tab
-    /// for focus cycling, and Arrow keys.
-    #[must_use]
-    pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+impl AppScreen for WelcomeScreen {
+    fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // Direct shortcuts always work
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
@@ -104,23 +76,58 @@ impl WelcomeScreen {
         None
     }
 
-    /// Handle a mouse event. Returns an Action if a button was released after press.
-    #[must_use]
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         self.buttons
             .iter_mut()
             .find_map(|btn| btn.handle_mouse(&mouse))
     }
 
-    pub fn view(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM, false);
+    fn view(&mut self, frame: &mut Frame, palette: Palette) {
+        self.render(frame, palette, false);
     }
 
-    pub fn view_foreground(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM, true);
+    fn view_foreground(&mut self, frame: &mut Frame, palette: Palette) {
+        self.render(frame, palette, true);
     }
 
-    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
+    fn invalidate_cache(&mut self) {
+        self.gradient_cache.invalidate();
+    }
+
+    fn needs_animation(&self) -> bool {
+        true // shimmer always runs
+    }
+}
+
+impl WelcomeScreen {
+    #[must_use]
+    pub fn new() -> Self {
+        let buttons = [
+            InteractiveButton::new("↵ continue", "↵", Action::Continue),
+            InteractiveButton::new("? help", "?", Action::Help),
+            InteractiveButton::new("q quit", "q", Action::Quit),
+        ];
+
+        let mut focus = FocusManager::new();
+        focus.register_all([0, 1, 2]);
+
+        let mut screen = Self {
+            gradient_cache: GradientCache::new(),
+            border: AnimatedBorder::new(Palette::default().accent),
+            buttons,
+            focus,
+            shimmer_start: Instant::now(),
+        };
+        screen.sync_focus_to_buttons();
+        screen
+    }
+
+    /// Update the animated border color (used when the theme changes).
+    pub fn set_border_color(&mut self, color: ratatui::style::Color) {
+        self.border = AnimatedBorder::new(color);
+    }
+
+    fn render(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
@@ -288,5 +295,63 @@ fn apply_logo_shimmer(
                 cell.set_fg(lightened);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::KeyCode;
+
+    use super::WelcomeScreen;
+    use crate::action::Action;
+    use crate::ui::screens::AppScreen;
+
+    #[test]
+    fn new_creates_screen_with_working_invalidate_cache() {
+        let mut screen = WelcomeScreen::new();
+        // invalidate_cache should run without panicking
+        screen.invalidate_cache();
+        // Screen should still be functional after invalidation
+        assert_eq!(screen.needs_animation(), true);
+    }
+
+    #[test]
+    fn handle_key_returns_quit_for_q() {
+        let mut screen = WelcomeScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('q')), Some(Action::Quit));
+    }
+
+    #[test]
+    fn handle_key_returns_quit_for_esc() {
+        let mut screen = WelcomeScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Esc), Some(Action::Quit));
+    }
+
+    #[test]
+    fn handle_key_returns_help_for_question_mark() {
+        let mut screen = WelcomeScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('?')), Some(Action::Help));
+    }
+
+    #[test]
+    fn handle_key_returns_continue_for_enter() {
+        let mut screen = WelcomeScreen::new();
+        // Button 0 (Continue) is focused by default, so Enter yields Continue
+        assert_eq!(screen.handle_key(KeyCode::Enter), Some(Action::Continue));
+    }
+
+    #[test]
+    fn handle_key_returns_none_for_other_keys() {
+        let mut screen = WelcomeScreen::new();
+        assert_eq!(screen.handle_key(KeyCode::Char('a')), None);
+        assert_eq!(screen.handle_key(KeyCode::Char('z')), None);
+        assert_eq!(screen.handle_key(KeyCode::Up), None);
+        assert_eq!(screen.handle_key(KeyCode::Down), None);
+    }
+
+    #[test]
+    fn needs_animation_returns_true() {
+        let screen = WelcomeScreen::new();
+        assert!(screen.needs_animation());
     }
 }

@@ -1,5 +1,11 @@
-#![expect(clippy::must_use_candidate, reason = "constructors and pure fns in TUI scaffolding")]
-#![expect(clippy::many_single_char_names, reason = "color math uses r/g/b/t variable names")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and pure fns in TUI scaffolding"
+)]
+#![expect(
+    clippy::many_single_char_names,
+    reason = "color math uses r/g/b/t variable names"
+)]
 #![warn(missing_docs)]
 
 pub mod action;

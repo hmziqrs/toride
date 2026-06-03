@@ -27,6 +27,7 @@ toride-status = { path = "../toride-status" }
 
 [dev-dependencies]
 insta = "1"
+serde_json = { workspace = true }
 tempfile = "3"
 testty = "0.9"
 

@@ -167,7 +167,10 @@ fn build_color_cycle(base_color: Color) -> Vec<Color> {
     // Wrap-around: interpolate from last keyframe back to base color
     // so the cycle loops seamlessly at the join point (top-left corner).
     let wrap_steps = 7;
-    #[expect(clippy::cast_precision_loss, reason = "wrap_steps and i are always < 50")]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "wrap_steps and i are always < 50"
+    )]
     let wrap_f = wrap_steps as f32;
     for i in 1..wrap_steps {
         colors.push(prev.lerp(&base_color, i as f32 / wrap_f));
@@ -191,7 +194,11 @@ fn draw_animated_border(
         return;
     }
 
-    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "animation index from elapsed time")]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "animation index from elapsed time"
+    )]
     let idx = (elapsed_secs * 12.0) as usize;
     let cycle_len = color_cycle.len();
     let mut perimeter_idx = 0usize;
@@ -311,4 +318,176 @@ fn rgb_components(color: Color) -> (u8, u8, u8) {
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a * (1.0 - t) + b * t
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    use super::*;
+    use crate::ui::theme::CATPPUCCIN;
+
+    // ── GradientCache ─────────────────────────────────────────────────────
+
+    #[test]
+    fn gradient_cache_new_has_no_cached_area() {
+        // Fresh cache has no cached area, so render_or_copy must regenerate.
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        let mut cache = GradientCache::new();
+
+        cache.render_or_copy(&mut buf, area, CATPPUCCIN);
+
+        // Every cell should have a non-default background colour.
+        for cell in buf.content.iter() {
+            assert_ne!(
+                cell.bg,
+                Color::default(),
+                "expected gradient background, got default"
+            );
+        }
+    }
+
+    #[test]
+    fn gradient_cache_default_works() {
+        // Default should behave identically to new() — no cached area.
+        let area = Rect::new(0, 0, 2, 1);
+        let mut buf = Buffer::empty(area);
+        let mut cache = GradientCache::default();
+
+        cache.render_or_copy(&mut buf, area, CATPPUCCIN);
+
+        assert_ne!(
+            buf.content[0].bg,
+            Color::default(),
+            "default cache should render gradient on first use"
+        );
+    }
+
+    #[test]
+    fn gradient_cache_invalidate_clears_cached_area() {
+        let area = Rect::new(0, 0, 4, 1);
+        let mut buf = Buffer::empty(area);
+        let mut cache = GradientCache::new();
+
+        // First render populates the cache.
+        cache.render_or_copy(&mut buf, area, CATPPUCCIN);
+        let first_bg = buf.content[0].bg;
+
+        // Mutate the palette so a re-render would produce a different result.
+        // We use a different palette with a distinct bg colour.
+        use crate::ui::theme::NORD;
+
+        // Without invalidation the cache should still serve the old colors.
+        let mut buf2 = Buffer::empty(area);
+        cache.render_or_copy(&mut buf2, area, NORD);
+        assert_eq!(
+            buf2.content[0].bg, first_bg,
+            "cache hit should reuse old colours"
+        );
+
+        // Invalidate and re-render — now colours must come from the new palette.
+        cache.invalidate();
+        let mut buf3 = Buffer::empty(area);
+        cache.render_or_copy(&mut buf3, area, NORD);
+
+        // NORD and CATPPUCCIN have different bg colours, so the gradient
+        // should differ after invalidation.
+        assert_ne!(
+            buf3.content[0].bg, first_bg,
+            "invalidated cache should regenerate with new palette"
+        );
+    }
+
+    // ── AnimatedBorder ────────────────────────────────────────────────────
+
+    #[test]
+    fn animated_border_new_creates_with_color() {
+        let border = AnimatedBorder::new(Color::Rgb(100, 150, 200));
+
+        // Drawing on a valid rect should populate corner characters without panic.
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+
+        border.draw(&mut buf, area);
+
+        // Top-left corner should be set to box-drawing '┌'.
+        let tl = buf.cell(ratatui::layout::Position::new(0, 0)).unwrap();
+        assert_eq!(tl.symbol(), "┌", "top-left corner should be ┌");
+
+        // Top-right corner.
+        let tr = buf.cell(ratatui::layout::Position::new(9, 0)).unwrap();
+        assert_eq!(tr.symbol(), "┐", "top-right corner should be ┐");
+
+        // Bottom-right corner.
+        let br = buf.cell(ratatui::layout::Position::new(9, 4)).unwrap();
+        assert_eq!(br.symbol(), "┘", "bottom-right corner should be ┘");
+
+        // Bottom-left corner.
+        let bl = buf.cell(ratatui::layout::Position::new(0, 4)).unwrap();
+        assert_eq!(bl.symbol(), "└", "bottom-left corner should be └");
+    }
+
+    #[test]
+    fn animated_border_draw_too_small_is_noop() {
+        let border = AnimatedBorder::new(Color::Rgb(50, 50, 50));
+        let area = Rect::new(0, 0, 2, 2); // width < 3 and height < 3
+        let mut buf = Buffer::empty(area);
+
+        // Should not panic and should leave the buffer untouched.
+        border.draw(&mut buf, area);
+
+        for cell in buf.content.iter() {
+            assert_eq!(cell.symbol(), " ", "cells should remain default space");
+        }
+    }
+
+    // ── rgb_components (via public gradient rendering) ────────────────────
+
+    #[test]
+    fn gradient_uses_rgb_from_palette_bg() {
+        // If the palette bg is Rgb, the gradient should produce Rgb colours
+        // (not default/reset). This indirectly validates rgb_components.
+        let area = Rect::new(0, 0, 6, 3);
+        let mut buf = Buffer::empty(area);
+        let mut cache = GradientCache::new();
+
+        cache.render_or_copy(&mut buf, area, CATPPUCCIN);
+
+        for cell in buf.content.iter() {
+            assert!(
+                matches!(cell.bg, Color::Rgb(_, _, _)),
+                "gradient cells should have Rgb backgrounds, got {:?}",
+                cell.bg
+            );
+        }
+    }
+
+    #[test]
+    fn gradient_with_non_rgb_bg_produces_black_tones() {
+        // When bg is not Rgb, rgb_components returns (0,0,0). The gradient
+        // should still render without panic, producing Rgb(0..,0..,0..).
+        let non_rgb_palette = crate::ui::theme::Palette {
+            bg: Color::Black, // not Rgb
+            ..CATPPUCCIN
+        };
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        let mut cache = GradientCache::new();
+
+        cache.render_or_copy(&mut buf, area, non_rgb_palette);
+
+        // All cells should still get an Rgb background.
+        for cell in buf.content.iter() {
+            assert!(
+                matches!(cell.bg, Color::Rgb(_, _, _)),
+                "non-Rgb palette bg should still produce Rgb gradient, got {:?}",
+                cell.bg
+            );
+        }
+    }
 }
