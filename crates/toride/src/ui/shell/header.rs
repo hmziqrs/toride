@@ -21,6 +21,8 @@ pub struct HeaderData<'a> {
     pub ram: Option<f64>,
     /// Disk usage percentage (0–100), if known.
     pub disk: Option<f64>,
+    /// Disk I/O throughput label (e.g. `"50↓ 20↑ MB/s"`), if known.
+    pub disk_io: Option<&'a str>,
     /// Network usage label (e.g. `"12 MB/s"`), if known.
     pub net: Option<&'a str>,
     /// Right-aligned clock label (e.g. `09:17 PM`).
@@ -50,6 +52,10 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     left.extend(pct_gauge_spans("ram", data.ram, p));
     left.push(sep.clone());
     left.extend(pct_gauge_spans("disk", data.disk, p));
+    if let Some(disk_io_label) = data.disk_io {
+        left.push(sep.clone());
+        left.extend(gauge_spans("io", disk_io_label, p.accent3, p));
+    }
     if let Some(net_label) = data.net {
         left.push(sep);
         left.extend(gauge_spans("net", net_label, p.accent3, p));
@@ -60,6 +66,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     // Shimmer sweep across the logo (" 砦 toride" = 9 cells in header row 1).
     let elapsed = data.shimmer_start.elapsed().as_secs_f32();
     apply_logo_shimmer(frame.buffer_mut(), inner, elapsed);
+    apply_loading_pulse(frame.buffer_mut(), inner, elapsed, p);
 
     let clock = Line::from(Span::styled(
         format!("{} ", data.clock),
@@ -98,13 +105,31 @@ fn apply_logo_shimmer(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f
     }
 }
 
+/// Subtle brightness pulse on "—" placeholder cells for gauges still loading.
+fn apply_loading_pulse(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f32, _p: Palette) {
+    // Suppress unused-variable warning — palette kept for future tint options.
+    use tachyonfx::ColorSpace;
+
+    // 1.5 s cycle — smooth sine wave between 0 and 0.25.
+    let alpha = ((elapsed * std::f32::consts::TAU / 1.5).sin() + 1.0) * 0.5 * 0.25;
+
+    for x in inner.x..inner.right() {
+        let cell = &mut buf[Position::new(x, inner.y)];
+        if cell.symbol() == "—" {
+            let fg = cell.fg;
+            let lightened = ColorSpace::Hsl.lighten(&fg, alpha);
+            cell.set_fg(lightened);
+        }
+    }
+}
+
 /// Compute the hitbox [`Rect`] for each gauge span within the header's inner row.
 ///
-/// Returns `[cpu_rect, ram_rect, disk_rect, net_rect]`. `data` must match the
-/// data passed to [`render_header`] for the same frame so the widths are
+/// Returns `[cpu_rect, ram_rect, disk_rect, disk_io_rect, net_rect]`. `data` must
+/// match the data passed to [`render_header`] for the same frame so the widths are
 /// consistent.
 #[must_use]
-pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
+pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 5] {
     let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
     let inner = block.inner(area);
 
@@ -115,7 +140,7 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
 
     let labels = ["cpu", "ram", "disk"];
     let pcts = [data.cpu, data.ram, data.disk];
-    let mut rects = [Rect::default(); 4];
+    let mut rects = [Rect::default(); 5];
 
     for (i, (&label, &pct)) in labels.iter().zip(pcts.iter()).enumerate() {
         let w = pct_gauge_width(label, pct);
@@ -124,10 +149,18 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
         x += 7; // separator "   ·   "
     }
 
-    // Net gauge
+    // Disk I/O gauge (index 3)
+    if let Some(disk_io_label) = data.disk_io {
+        let w = gauge_width("io", disk_io_label);
+        rects[3] = Rect::new(x, inner.y, w, 1);
+        x += w;
+        x += 7; // separator
+    }
+
+    // Net gauge (index 4)
     if let Some(net_label) = data.net {
         let w = gauge_width("net", net_label);
-        rects[3] = Rect::new(x, inner.y, w, 1);
+        rects[4] = Rect::new(x, inner.y, w, 1);
     }
 
     rects
@@ -185,6 +218,7 @@ mod tests {
             cpu,
             ram,
             disk,
+            disk_io: None,
             net: None,
             clock,
             shimmer_start: Instant::now(),

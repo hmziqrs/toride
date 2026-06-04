@@ -5,7 +5,7 @@
 //! an internal "active section"; only [`Section::Dashboard`] renders full
 //! content for now, other sections show a placeholder.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -29,6 +29,7 @@ use crate::ui::shell::{
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, render_panel, render_titled_panel, tag_badge};
 use crate::ui::screens::base::ScreenBase;
+use tachyonfx::{EffectManager, Interpolation, fx};
 
 /// Below this frame width the sidebar auto-collapses to an icon rail.
 const AUTO_COLLAPSE_W: u16 = 100;
@@ -47,6 +48,7 @@ enum GaugeKind {
     Cpu,
     Ram,
     Disk,
+    DiskIo,
     Net,
 }
 
@@ -92,7 +94,7 @@ pub struct DashboardScreen {
     activity_scroll: usize,
     open_module: Option<usize>,
     gauge_hover: Option<GaugeKind>,
-    gauge_hitboxes: [Rect; 4],
+    gauge_hitboxes: [Rect; 5],
     /// Live network throughput (bytes/sec).
     net_rx_rate: Option<f64>,
     net_tx_rate: Option<f64>,
@@ -102,6 +104,12 @@ pub struct DashboardScreen {
     base: ScreenBase,
     clock: String,
     shimmer_start: Instant,
+    /// Tooltip fade-in effect manager.
+    tooltip_fx: EffectManager<()>,
+    /// Previous hover state for detecting transitions.
+    prev_gauge_hover: Option<GaugeKind>,
+    /// Timestamp of the last render call (for frame deltas).
+    last_frame: Instant,
 }
 
 impl Default for DashboardScreen {
@@ -129,7 +137,7 @@ impl DashboardScreen {
             activity_scroll: 0,
             open_module: None,
             gauge_hover: None,
-            gauge_hitboxes: [Rect::default(); 4],
+            gauge_hitboxes: [Rect::default(); 5],
             net_rx_rate: None,
             net_tx_rate: None,
             disk_read_rate: None,
@@ -137,6 +145,9 @@ impl DashboardScreen {
             base: ScreenBase::new(),
             clock,
             shimmer_start: Instant::now(),
+            tooltip_fx: EffectManager::default(),
+            prev_gauge_hover: None,
+            last_frame: Instant::now(),
         }
     }
 
@@ -237,7 +248,7 @@ impl DashboardScreen {
 
     /// Check if a screen coordinate falls within a header gauge hitbox.
     fn gauge_at(&self, col: u16, row: u16) -> Option<GaugeKind> {
-        let kinds = [GaugeKind::Cpu, GaugeKind::Ram, GaugeKind::Disk, GaugeKind::Net];
+        let kinds = [GaugeKind::Cpu, GaugeKind::Ram, GaugeKind::Disk, GaugeKind::DiskIo, GaugeKind::Net];
         for (i, rect) in self.gauge_hitboxes.iter().enumerate() {
             if col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom() {
                 return Some(kinds[i]);
@@ -266,11 +277,12 @@ impl DashboardScreen {
         let shell = shell_layout(area, sidebar_w);
 
         // Header gauges from live status when available.
-        let (cpu, ram, disk, net_label) = self.gauges();
+        let (cpu, ram, disk, disk_io_label, net_label) = self.gauges();
         let header_data = HeaderData {
             cpu,
             ram,
             disk,
+            disk_io: disk_io_label.as_deref(),
             net: net_label.as_deref(),
             clock: &self.clock,
             shimmer_start: self.shimmer_start,
@@ -325,6 +337,22 @@ impl DashboardScreen {
         }
 
         // ── Header gauge tooltip overlay ────────────────────────────────────
+        let dt = self.last_frame.elapsed();
+        self.last_frame = Instant::now();
+
+        // Detect hover transitions and manage fade-in effect.
+        if self.gauge_hover != self.prev_gauge_hover {
+            self.prev_gauge_hover = self.gauge_hover;
+            if self.gauge_hover.is_some() && self.open_module.is_none() {
+                self.tooltip_fx = EffectManager::default();
+                self.tooltip_fx.add_effect(
+                    fx::fade_from_fg(p.panel, (300, Interpolation::SineOut))
+                );
+            } else {
+                self.tooltip_fx = EffectManager::default();
+            }
+        }
+
         if self.open_module.is_none() {
             if let Some(gauge) = self.gauge_hover {
                 if let Some(status) = &self.status {
@@ -334,15 +362,26 @@ impl DashboardScreen {
                         disk_read: self.disk_read_rate,
                         disk_write: self.disk_write_rate,
                     };
-                    render_gauge_tooltip(frame, p, gauge, &self.gauge_hitboxes, shell.header, status, &rates);
+                    if let Some(rect) = render_gauge_tooltip(
+                        frame, p, gauge, &self.gauge_hitboxes,
+                        shell.header, status, &rates,
+                    ) {
+                        self.tooltip_fx.process_effects(
+                            dt.into(), frame.buffer_mut(), rect,
+                        );
+                    }
                 }
             }
         }
     }
 
-    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<String>) {
+    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<String>, Option<String>) {
         let net_label = match (self.net_rx_rate, self.net_tx_rate) {
             (Some(rx), Some(tx)) => Some(format!("{}↓ {}↑", format_rate(rx), format_rate(tx))),
+            _ => None,
+        };
+        let disk_io_label = match (self.disk_read_rate, self.disk_write_rate) {
+            (Some(read), Some(write)) => Some(format!("{}↓ {}↑", format_rate(read), format_rate(write))),
             _ => None,
         };
         match &self.status {
@@ -350,9 +389,10 @@ impl DashboardScreen {
                 s.system.cpu_usage,
                 Some(s.system.memory.percentage),
                 Some(s.system.disk.percentage),
+                disk_io_label,
                 net_label,
             ),
-            None => (Some(35.0), Some(23.0), Some(23.0), None),
+            None => (Some(35.0), Some(23.0), Some(23.0), None, None),
         }
     }
 
@@ -830,20 +870,23 @@ struct LiveRates {
 }
 
 /// Render a floating popup card anchored below the hovered header gauge.
+///
+/// Returns `Some(rect)` if the tooltip was rendered, `None` if it didn't fit.
 fn render_gauge_tooltip(
     frame: &mut Frame,
     p: Palette,
     gauge: GaugeKind,
-    hitboxes: &[Rect; 4],
+    hitboxes: &[Rect; 5],
     header_area: Rect,
     status: &TorideStatus,
     rates: &LiveRates,
-) {
+) -> Option<Rect> {
     let idx = match gauge {
         GaugeKind::Cpu => 0,
         GaugeKind::Ram => 1,
         GaugeKind::Disk => 2,
-        GaugeKind::Net => 3,
+        GaugeKind::DiskIo => 3,
+        GaugeKind::Net => 4,
     };
     let anchor = hitboxes[idx];
     let lines = gauge_tooltip_lines(gauge, status, p, rates);
@@ -861,7 +904,7 @@ fn render_gauge_tooltip(
     let y = header_area.bottom();
 
     if y + h > frame_area.bottom() || x + w > frame_area.right() {
-        return;
+        return None;
     }
 
     let rect = Rect::new(x, y, w, h);
@@ -871,6 +914,8 @@ fn render_gauge_tooltip(
 
     let inner = render_panel(frame, rect, None, p.text, p.border_hi, p.panel);
     frame.render_widget(Paragraph::new(lines), inner);
+
+    Some(rect)
 }
 
 /// Build tooltip content lines for a given gauge kind.
@@ -879,6 +924,7 @@ fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette, rate
         GaugeKind::Cpu => cpu_tooltip_lines(&status.system, p),
         GaugeKind::Ram => ram_tooltip_lines(&status.system, p),
         GaugeKind::Disk => disk_tooltip_lines(&status.system, p, rates),
+        GaugeKind::DiskIo => disk_io_tooltip_lines(p, rates),
         GaugeKind::Net => net_tooltip_lines(&status.system, p, rates),
     }
 }
@@ -1038,6 +1084,27 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &Liv
             Span::styled(format!("{write_s}/s"), Style::new().fg(p.text)),
         ]));
     }
+
+    lines
+}
+
+fn disk_io_tooltip_lines(p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(Span::styled("Disk I/O", Style::new().fg(p.accent).bold())));
+
+    let read_s = rates.disk_read.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+    let write_s = rates.disk_write.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+
+    lines.push(Line::from(vec![
+        Span::styled("Read   ", Style::new().fg(p.text_muted)),
+        Span::styled(read_s, Style::new().fg(p.text)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Write  ", Style::new().fg(p.text_muted)),
+        Span::styled(write_s, Style::new().fg(p.text)),
+    ]));
 
     lines
 }

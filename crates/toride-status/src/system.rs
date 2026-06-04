@@ -2274,7 +2274,19 @@ impl SystemStatus {
         snap
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn read_disk_io() -> DiskIoSnapshot {
+        let disks = Disks::new_with_refreshed_list();
+        let mut snap = DiskIoSnapshot::default();
+        for disk in &disks {
+            let usage = disk.usage();
+            snap.read_bytes = snap.read_bytes.saturating_add(usage.total_read_bytes);
+            snap.written_bytes = snap.written_bytes.saturating_add(usage.total_written_bytes);
+        }
+        snap
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn read_disk_io() -> DiskIoSnapshot {
         DiskIoSnapshot::default()
     }
