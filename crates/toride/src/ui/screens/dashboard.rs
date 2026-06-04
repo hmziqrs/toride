@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 
 use crate::action::Action;
@@ -27,7 +27,7 @@ use crate::ui::shell::{
     shell_layout, header::HeaderData,
 };
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, tag_badge};
+use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, render_panel, render_titled_panel, tag_badge};
 use crate::ui::screens::base::ScreenBase;
 
 /// Below this frame width the sidebar auto-collapses to an icon rail.
@@ -504,7 +504,7 @@ impl DashboardScreen {
 
     fn render_modules_panel(&mut self, frame: &mut Frame, area: Rect, p: Palette, cols: u16) {
         let focused = self.focus == Focus::Modules;
-        let inner = render_panel(frame, area, p, " MODULES ", p.accent, focused);
+        let inner = render_titled_panel(frame, area, p, " MODULES ", p.accent, focused);
         if inner.height == 0 {
             return;
         }
@@ -556,7 +556,7 @@ impl DashboardScreen {
     fn render_updates_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus == Focus::Updates;
         let title = format!(" UPDATES AVAILABLE · {} ", self.data.updates_count());
-        let inner = render_panel(frame, area, p, &title, p.warn, focused);
+        let inner = render_titled_panel(frame, area, p, &title, p.warn, focused);
         for (i, row) in list_rows(inner, self.updates_scroll, self.data.updates.len()) {
             render_update_row(frame, row, p, &self.data.updates[i]);
         }
@@ -564,7 +564,7 @@ impl DashboardScreen {
 
     fn render_activity_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus == Focus::Activity;
-        let inner = render_panel(frame, area, p, " RECENTLY INSTALLED ", p.accent3, focused);
+        let inner = render_titled_panel(frame, area, p, " RECENTLY INSTALLED ", p.accent3, focused);
         for (i, row) in list_rows(inner, self.activity_scroll, self.data.activity.len()) {
             render_activity_row(frame, row, p, &self.data.activity[i]);
         }
@@ -696,31 +696,6 @@ fn pad(area: Rect) -> Rect {
     }
 }
 
-/// Render a titled rounded panel and return its inner content area.
-fn render_panel(
-    frame: &mut Frame,
-    area: Rect,
-    p: Palette,
-    title: &str,
-    title_color: ratatui::style::Color,
-    focused: bool,
-) -> Rect {
-    let border_color = if focused { p.border_hi } else { title_color };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(border_color))
-        .title(Span::styled(
-            title.to_string(),
-            Style::new().fg(title_color).bold(),
-        ))
-        .style(Style::new().bg(p.bg))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    inner
-}
-
 /// Compute the visible `(item_index, row_rect)` pairs for a scrollable list.
 fn list_rows(inner: Rect, scroll: usize, len: usize) -> Vec<(usize, Rect)> {
     if inner.height == 0 {
@@ -741,14 +716,7 @@ fn list_rows(inner: Rect, scroll: usize, len: usize) -> Vec<(usize, Rect)> {
 
 fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, focused: bool) {
     let border = if focused { p.border_hi } else { p.border };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(border))
-        .style(Style::new().bg(p.panel))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_panel(frame, area, None, p.text, border, p.panel);
     if inner.height == 0 {
         return;
     }
@@ -816,13 +784,7 @@ fn render_activity_row(frame: &mut Frame, row: Rect, p: Palette, e: &ActivityEnt
 }
 
 fn render_placeholder(frame: &mut Frame, area: Rect, p: Palette, section: Section) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(p.border))
-        .style(Style::new().bg(p.bg));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let inner = render_panel(frame, area, None, p.text, p.border, p.bg);
     let msg = Line::from(vec![
         Span::styled(section.label(), Style::new().fg(p.accent).bold()),
         Span::styled(" — coming soon", Style::new().fg(p.text_dim)),
@@ -907,14 +869,7 @@ fn render_gauge_tooltip(
     // Clear so the tooltip is opaque.
     frame.render_widget(Clear, rect);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(p.border_hi))
-        .style(Style::new().bg(p.panel))
-        .padding(Padding::horizontal(1));
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
+    let inner = render_panel(frame, rect, None, p.text, p.border_hi, p.panel);
     frame.render_widget(Paragraph::new(lines), inner);
 }
 

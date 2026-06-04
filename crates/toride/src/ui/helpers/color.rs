@@ -29,6 +29,11 @@ pub fn to_rgb(c: Color) -> (u8, u8, u8) {
     }
 }
 
+/// Scalar linear interpolation.
+pub fn lerp_f64(a: f64, b: f64, t: f64) -> f64 {
+    a * (1.0 - t) + b * t
+}
+
 /// Darken an RGB colour to ~1/3 brightness.
 ///
 /// Non-RGB colours are passed through unchanged.

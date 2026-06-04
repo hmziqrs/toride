@@ -30,13 +30,13 @@
 //! ```
 
 use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
+    buffer::Buffer,
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, BorderType, Clear},
+    Frame,
 };
 
-use crate::ui::helpers::color::{dim_color, lerp_color as blend_toward};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::gradient::AnimatedBorder;
 
@@ -120,106 +120,65 @@ impl Modal {
         let area = frame.area();
         let modal_rect = Self::centered_rect(self.width, self.height, area);
 
-        // 1. Dimmed scrim — blend existing cells toward a darkened bg, skip modal rect
-        let scrim_target = dim_color(palette.bg);
-        let buf = frame.buffer_mut();
-        let area_w = area.width as usize;
-        for (i, cell) in buf.content.iter_mut().enumerate() {
-            let x = area.x + (i % area_w) as u16;
-            let y = area.y + (i / area_w) as u16;
-            if x >= modal_rect.left()
-                && x < modal_rect.right()
-                && y >= modal_rect.top()
-                && y < modal_rect.bottom()
-            {
-                continue;
-            }
-            cell.set_bg(blend_toward(cell.bg, scrim_target, SCRIM_BG_FACTOR));
-            cell.set_fg(blend_toward(cell.fg, scrim_target, SCRIM_FG_FACTOR));
-        }
+        // 1. Dimmed scrim
+        apply_scrim(
+            frame.buffer_mut(),
+            area,
+            modal_rect,
+            dim_color(palette.bg),
+            SCRIM_BG_FACTOR,
+            SCRIM_FG_FACTOR,
+        );
 
         // 2. Clear modal area so block bg fills every cell
         frame.render_widget(Clear, modal_rect);
 
         // 3. Render border and compute content area
+        let title = format!(" {} ", self.title);
         let content_area = match &self.border {
             ModalBorder::None => {
                 let block = Block::default()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
                     .style(Style::new().bg(palette.panel));
                 let inner = block.inner(modal_rect);
                 frame.render_widget(block, modal_rect);
                 inner
             }
-
-            ModalBorder::Default => {
+            ModalBorder::Default
+            | ModalBorder::Custom(_)
+            | ModalBorder::Typed(_)
+            | ModalBorder::TypedCustom(_, _) => {
+                let border_type = match &self.border {
+                    ModalBorder::Typed(bt) | ModalBorder::TypedCustom(bt, _) => *bt,
+                    _ => BorderType::Plain,
+                };
+                let border_fg = match &self.border {
+                    ModalBorder::Custom(c) | ModalBorder::TypedCustom(_, c) => *c,
+                    _ => palette.border_hi,
+                };
                 let block = Block::bordered()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .border_style(Style::new().fg(palette.border_hi))
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
+                    .border_type(border_type)
+                    .border_style(Style::new().fg(border_fg))
                     .style(Style::new().bg(palette.panel));
                 let inner = block.inner(modal_rect);
                 frame.render_widget(block, modal_rect);
                 inner
             }
-
-            ModalBorder::Custom(color) => {
-                let block = Block::bordered()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .border_style(Style::new().fg(*color))
-                    .style(Style::new().bg(palette.panel));
-                let inner = block.inner(modal_rect);
-                frame.render_widget(block, modal_rect);
-                inner
-            }
-
-            ModalBorder::Typed(border_type) => {
-                let block = Block::bordered()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .border_type(*border_type)
-                    .border_style(Style::new().fg(palette.border_hi))
-                    .style(Style::new().bg(palette.panel));
-                let inner = block.inner(modal_rect);
-                frame.render_widget(block, modal_rect);
-                inner
-            }
-
-            ModalBorder::TypedCustom(border_type, color) => {
-                let block = Block::bordered()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .border_type(*border_type)
-                    .border_style(Style::new().fg(*color))
-                    .style(Style::new().bg(palette.panel));
-                let inner = block.inner(modal_rect);
-                frame.render_widget(block, modal_rect);
-                inner
-            }
-
-            ModalBorder::Animated => {
+            ModalBorder::Animated | ModalBorder::AnimatedCustom(_) => {
+                let color = match &self.border {
+                    ModalBorder::AnimatedCustom(c) => *c,
+                    _ => palette.accent,
+                };
                 let block = Block::default()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
+                    .title(title.as_str())
+                    .title_alignment(Alignment::Center)
                     .style(Style::new().bg(palette.panel));
                 let inner = block.inner(modal_rect);
                 frame.render_widget(block, modal_rect);
-                let buf = frame.buffer_mut();
-                AnimatedBorder::new(palette.accent).draw(buf, modal_rect);
-                inner
-            }
-
-            ModalBorder::AnimatedCustom(color) => {
-                let block = Block::default()
-                    .title(format!(" {} ", self.title))
-                    .title_alignment(ratatui::layout::Alignment::Center)
-                    .style(Style::new().bg(palette.panel));
-                let inner = block.inner(modal_rect);
-                frame.render_widget(block, modal_rect);
-                let buf = frame.buffer_mut();
-                AnimatedBorder::new(*color).draw(buf, modal_rect);
+                AnimatedBorder::new(color).draw(frame.buffer_mut(), modal_rect);
                 inner
             }
         };
@@ -251,7 +210,58 @@ impl Modal {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────────
+// ── Color blending helpers ─────────────────────────────────────────────────────
+
+/// Darken an RGB color to ~1/3 brightness (scrim blend target).
+fn dim_color(color: Color) -> Color {
+    match color {
+        Color::Rgb(r, g, b) => Color::Rgb(r / 3, g / 3, b / 3),
+        other => other,
+    }
+}
+
+/// Linearly interpolate `color` toward `target` by `t` (0.0 = unchanged, 1.0 = target).
+fn blend_toward(color: Color, target: Color, t: f32) -> Color {
+    let Color::Rgb(cr, cg, cb) = color else {
+        return color;
+    };
+    let Color::Rgb(tr, tg, tb) = target else {
+        return color;
+    };
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
+    Color::Rgb(r, g, b)
+}
+
+/// Dim all cells in `buf` within `area` that fall **outside** `exclude`,
+/// blending their bg/fg toward `target` by the given factors.
+fn apply_scrim(
+    buf: &mut Buffer,
+    area: Rect,
+    exclude: Rect,
+    target: Color,
+    bg_factor: f32,
+    fg_factor: f32,
+) {
+    let area_w = area.width as usize;
+    for (i, cell) in buf.content.iter_mut().enumerate() {
+        let x = area.x + (i % area_w) as u16;
+        let y = area.y + (i / area_w) as u16;
+        if x >= exclude.left()
+            && x < exclude.right()
+            && y >= exclude.top()
+            && y < exclude.bottom()
+        {
+            continue;
+        }
+        cell.set_bg(blend_toward(cell.bg, target, bg_factor));
+        cell.set_fg(blend_toward(cell.fg, target, fg_factor));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -320,20 +330,17 @@ mod tests {
     }
 
     #[test]
-    fn blend_toward_treats_non_rgb_color_as_black() {
-        // Non-RGB inputs are treated as (0,0,0) and blended normally.
+    fn blend_toward_passes_through_non_rgb_color() {
         let color = Color::Red;
         let target = Color::Rgb(10, 6, 13);
-        let result = blend_toward(color, target, 0.5);
-        assert_eq!(result, Color::Rgb(5, 3, 7));
+        assert_eq!(blend_toward(color, target, 0.5), color);
     }
 
     #[test]
-    fn blend_toward_treats_non_rgb_target_as_black() {
+    fn blend_toward_passes_through_non_rgb_target() {
         let color = Color::Rgb(100, 200, 50);
         let target = Color::Red;
-        let result = blend_toward(color, target, 0.5);
-        assert_eq!(result, Color::Rgb(50, 100, 25));
+        assert_eq!(blend_toward(color, target, 0.5), color);
     }
 
     #[test]

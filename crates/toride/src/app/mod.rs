@@ -73,10 +73,14 @@ impl App {
 
     /// Return a mutable reference to the current screen as `dyn AppScreen`.
     fn current_screen(&mut self) -> &mut dyn AppScreen {
-        match self.nav.current() {
-            Screen::Welcome => &mut self.welcome,
-            Screen::Dashboard => &mut self.dashboard,
-        }
+        self.screen_by_enum(self.nav.current())
+    }
+
+    /// Invalidate all screen caches and flag a full redraw.
+    fn invalidate_all_caches(&mut self) {
+        self.welcome.invalidate_cache();
+        self.dashboard.invalidate_cache();
+        self.needs_redraw = true;
     }
 
     fn update(&mut self, action: Action) {
@@ -113,9 +117,7 @@ impl App {
                 let next = all[(idx + 1) % all.len()];
                 self.active_theme = next;
                 self.welcome.set_border_color(next.palette().accent);
-                self.welcome.invalidate_cache();
-                self.dashboard.invalidate_cache();
-                self.needs_redraw = true;
+                self.invalidate_all_caches();
             }
             // Scroll actions (and any future screen-local actions) are routed
             // to the current screen via `handle_action`.
@@ -161,9 +163,7 @@ impl App {
                         }
                         Event::Mouse(mouse) => self.handle_mouse(mouse),
                         Event::Resize(..) => {
-                            self.welcome.invalidate_cache();
-                            self.dashboard.invalidate_cache();
-                            self.needs_redraw = true;
+                            self.invalidate_all_caches();
                             None
                         }
                         _ => None,

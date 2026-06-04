@@ -7,7 +7,7 @@ use ratatui::{
 };
 use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
-use crate::ui::helpers::color::to_rgb;
+use crate::ui::helpers::color::{lerp_f64, to_rgb};
 use crate::ui::theme::Palette;
 
 // ── Gradient cache ─────────────────────────────────────────────────────────────
@@ -83,36 +83,54 @@ impl AnimatedBorder {
 
 // ── Gradient computation ───────────────────────────────────────────────────────
 
+/// Core radial gradient computation shared by static and animated gradients.
+///
+/// Returns `Vec<Color>` for the area, blending from `base` (center) to `edge`
+/// (perimeter) using a cubic falloff centred at `(cx, cy)`.
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::cast_lossless,
     reason = "color math: f64->u8 truncation is intentional for RGB blending"
 )]
-fn render_gradient_bg(colors: &mut Vec<Color>, area: Rect, p: Palette) {
-    colors.clear();
-    let (cr, cg, cb) = to_rgb(p.bg);
-    let er = (f64::from(cr) * 0.6) as u8;
-    let eg = (f64::from(cg) * 0.6) as u8;
-    let eb = (f64::from(cb) * 0.6) as u8;
+fn radial_gradient(
+    area: Rect,
+    base: (f64, f64, f64),
+    edge: (f64, f64, f64),
+    cx: f64,
+    cy: f64,
+) -> Vec<Color> {
+    let max_dist = (cx - f64::from(area.left()))
+        .hypot(cy - f64::from(area.top()))
+        .max(1.0);
 
-    let cx = u16::midpoint(area.left(), area.right());
-    let cy = u16::midpoint(area.top(), area.bottom());
-    let max_dist = ((f64::from(cx.saturating_sub(area.left())))
-        .hypot(f64::from(cy.saturating_sub(area.top()))))
-    .max(1.0);
-
+    let mut colors = Vec::with_capacity(area.width as usize * area.height as usize);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let dx = f64::from(i32::from(x).abs_diff(i32::from(cx)));
-            let dy = f64::from(i32::from(y).abs_diff(i32::from(cy)));
+            let dx = (f64::from(x) - cx).abs();
+            let dy = (f64::from(y) - cy).abs();
             let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
-            let r = lerp(f64::from(cr), f64::from(er), t) as u8;
-            let g = lerp(f64::from(cg), f64::from(eg), t) as u8;
-            let b = lerp(f64::from(cb), f64::from(eb), t) as u8;
+            let r = lerp_f64(base.0, edge.0, t) as u8;
+            let g = lerp_f64(base.1, edge.1, t) as u8;
+            let b = lerp_f64(base.2, edge.2, t) as u8;
             colors.push(Color::Rgb(r, g, b));
         }
     }
+    colors
+}
+
+/// Compute the static gradient for caching. Uses a fixed centre and a static
+/// edge colour at 60% of the base.
+fn render_gradient_bg(colors: &mut Vec<Color>, area: Rect, p: Palette) {
+    colors.clear();
+    let (cr, cg, cb) = to_rgb(p.bg);
+    let base = (f64::from(cr), f64::from(cg), f64::from(cb));
+    let edge = (base.0 * 0.6, base.1 * 0.6, base.2 * 0.6);
+
+    let cx = f64::from(u16::midpoint(area.left(), area.right()));
+    let cy = f64::from(u16::midpoint(area.top(), area.bottom()));
+
+    *colors = radial_gradient(area, base, edge, cx, cy);
 }
 
 /// Copy cached background colours directly to the frame buffer, using direct
@@ -134,7 +152,7 @@ fn copy_bg_to_buf(colors: &[Color], buf: &mut Buffer, area: Rect) {
 /// Build a seamless looping color gradient from a base color using HSL manipulation.
 /// Ported from exabind's `select_category_color_cycle()`, with a final wrap-around
 /// segment that interpolates back to the base color for smooth looping at corners.
-fn build_color_cycle(base_color: Color) -> Vec<Color> {
+pub fn build_color_cycle(base_color: Color) -> Vec<Color> {
     let (h, s, l) = color_to_hsl(&base_color);
 
     let color_l = color_from_hsl(h, s, 80.0);
@@ -256,12 +274,6 @@ fn draw_animated_border(
 /// Render a radial gradient directly into the frame buffer with animated
 /// parameters for transitions. Unlike `render_gradient_bg`, this bypasses the
 /// `GradientCache` and writes straight to `buf` every frame.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    reason = "color math: f64->u8 truncation is intentional for RGB blending"
-)]
 pub fn render_transition_gradient(
     buf: &mut Buffer,
     area: Rect,
@@ -291,27 +303,18 @@ pub fn render_transition_gradient(
     let cy = f64::from(u16::midpoint(area.top(), area.bottom()))
         + center_offset.1 * eased_progress as f64 * f64::from(area.height);
 
-    let max_dist = (cx - f64::from(area.left()))
-        .hypot(cy - f64::from(area.top()))
-        .max(1.0);
+    let colors = radial_gradient(area, (base_red, base_green, base_blue), (er, eg, eb), cx, cy);
 
+    // Write directly to buffer.
+    let mut i = 0usize;
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let dx = (f64::from(x) - cx).abs();
-            let dy = (f64::from(y) - cy).abs();
-            let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
-            let r = lerp(base_red, er, t) as u8;
-            let g = lerp(base_green, eg, t) as u8;
-            let b = lerp(base_blue, eb, t) as u8;
-            buf[Position::new(x, y)].set_bg(Color::Rgb(r, g, b));
+            if i < colors.len() {
+                buf[Position::new(x, y)].set_bg(colors[i]);
+            }
+            i += 1;
         }
     }
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-fn lerp(a: f64, b: f64, t: f64) -> f64 {
-    a * (1.0 - t) + b * t
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────────

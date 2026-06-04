@@ -45,17 +45,14 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
         Span::styled("toride", Style::new().fg(p.accent).bold()),
         sep.clone(),
     ];
-    left.extend(gauge_spans("cpu", data.cpu, p));
+    left.extend(pct_gauge_spans("cpu", data.cpu, p));
     left.push(sep.clone());
-    left.extend(gauge_spans("ram", data.ram, p));
+    left.extend(pct_gauge_spans("ram", data.ram, p));
     left.push(sep.clone());
-    left.extend(gauge_spans("disk", data.disk, p));
-    left.push(sep);
+    left.extend(pct_gauge_spans("disk", data.disk, p));
     if let Some(net_label) = data.net {
-        left.extend(net_gauge_spans(net_label, p));
-    } else {
-        let elapsed = data.shimmer_start.elapsed().as_secs_f32();
-        left.extend(spinner_gauge_spans("net", elapsed, p));
+        left.push(sep);
+        left.extend(gauge_spans("net", net_label, p.accent3, p));
     }
 
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
@@ -121,80 +118,52 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
     let mut rects = [Rect::default(); 4];
 
     for (i, (&label, &pct)) in labels.iter().zip(pcts.iter()).enumerate() {
-        let w = gauge_span_width(label, pct);
+        let w = pct_gauge_width(label, pct);
         rects[i] = Rect::new(x, inner.y, w, 1);
         x += w;
         x += 7; // separator "   ·   "
     }
 
-    // Net gauge (always present: spinner when loading, label when loaded).
-    {
-        let w = match data.net {
-            Some(net_label) => net_gauge_width(net_label),
-            None => 4 + 2 + 1, // "net " + "▮ " + spinner char
-        };
+    // Net gauge
+    if let Some(net_label) = data.net {
+        let w = gauge_width("net", net_label);
         rects[3] = Rect::new(x, inner.y, w, 1);
     }
 
     rects
 }
 
-/// Unicode display width of the net gauge spans produced by [`net_gauge_spans`].
-fn net_gauge_width(label: &str) -> u16 {
-    // "net " (4) + "▮ " (2) + label text
-    u16::try_from(4 + 2 + label.len()).unwrap_or(10)
-}
-
 /// Unicode display width of the spans produced by [`gauge_spans`].
-fn gauge_span_width(label: &str, pct: Option<f64>) -> u16 {
-    // "{label} " (4–5 chars) + "▮ " (2 chars) + "{pct}%" or "—" (1–4 chars)
-    let label_w = label.len() + 1; // "cpu "
-    let glyph_w = 2;               // "▮ "
-    let text_w = match pct {
-        Some(v) => format!("{v:.0}%").len(),
-        None => 1, // "—"
-    };
-    u16::try_from(label_w + glyph_w + text_w).unwrap_or(10)
+fn gauge_width(label: &str, value: &str) -> u16 {
+    // "{label} " + "▮ " + "{value}"
+    u16::try_from(label.len() + 1 + 2 + value.len()).unwrap_or(10)
 }
 
-/// Build the spans for one inline gauge (`cpu ▮ 35%`).
-fn gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> {
+/// Unicode display width of the spans produced by [`pct_gauge_spans`].
+fn pct_gauge_width(label: &str, pct: Option<f64>) -> u16 {
+    let text = match pct {
+        Some(v) => format!("{v:.0}%"),
+        None => "—".to_string(),
+    };
+    gauge_width(label, &text)
+}
+
+/// Build the spans for one inline gauge (`label ▮ value`).
+fn gauge_spans(label: &str, value: &str, glyph_color: Color, p: Palette) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(glyph_color)),
+        Span::styled(value.to_string(), Style::new().fg(p.text).bold()),
+    ]
+}
+
+/// Build the spans for a percentage-based inline gauge (`cpu ▮ 35%`).
+fn pct_gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> {
     let (glyph_color, text): (Color, String) = match pct {
         Some(v) => (percent_color(v, p), format!("{v:.0}%")),
         None => (p.text_muted, "—".to_string()),
     };
-    vec![
-        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
-        Span::styled("▮ ", Style::new().fg(glyph_color)),
-        Span::styled(text, Style::new().fg(p.text).bold()),
-    ]
-}
-
-/// Build the spans for a gauge that is still loading (animated braille spinner).
-fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
-    use rattles::presets::braille::WaveRows;
-    use rattles::Rattle;
-
-    let frames = WaveRows::FRAMES;
-    let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
-    let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32;
-    let frame = frames[idx as usize % frames.len()];
-    // Take the first line of the frame for inline display.
-    let text = frame.first().map_or("·", |s| *s);
-    vec![
-        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
-        Span::styled("▮ ", Style::new().fg(p.text_muted)),
-        Span::styled(text.to_string(), Style::new().fg(p.text_dim)),
-    ]
-}
-
-/// Build the spans for the network gauge (`net ▮ 12 MB/s`).
-fn net_gauge_spans(label: &str, p: Palette) -> Vec<Span<'static>> {
-    vec![
-        Span::styled("net ", Style::new().fg(p.text_dim)),
-        Span::styled("▮ ", Style::new().fg(p.accent3)),
-        Span::styled(label.to_string(), Style::new().fg(p.text).bold()),
-    ]
+    gauge_spans(label, &text, glyph_color, p)
 }
 
 #[cfg(test)]
