@@ -8,14 +8,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use ratatui_interact::state::FocusManager;
-
 use crate::action::Action;
-use crate::ui::components::interactive_button::InteractiveButton;
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{self, Viewport};
 use crate::ui::screens::AppScreen;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::gradient::{AnimatedBorder, GradientCache};
+use crate::ui::screens::base::ScreenBase;
+use crate::ui::widgets::gradient::AnimatedBorder;
 use crate::version;
 
 // ANSI Shadow figlet — matches screens.jsx LOGO constant exactly
@@ -28,17 +27,10 @@ const LOGO: &[&str] = &[
     "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ ╚══════╝",
 ];
 
-/// Horizontal gaps between the three buttons (after btn 0, 1, 2).
-const BTN_GAPS: &[u16] = &[0, 2, 2];
-
-/// Actions associated with each button index.
-const BTN_ACTIONS: &[Action] = &[Action::Continue, Action::Help, Action::Quit];
-
 pub struct WelcomeScreen {
-    gradient_cache: GradientCache,
+    base: ScreenBase,
     border: AnimatedBorder,
-    buttons: [InteractiveButton<Action>; 3],
-    focus: FocusManager<usize>,
+    buttons: ButtonRow<Action>,
     shimmer_start: Instant,
 }
 
@@ -54,29 +46,22 @@ impl AppScreen for WelcomeScreen {
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
             KeyCode::Enter | KeyCode::Char(' ') => {
-                let action = match self.focus.current() {
-                    Some(&idx) => BTN_ACTIONS[idx],
-                    None => Action::Continue,
-                };
-                return Some(action);
+                return Some(self.buttons.activate_focused().unwrap_or(Action::Continue));
             }
             _ => {}
         }
 
         // Focus cycling
         match code {
-            KeyCode::Tab | KeyCode::Right => self.focus.next(),
-            KeyCode::BackTab | KeyCode::Left => self.focus.prev(),
+            KeyCode::Tab | KeyCode::Right => self.buttons.cycle_focus_next(),
+            KeyCode::BackTab | KeyCode::Left => self.buttons.cycle_focus_prev(),
             _ => {}
         }
-        self.sync_focus_to_buttons();
         None
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        self.buttons
-            .iter_mut()
-            .find_map(|btn| btn.handle_mouse(&mouse))
+        self.buttons.handle_mouse(&mouse)
     }
 
     fn view(&mut self, frame: &mut Frame, palette: Palette) {
@@ -88,7 +73,7 @@ impl AppScreen for WelcomeScreen {
     }
 
     fn invalidate_cache(&mut self) {
-        self.gradient_cache.invalidate();
+        self.base.invalidate();
     }
 
     fn needs_animation(&self) -> bool {
@@ -99,24 +84,18 @@ impl AppScreen for WelcomeScreen {
 impl WelcomeScreen {
     #[must_use]
     pub fn new() -> Self {
-        let buttons = [
+        let buttons = vec![
             InteractiveButton::new("↵ continue", "↵", Action::Continue),
             InteractiveButton::new("? help", "?", Action::Help),
             InteractiveButton::new("q quit", "q", Action::Quit),
         ];
 
-        let mut focus = FocusManager::new();
-        focus.register_all([0, 1, 2]);
-
-        let mut screen = Self {
-            gradient_cache: GradientCache::new(),
+        Self {
+            base: ScreenBase::new(),
             border: AnimatedBorder::new(Palette::default().accent),
-            buttons,
-            focus,
+            buttons: ButtonRow::new(buttons, vec![0, 2, 2]),
             shimmer_start: Instant::now(),
-        };
-        screen.sync_focus_to_buttons();
-        screen
+        }
     }
 
     /// Update the animated border color (used when the theme changes).
@@ -129,15 +108,12 @@ impl WelcomeScreen {
         let viewport = Viewport::from_area(area);
 
         // Fallback for tiny terminals
-        if responsive::render_too_small(frame, p) {
+        if ScreenBase::guard_too_small(frame, p) {
             return;
         }
 
         // Gradient background
-        if !skip_bg {
-            let buf = frame.buffer_mut();
-            self.gradient_cache.render_or_copy(buf, area, p);
-        }
+        self.base.render_bg(frame.buffer_mut(), area, p, skip_bg);
 
         // Adaptive center column
         let center = responsive::center_area(area);
@@ -206,39 +182,7 @@ impl WelcomeScreen {
 
         // ── Interactive buttons ───────────────────────────────────────────
         let buf = frame.buffer_mut();
-        self.render_buttons(buf, keys_area, p, viewport);
-    }
-
-    fn render_buttons(
-        &mut self,
-        buf: &mut ratatui::buffer::Buffer,
-        keys_area: Rect,
-        p: Palette,
-        viewport: Viewport,
-    ) {
-        // Compute widths
-        let btn_widths: [u16; 3] = std::array::from_fn(|i| self.buttons[i].min_width(viewport));
-
-        let total_btn: u16 = btn_widths.iter().sum();
-        let total_gap: u16 = BTN_GAPS.iter().sum();
-        let total_width = total_btn + total_gap;
-
-        // Centre the button row within keys_area
-        let btn_row_x = keys_area.x.saturating_sub(total_width / 2) + keys_area.width / 2;
-
-        let mut cursor_x = btn_row_x;
-        for (i, &width) in btn_widths.iter().enumerate() {
-            let btn_area = ratatui::layout::Rect::new(cursor_x, keys_area.y, width, 1);
-            self.buttons[i].render(buf, btn_area, p, viewport);
-            cursor_x += width + BTN_GAPS[i];
-        }
-    }
-
-    fn sync_focus_to_buttons(&mut self) {
-        let focused = self.focus.current().copied();
-        for (i, btn) in self.buttons.iter_mut().enumerate() {
-            btn.set_focused(focused == Some(i));
-        }
+        self.buttons.render(buf, keys_area, p, viewport);
     }
 }
 

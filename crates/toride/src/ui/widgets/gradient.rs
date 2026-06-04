@@ -7,6 +7,7 @@ use ratatui::{
 };
 use tachyonfx::{Interpolatable, color_from_hsl, color_to_hsl};
 
+use crate::ui::helpers::color::to_rgb;
 use crate::ui::theme::Palette;
 
 // ── Gradient cache ─────────────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ impl AnimatedBorder {
 )]
 fn render_gradient_bg(colors: &mut Vec<Color>, area: Rect, p: Palette) {
     colors.clear();
-    let (cr, cg, cb) = rgb_components(p.bg);
+    let (cr, cg, cb) = to_rgb(p.bg);
     let er = (f64::from(cr) * 0.6) as u8;
     let eg = (f64::from(cg) * 0.6) as u8;
     let eb = (f64::from(cb) * 0.6) as u8;
@@ -270,7 +271,7 @@ pub fn render_transition_gradient(
     brightness_dip: f64,
     eased_progress: f32,
 ) {
-    let (cr, cg, cb) = rgb_components(p.bg);
+    let (cr, cg, cb) = to_rgb(p.bg);
 
     // Apply brightness dip that peaks at mid-progress via a sin bell curve.
     let dip_factor = 1.0 + brightness_dip * (std::f64::consts::PI * eased_progress as f64).sin();
@@ -308,13 +309,6 @@ pub fn render_transition_gradient(
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-
-fn rgb_components(color: Color) -> (u8, u8, u8) {
-    match color {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => (0, 0, 0),
-    }
-}
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a * (1.0 - t) + b * t
@@ -446,12 +440,12 @@ mod tests {
         }
     }
 
-    // ── rgb_components (via public gradient rendering) ────────────────────
+    // ── to_rgb (via public gradient rendering) ────────────────────
 
     #[test]
     fn gradient_uses_rgb_from_palette_bg() {
         // If the palette bg is Rgb, the gradient should produce Rgb colours
-        // (not default/reset). This indirectly validates rgb_components.
+        // (not default/reset). This indirectly validates to_rgb.
         let area = Rect::new(0, 0, 6, 3);
         let mut buf = Buffer::empty(area);
         let mut cache = GradientCache::new();
@@ -469,7 +463,7 @@ mod tests {
 
     #[test]
     fn gradient_with_non_rgb_bg_produces_black_tones() {
-        // When bg is not Rgb, rgb_components returns (0,0,0). The gradient
+        // When bg is not Rgb, to_rgb returns (0,0,0). The gradient
         // should still render without panic, producing Rgb(0..,0..,0..).
         let non_rgb_palette = crate::ui::theme::Palette {
             bg: Color::Black, // not Rgb

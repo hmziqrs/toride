@@ -5,7 +5,7 @@
 //! [`WelcomeScreen`](crate::ui::screens::WelcomeScreen) and
 //! [`QuitModal`](crate::ui::screens::QuitModal).
 
-use crossterm::event::{KeyCode, MouseEvent};
+use crossterm::event::MouseEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 use ratatui_interact::state::FocusManager;
 

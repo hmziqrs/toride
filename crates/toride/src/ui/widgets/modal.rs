@@ -36,6 +36,7 @@ use ratatui::{
     widgets::{Block, BorderType, Clear},
 };
 
+use crate::ui::helpers::color::{dim_color, lerp_color as blend_toward};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::gradient::AnimatedBorder;
 
@@ -250,32 +251,7 @@ impl Modal {
     }
 }
 
-// ── Color blending helpers ─────────────────────────────────────────────────────
-
-/// Darken an RGB color to ~1/3 brightness (scrim blend target).
-fn dim_color(color: Color) -> Color {
-    match color {
-        Color::Rgb(r, g, b) => Color::Rgb(r / 3, g / 3, b / 3),
-        other => other,
-    }
-}
-
-/// Linearly interpolate `color` toward `target` by `t` (0.0 = unchanged, 1.0 = target).
-fn blend_toward(color: Color, target: Color, t: f32) -> Color {
-    let Color::Rgb(cr, cg, cb) = color else {
-        return color;
-    };
-    let Color::Rgb(tr, tg, tb) = target else {
-        return color;
-    };
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
-    Color::Rgb(r, g, b)
-}
+// ── Tests ────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -344,17 +320,20 @@ mod tests {
     }
 
     #[test]
-    fn blend_toward_passes_through_non_rgb_color() {
+    fn blend_toward_treats_non_rgb_color_as_black() {
+        // Non-RGB inputs are treated as (0,0,0) and blended normally.
         let color = Color::Red;
         let target = Color::Rgb(10, 6, 13);
-        assert_eq!(blend_toward(color, target, 0.5), color);
+        let result = blend_toward(color, target, 0.5);
+        assert_eq!(result, Color::Rgb(5, 3, 7));
     }
 
     #[test]
-    fn blend_toward_passes_through_non_rgb_target() {
+    fn blend_toward_treats_non_rgb_target_as_black() {
         let color = Color::Rgb(100, 200, 50);
         let target = Color::Red;
-        assert_eq!(blend_toward(color, target, 0.5), color);
+        let result = blend_toward(color, target, 0.5);
+        assert_eq!(result, Color::Rgb(50, 100, 25));
     }
 
     #[test]

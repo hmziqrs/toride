@@ -1,8 +1,10 @@
 //! Top header bar: logo, inline cpu/ram/disk gauges, and a right-aligned clock.
 
+use std::time::Instant;
+
 use ratatui::{
     Frame,
-    layout::Rect,
+    layout::{Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -21,6 +23,8 @@ pub struct HeaderData<'a> {
     pub disk: Option<f64>,
     /// Right-aligned clock label (e.g. `09:17 PM`).
     pub clock: &'a str,
+    /// Timestamp used to drive the logo shimmer animation.
+    pub shimmer_start: Instant,
 }
 
 /// Render the header bar into `area`.
@@ -47,11 +51,36 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
 
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
 
+    // Shimmer sweep across the logo (" 砦 toride" = 9 cells in header row 1).
+    let elapsed = data.shimmer_start.elapsed().as_secs_f32();
+    apply_logo_shimmer(frame.buffer_mut(), inner, elapsed);
+
     let clock = Line::from(Span::styled(
         format!("{} ", data.clock),
         Style::new().fg(p.text_dim),
     ));
     frame.render_widget(Paragraph::new(clock).right_aligned(), inner);
+}
+
+/// Pulsing brightness on the kanji logo cell.
+fn apply_logo_shimmer(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f32) {
+    use tachyonfx::ColorSpace;
+
+    // " 砦 " → kanji is at inner.x + 1
+    let kanji_x = inner.x + 1;
+    if kanji_x >= inner.right() || inner.y >= buf.area.height {
+        return;
+    }
+
+    let pulse = (elapsed * 1.8f32).sin() * 0.5 + 0.5; // 0..1 oscillation
+    if pulse < 0.01 {
+        return;
+    }
+
+    let cell = &mut buf[Position::new(kanji_x, inner.y)];
+    let fg = cell.fg;
+    let lightened = ColorSpace::Hsl.lighten(&fg, pulse * 0.35);
+    cell.set_fg(lightened);
 }
 
 /// Build the spans for one inline gauge (`cpu ▮ 35%`).
@@ -81,14 +110,19 @@ mod tests {
         terminal.backend().to_string()
     }
 
+    fn header_data(cpu: Option<f64>, ram: Option<f64>, disk: Option<f64>, clock: &str) -> HeaderData<'_> {
+        HeaderData {
+            cpu,
+            ram,
+            disk,
+            clock,
+            shimmer_start: Instant::now(),
+        }
+    }
+
     #[test]
     fn renders_logo_and_clock() {
-        let out = render(&HeaderData {
-            cpu: Some(35.0),
-            ram: Some(23.0),
-            disk: Some(23.0),
-            clock: "09:17 PM",
-        });
+        let out = render(&header_data(Some(35.0), Some(23.0), Some(23.0), "09:17 PM"));
         assert!(out.contains("toride"), "logo: {out}");
         assert!(out.contains("09:17 PM"), "clock: {out}");
         assert!(out.contains("35%"), "cpu gauge: {out}");
@@ -96,12 +130,7 @@ mod tests {
 
     #[test]
     fn renders_dash_when_unknown() {
-        let out = render(&HeaderData {
-            cpu: None,
-            ram: None,
-            disk: None,
-            clock: "--:--",
-        });
+        let out = render(&header_data(None, None, None, "--:--"));
         assert!(out.contains('—'), "expected em-dash placeholder: {out}");
     }
 }

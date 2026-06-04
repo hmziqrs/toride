@@ -5,23 +5,15 @@
 
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::{
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout},
     widgets::Paragraph,
 };
-use ratatui_interact::state::FocusManager;
 
 use crate::action::Action;
-use crate::ui::components::interactive_button::InteractiveButton;
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::Modal;
-
-/// Button index mapping.
-const IDX_YES: usize = 0;
-const IDX_NO: usize = 1;
-
-/// Actions for each button.
-const BTN_ACTIONS: &[Action] = &[Action::Quit, Action::DismissQuit];
 
 /// Horizontal gap between the two buttons.
 const BTN_GAP: u16 = 4;
@@ -31,23 +23,20 @@ const BTN_GAP: u16 = 4;
 /// Owns interactive Yes/No buttons with focus cycling and mouse support.
 /// Delegates rendering to the shared [`Modal`] widget.
 pub struct QuitModal {
-    buttons: [InteractiveButton<Action>; 2],
-    focus: FocusManager<usize>,
+    buttons: ButtonRow<Action>,
 }
 
 impl QuitModal {
     #[must_use]
     pub fn new() -> Self {
-        let buttons = [
+        let buttons = vec![
             InteractiveButton::new("yes", "y", Action::Quit),
             InteractiveButton::new("no", "n", Action::DismissQuit),
         ];
-        let mut focus = FocusManager::new();
-        focus.register_all([IDX_YES, IDX_NO]);
 
-        let mut modal = Self { buttons, focus };
-        modal.sync_focus();
-        modal
+        Self {
+            buttons: ButtonRow::new(buttons, vec![BTN_GAP, 0]),
+        }
     }
 
     /// Handle a key press while the quit modal is open.
@@ -58,21 +47,15 @@ impl QuitModal {
             KeyCode::Char('n') | KeyCode::Esc => Some(Action::DismissQuit),
             // Enter activates the focused button
             KeyCode::Enter => {
-                let action = match self.focus.current() {
-                    Some(&idx) => BTN_ACTIONS[idx],
-                    None => Action::Quit,
-                };
-                Some(action)
+                Some(self.buttons.activate_focused().unwrap_or(Action::Quit))
             }
             // Focus cycling
             KeyCode::Tab | KeyCode::Right => {
-                self.focus.next();
-                self.sync_focus();
+                self.buttons.cycle_focus_next();
                 None
             }
             KeyCode::BackTab | KeyCode::Left => {
-                self.focus.prev();
-                self.sync_focus();
+                self.buttons.cycle_focus_prev();
                 None
             }
             _ => None,
@@ -81,14 +64,11 @@ impl QuitModal {
 
     /// Handle a mouse event while the quit modal is open.
     pub fn handle_mouse(&mut self, mouse: &MouseEvent) -> Option<Action> {
-        self.buttons
-            .iter_mut()
-            .find_map(|btn| btn.handle_mouse(mouse))
+        self.buttons.handle_mouse(mouse)
     }
 
     /// Render the quit modal overlay.
     pub fn render(&mut self, frame: &mut ratatui::Frame, p: Palette) {
-        self.sync_focus();
         let viewport = Viewport::from_area(frame.area());
 
         Modal::new("Quit?")
@@ -108,25 +88,9 @@ impl QuitModal {
                     msg_area,
                 );
 
-                // Interactive Yes / No buttons
-                let widths: [u16; 2] = std::array::from_fn(|i| self.buttons[i].min_width(viewport));
-                let total_w = widths[0] + BTN_GAP + widths[1];
-                let mut cx = keys_area.x + (keys_area.width.saturating_sub(total_w)) / 2;
-
                 let buf = frame.buffer_mut();
-                for (i, &w) in widths.iter().enumerate() {
-                    let btn_area = Rect::new(cx, keys_area.y, w, 1);
-                    self.buttons[i].render(buf, btn_area, p, viewport);
-                    cx += w + BTN_GAP;
-                }
+                self.buttons.render(buf, keys_area, p, viewport);
             });
-    }
-
-    fn sync_focus(&mut self) {
-        let focused = self.focus.current().copied();
-        for (i, btn) in self.buttons.iter_mut().enumerate() {
-            btn.set_focused(focused == Some(i));
-        }
     }
 }
 

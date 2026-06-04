@@ -5,7 +5,7 @@
 //! an internal "active section"; only [`Section::Dashboard`] renders full
 //! content for now, other sections show a placeholder.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -20,7 +20,7 @@ use crate::action::Action;
 use crate::data::{ActivityEntry, DashboardData, Module, ModuleUpdate, Section};
 use crate::status::TorideStatus;
 use crate::ui::helpers::{format_bytes, format_duration};
-use crate::ui::responsive::{self, truncate_str};
+use crate::ui::responsive::truncate_str;
 use crate::ui::screens::AppScreen;
 use crate::ui::shell::{
     SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar, render_footer, render_header, shell_layout,
@@ -28,7 +28,7 @@ use crate::ui::shell::{
 };
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, tag_badge};
-use crate::ui::widgets::gradient::GradientCache;
+use crate::ui::screens::base::ScreenBase;
 
 /// Below this frame width the sidebar auto-collapses to an icon rail.
 const AUTO_COLLAPSE_W: u16 = 100;
@@ -82,8 +82,9 @@ pub struct DashboardScreen {
     updates_scroll: usize,
     activity_scroll: usize,
     open_module: Option<usize>,
-    gradient_cache: GradientCache,
+    base: ScreenBase,
     clock: String,
+    shimmer_start: Instant,
 }
 
 impl Default for DashboardScreen {
@@ -110,8 +111,9 @@ impl DashboardScreen {
             updates_scroll: 0,
             activity_scroll: 0,
             open_module: None,
-            gradient_cache: GradientCache::new(),
+            base: ScreenBase::new(),
             clock,
+            shimmer_start: Instant::now(),
         }
     }
 
@@ -192,14 +194,11 @@ impl DashboardScreen {
 
     fn render(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
         let area = frame.area();
-        if responsive::render_too_small(frame, p) {
+        if ScreenBase::guard_too_small(frame, p) {
             return;
         }
 
-        if !skip_bg {
-            let buf = frame.buffer_mut();
-            self.gradient_cache.render_or_copy(buf, area, p);
-        }
+        self.base.render_bg(frame.buffer_mut(), area, p, skip_bg);
 
         let collapsed = self.sidebar.is_collapsed() || area.width < AUTO_COLLAPSE_W;
         let sidebar_w = if collapsed {
@@ -221,6 +220,7 @@ impl DashboardScreen {
                 ram,
                 disk,
                 clock: &self.clock,
+                shimmer_start: self.shimmer_start,
             },
         );
 
@@ -594,11 +594,11 @@ impl AppScreen for DashboardScreen {
     }
 
     fn invalidate_cache(&mut self) {
-        self.gradient_cache.invalidate();
+        self.base.invalidate();
     }
 
     fn needs_animation(&self) -> bool {
-        false
+        self.sidebar.is_animating()
     }
 }
 

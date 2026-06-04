@@ -5,8 +5,6 @@
 //! the item list is passed at [`render`](Sidebar::render) time so the screen
 //! remains the single owner of the data.
 
-use std::time::Instant;
-
 use ratatui::{
     Frame,
     layout::Rect,
@@ -16,7 +14,8 @@ use ratatui::{
 };
 
 use crate::data::SidebarItem;
-use crate::ui::helpers::color::{lerp_color, to_rgb};
+use crate::ui::helpers::anim::AnimatedFloats;
+use crate::ui::helpers::color::lerp_color;
 use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 
@@ -41,11 +40,9 @@ pub struct Sidebar {
     /// Index of the item currently under the mouse, if any.
     hovered: Option<usize>,
     /// Per-item highlight strength (0 = none, 1 = fully selected), animated.
-    anim: Vec<f32>,
+    anim: AnimatedFloats,
     /// Clickable rect for each item, refreshed every render (index = item).
     hitboxes: Vec<Rect>,
-    /// Timestamp of the last animation tick.
-    last_tick: Instant,
 }
 
 impl Sidebar {
@@ -53,8 +50,8 @@ impl Sidebar {
     #[must_use]
     pub fn new(len: usize) -> Self {
         let n = len.max(1);
-        let mut anim = vec![0.0_f32; n];
-        anim[0] = 1.0;
+        let mut anim = AnimatedFloats::new(n, 0.0);
+        anim.set(0, 1.0);
         Self {
             selected: 0,
             collapsed: false,
@@ -62,7 +59,6 @@ impl Sidebar {
             hovered: None,
             anim,
             hitboxes: Vec::new(),
-            last_tick: Instant::now(),
         }
     }
 
@@ -81,26 +77,35 @@ impl Sidebar {
 
     /// Advance the per-item highlight animation toward each item's target.
     fn tick_anim(&mut self) {
-        let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).as_secs_f32();
-        self.last_tick = now;
-        let step = (dt / ANIM_SECS).min(1.0);
-        for i in 0..self.anim.len() {
-            let target = if i == self.selected {
-                1.0
-            } else if self.hovered == Some(i) {
-                HOVER_STRENGTH
-            } else {
-                0.0
-            };
-            let cur = self.anim[i];
-            let diff = target - cur;
-            if diff.abs() <= step {
-                self.anim[i] = target;
-            } else {
-                self.anim[i] = cur + step * diff.signum();
-            }
-        }
+        let targets: Vec<f32> = (0..self.anim.len())
+            .map(|i| {
+                if i == self.selected {
+                    1.0
+                } else if self.hovered == Some(i) {
+                    HOVER_STRENGTH
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        self.anim.tick(&targets, ANIM_SECS);
+    }
+
+    /// Whether any highlight animation is still in progress.
+    #[must_use]
+    pub fn is_animating(&self) -> bool {
+        let targets: Vec<f32> = (0..self.anim.len())
+            .map(|i| {
+                if i == self.selected {
+                    1.0
+                } else if self.hovered == Some(i) {
+                    HOVER_STRENGTH
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        !self.anim.is_settled(&targets, VISIBLE_EPS)
     }
 
     /// Currently selected item index.
@@ -221,7 +226,7 @@ impl Sidebar {
             self.hitboxes.push(row);
 
             // Interpolated colours for this item's current highlight strength.
-            let s = self.anim.get(i).copied().unwrap_or(0.0);
+            let s = self.anim.get(i);
             let row_bg = lerp_color(p.bg_alt, h_bg, s);
             let border = lerp_color(p.bg_alt, h_border, s);
 
@@ -359,29 +364,6 @@ impl Sidebar {
             ));
         }
         Line::from(spans)
-    }
-}
-
-/// Linearly interpolate between two colours (`t` clamped to `0..=1`).
-/// Non-RGB inputs are treated as black.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "blended channel is 0..=255 and fits in u8"
-)]
-fn lerp_color(a: Color, b: Color, t: f32) -> Color {
-    let t = t.clamp(0.0, 1.0);
-    let (ar, ag, ab) = to_rgb(a);
-    let (br, bg, bb) = to_rgb(b);
-    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
-    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
-}
-
-/// Extract RGB channels, defaulting non-RGB colours to black.
-fn to_rgb(c: Color) -> (u8, u8, u8) {
-    match c {
-        Color::Rgb(r, g, b) => (r, g, b),
-        _ => (0, 0, 0),
     }
 }
 
