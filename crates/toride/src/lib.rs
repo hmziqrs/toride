@@ -17,3 +17,4 @@ pub mod prediction;
 pub mod status_collector;
 pub use toride_status as status;
 pub mod ui;
+pub mod version;

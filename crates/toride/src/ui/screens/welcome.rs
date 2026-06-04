@@ -16,9 +16,7 @@ use crate::ui::responsive::{self, Viewport};
 use crate::ui::screens::AppScreen;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::gradient::{AnimatedBorder, GradientCache};
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const EDITION: &str = "SINGLE-HOST";
+use crate::version;
 
 // ANSI Shadow figlet — matches screens.jsx LOGO constant exactly
 const LOGO: &[&str] = &[
@@ -185,9 +183,9 @@ impl WelcomeScreen {
         let version_line = Line::from(vec![
             Span::styled("砦", Style::new().fg(p.accent2).bold()),
             Span::styled("  ·  ", Style::new().fg(p.text_muted)),
-            Span::styled(VERSION, Style::new().fg(p.accent2).bold()),
+            Span::styled(version::VERSION, Style::new().fg(p.accent2).bold()),
             Span::styled("  ·  ", Style::new().fg(p.text_muted)),
-            Span::styled(EDITION, Style::new().fg(p.accent2).bold()),
+            Span::styled(version::EDITION, Style::new().fg(p.accent2).bold()),
         ]);
         frame.render_widget(Paragraph::new(version_line).centered(), version_area);
 
