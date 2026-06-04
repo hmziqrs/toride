@@ -59,7 +59,7 @@ pub mod tool;
 
 pub use client::{Mise, MiseBuilder, MiseMode, MiseProject, LoadPolicy, RuntimeManager};
 pub use capabilities::MiseCapabilities;
-pub use error::{MiseError, MiseResult};
+pub use error::{MiseError, MiseResult, ToolInstallError};
 pub use diagnostics::DiagnosticsBuilder;
 pub use security::SecurityPolicy;
 pub use tool::{

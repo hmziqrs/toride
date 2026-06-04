@@ -208,6 +208,70 @@ pub enum MiseError {
         /// Why the bootstrap failed.
         reason: String,
     },
+
+    /// A tool installation error occurred.
+    #[error(transparent)]
+    Install(Box<ToolInstallError>),
+}
+
+/// Errors that can occur during tool installation.
+#[derive(Debug, thiserror::Error)]
+pub enum ToolInstallError {
+    /// The requested tool is not recognised.
+    #[error("tool not found: {tool}")]
+    ToolNotFound {
+        /// Tool name.
+        tool: String,
+    },
+
+    /// The requested tool version does not exist.
+    #[error("version not found: {tool}@{version}")]
+    VersionNotFound {
+        /// Tool name.
+        tool: String,
+        /// Requested version.
+        version: String,
+    },
+
+    /// A network failure occurred while installing a tool.
+    #[error("network failure while installing {tool}: {reason}")]
+    NetworkFailed {
+        /// Tool name.
+        tool: String,
+        /// Underlying reason.
+        reason: String,
+    },
+
+    /// A checksum verification failure occurred.
+    #[error("checksum verification failed for {tool}@{version}")]
+    ChecksumFailed {
+        /// Tool name.
+        tool: String,
+        /// Version being installed.
+        version: String,
+    },
+
+    /// A required system dependency is missing.
+    #[error("missing dependency `{dependency}` required by {tool}")]
+    DependencyMissing {
+        /// Tool name.
+        tool: String,
+        /// Missing dependency.
+        dependency: String,
+    },
+
+    /// Permission was denied while installing a tool.
+    #[error("permission denied while installing {tool}: {path}")]
+    PermissionDenied {
+        /// Tool name.
+        tool: String,
+        /// Path that was denied.
+        path: String,
+    },
+
+    /// An underlying mise error occurred during installation.
+    #[error(transparent)]
+    MiseFailed(Box<MiseError>),
 }
 
 /// Errors related to reading or writing mise configuration files.
@@ -282,6 +346,18 @@ impl From<toride_runner::Error> for MiseError {
         // Delegate to the canonical mapping in command::mapping so there is
         // a single source of truth for toride_runner::Error -> MiseError.
         crate::command::mapping::map_runner_error(err, "")
+    }
+}
+
+impl From<ToolInstallError> for MiseError {
+    fn from(err: ToolInstallError) -> Self {
+        Self::Install(Box::new(err))
+    }
+}
+
+impl From<MiseError> for ToolInstallError {
+    fn from(err: MiseError) -> Self {
+        Self::MiseFailed(Box::new(err))
     }
 }
 
