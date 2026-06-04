@@ -7,7 +7,6 @@
 use ratatui::{
     Frame,
     layout::{Constraint, Layout},
-    text::{Line, Span},
     widgets::Paragraph,
 };
 use ratatui::style::Stylize;
@@ -99,6 +98,14 @@ impl App {
 
         // Quit confirmation modal
         if self.quit_visible {
+            // Sync focus state to buttons
+            let focused = self.quit_focus.current().copied();
+            for (i, btn) in self.quit_buttons.iter_mut().enumerate() {
+                btn.set_focused(focused == Some(i));
+            }
+
+            let viewport = Viewport::from_area(frame.area());
+            let quit_buttons = &mut self.quit_buttons;
             Modal::new("Quit?")
                 .dimensions(36, 7)
                 .render(frame, *p, |frame, content_area| {
@@ -111,19 +118,24 @@ impl App {
                     ])
                     .areas(content_area);
 
-                    let key_style = p.key_style();
                     frame.render_widget(
                         Paragraph::new("Are you sure you want to quit?").centered(),
                         msg_area,
                     );
 
-                    let hint = Line::from(vec![
-                        Span::styled(" y ", key_style),
-                        Span::styled("yes  ", p.label_style()),
-                        Span::styled(" n ", key_style),
-                        Span::styled("no", p.label_style()),
-                    ]);
-                    frame.render_widget(Paragraph::new(hint).centered(), keys_area);
+                    // Render interactive Yes / No buttons
+                    let gap: u16 = 4;
+                    let widths: [u16; 2] =
+                        std::array::from_fn(|i| quit_buttons[i].min_width(viewport));
+                    let total_w = widths[0] + gap + widths[1];
+                    let mut cx = keys_area.x + (keys_area.width.saturating_sub(total_w)) / 2;
+
+                    let buf = frame.buffer_mut();
+                    for (i, &w) in widths.iter().enumerate() {
+                        let btn_area = ratatui::layout::Rect::new(cx, keys_area.y, w, 1);
+                        quit_buttons[i].render(buf, btn_area, *p, viewport);
+                        cx += w + gap;
+                    }
                 });
         }
     }

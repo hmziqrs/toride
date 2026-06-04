@@ -151,7 +151,12 @@ impl Sidebar {
             let is_active = i == active;
 
             let line = Self::item_line(i, item, p, is_active, is_sel, focused, collapsed);
-            frame.render_widget(Paragraph::new(line), row);
+            let mut para = Paragraph::new(line);
+            if is_sel {
+                let bg = if focused { p.sel_bg } else { p.bg_inset };
+                para = para.style(Style::new().bg(bg));
+            }
+            frame.render_widget(para, row);
         }
 
         // ── SSH footer ──────────────────────────────────────────────────────
@@ -186,6 +191,10 @@ impl Sidebar {
     ///
     /// The selection highlight is a left-edge bar (`▌`) rather than a full-row
     /// background; it is bright when the sidebar is focused and dim otherwise.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "item render state: active/selected/focused/collapsed"
+    )]
     fn item_line(
         i: usize,
         item: &SidebarItem,
