@@ -4,18 +4,14 @@
 //! swaps at the midpoint), per-screen cache invalidation, and the help modal
 //! overlay.
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    widgets::{Block, Clear},
-};
+use ratatui::Frame;
 use tachyonfx::Interpolation;
 
 use crate::navigation::Screen;
 use crate::ui::responsive::Viewport;
 use crate::ui::screens::help::HelpScreen;
 use crate::ui::theme::Palette;
+use crate::ui::widgets::Modal;
 
 use super::App;
 
@@ -90,49 +86,11 @@ impl App {
 
         // Help modal overlay — rendered on top of whatever is behind it
         if self.help_visible {
-            Self::render_help_modal(frame, *p);
+            let viewport = Viewport::from_area(frame.area());
+            Modal::new("Help").render(frame, *p, |frame, content_area| {
+                HelpScreen::render(frame, content_area, *p, viewport);
+            });
         }
-    }
-
-    /// Render the help modal overlay (dimmed scrim + bordered content box).
-    fn render_help_modal(frame: &mut Frame, p: Palette) {
-        let area = frame.area();
-        let viewport = Viewport::from_area(area);
-        let modal_area = modal_area(area);
-
-        // 1. Dim the existing screen content in-place, skipping the modal rect
-        //    so it stays clean for the block + content rendering.
-        let buf = frame.buffer_mut();
-        let scrim_bg = dim_color(p.bg);
-        let area_w = area.width as usize;
-        for (i, cell) in buf.content.iter_mut().enumerate() {
-            let x = area.x + (i % area_w) as u16;
-            let y = area.y + (i / area_w) as u16;
-            if x >= modal_area.left()
-                && x < modal_area.right()
-                && y >= modal_area.top()
-                && y < modal_area.bottom()
-            {
-                continue;
-            }
-            let dimmed = blend_toward(cell.bg, scrim_bg, 0.55);
-            cell.set_bg(dimmed);
-            let dimmed_fg = blend_toward(cell.fg, scrim_bg, 0.45);
-            cell.set_fg(dimmed_fg);
-        }
-
-        // 2. Clear the modal area so the block's bg style fills every cell
-        frame.render_widget(Clear, modal_area);
-
-        // 3. Centered modal box
-        let block = Block::bordered()
-            .border_style(Style::new().fg(p.border_hi))
-            .style(Style::new().bg(p.panel));
-        let content_area = block.inner(modal_area);
-        frame.render_widget(block, modal_area);
-
-        // 3. Help content inside the border
-        HelpScreen::render(frame, content_area, p, viewport);
     }
 
     /// Get a specific screen by its [`Screen`] enum value as `&mut dyn AppScreen`.
@@ -145,46 +103,4 @@ impl App {
             Screen::Status => &mut self.status,
         }
     }
-}
-
-// ── Modal helpers ─────────────────────────────────────────────────────────────
-
-/// Compute a centered modal rect (~52×16), clamped to terminal size.
-fn modal_area(area: Rect) -> Rect {
-    const MODAL_W: u16 = 52;
-    const MODAL_H: u16 = 16;
-    let w = MODAL_W.min(area.width);
-    let h = MODAL_H.min(area.height);
-    let x = (area.width.saturating_sub(w)) / 2;
-    let y = (area.height.saturating_sub(h)) / 2;
-    Rect::new(area.x + x, area.y + y, w, h)
-}
-
-/// Darken an RGB color to ~1/3 brightness (used as the scrim blend target).
-fn dim_color(color: ratatui::style::Color) -> ratatui::style::Color {
-    match color {
-        ratatui::style::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r / 3, g / 3, b / 3),
-        other => other,
-    }
-}
-
-/// Linearly interpolate `color` toward `target` by `t` (0.0 = unchanged, 1.0 = target).
-fn blend_toward(
-    color: ratatui::style::Color,
-    target: ratatui::style::Color,
-    t: f32,
-) -> ratatui::style::Color {
-    let ratatui::style::Color::Rgb(cr, cg, cb) = color else {
-        return color;
-    };
-    let ratatui::style::Color::Rgb(tr, tg, tb) = target else {
-        return color;
-    };
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-    let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
-    ratatui::style::Color::Rgb(r, g, b)
 }

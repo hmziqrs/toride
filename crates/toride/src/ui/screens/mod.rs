@@ -105,30 +105,16 @@ mod tests {
 
     #[test]
     fn help_screen_snapshot() {
-        use ratatui::layout::Rect;
-        use ratatui::style::Style;
-        use ratatui::widgets::{Block, Clear};
-
         use crate::ui::responsive::Viewport;
+        use crate::ui::widgets::Modal;
 
         let mut terminal = test_terminal(80, 24);
         terminal
             .draw(|f| {
-                let area = f.area();
-                let modal = Rect::new(
-                    (area.width.saturating_sub(52)) / 2,
-                    (area.height.saturating_sub(16)) / 2,
-                    52,
-                    16,
-                );
-                dim_screenshot_buffer(f, area, modal);
-                f.render_widget(Clear, modal);
-                let block = Block::bordered()
-                    .border_style(Style::new().fg(CHARM.border_hi))
-                    .style(Style::new().bg(CHARM.panel));
-                let content = block.inner(modal);
-                f.render_widget(block, modal);
-                super::help::HelpScreen::render(f, content, CHARM, Viewport::from_area(area));
+                let viewport = Viewport::from_area(f.area());
+                Modal::new("Help").render(f, CHARM, |f, content| {
+                    super::help::HelpScreen::render(f, content, CHARM, viewport);
+                });
             })
             .unwrap();
         let output = terminal.backend().to_string();
@@ -137,80 +123,20 @@ mod tests {
 
     #[test]
     fn help_screen_minimal_viewport() {
-        use ratatui::layout::Rect;
-        use ratatui::style::Style;
-        use ratatui::widgets::{Block, Clear};
-
         use crate::ui::responsive::Viewport;
+        use crate::ui::widgets::Modal;
 
         let mut terminal = test_terminal(35, 12);
         terminal
             .draw(|f| {
-                let area = f.area();
-                let modal = Rect::new(
-                    (area.width.saturating_sub(52)) / 2,
-                    (area.height.saturating_sub(16)) / 2,
-                    52.min(area.width),
-                    16.min(area.height),
-                );
-                dim_screenshot_buffer(f, area, modal);
-                f.render_widget(Clear, modal);
-                let block = Block::bordered()
-                    .border_style(Style::new().fg(CHARM.border_hi))
-                    .style(Style::new().bg(CHARM.panel));
-                let content = block.inner(modal);
-                f.render_widget(block, modal);
-                super::help::HelpScreen::render(f, content, CHARM, Viewport::from_area(area));
+                let viewport = Viewport::from_area(f.area());
+                Modal::new("Help").render(f, CHARM, |f, content| {
+                    super::help::HelpScreen::render(f, content, CHARM, viewport);
+                });
             })
             .unwrap();
         let output = terminal.backend().to_string();
         insta::assert_snapshot!("help_screen_35x12", output);
-    }
-
-    /// Dim all buffer cells outside the modal rect (mirrors `App::render_help_modal`).
-    fn dim_screenshot_buffer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, modal: ratatui::layout::Rect) {
-        let dimmed_bg = match CHARM.bg {
-            ratatui::style::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r / 3, g / 3, b / 3),
-            other => other,
-        };
-        let buf = f.buffer_mut();
-        let area_w = area.width as usize;
-        for (i, cell) in buf.content.iter_mut().enumerate() {
-            let x = area.x + (i % area_w) as u16;
-            let y = area.y + (i / area_w) as u16;
-            if x >= modal.left()
-                && x < modal.right()
-                && y >= modal.top()
-                && y < modal.bottom()
-            {
-                continue;
-            }
-            let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
-            cell.set_bg(bg);
-            let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
-            cell.set_fg(fg);
-        }
-    }
-
-    /// Linearly interpolate a color toward a target (mirrors `blend_toward` in render.rs).
-    fn blend_cell_color(
-        color: ratatui::style::Color,
-        target: ratatui::style::Color,
-        t: f32,
-    ) -> ratatui::style::Color {
-        let ratatui::style::Color::Rgb(cr, cg, cb) = color else {
-            return color;
-        };
-        let ratatui::style::Color::Rgb(tr, tg, tb) = target else {
-            return color;
-        };
-        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-        let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
-        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-        let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
-        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
-        let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
-        ratatui::style::Color::Rgb(r, g, b)
     }
 
     // ── StatusScreen loading snapshot ───────────────────────────────────────

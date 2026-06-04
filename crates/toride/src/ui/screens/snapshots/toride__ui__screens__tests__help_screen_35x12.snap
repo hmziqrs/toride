@@ -2,7 +2,7 @@
 source: crates/toride/src/ui/screens/mod.rs
 expression: output
 ---
-"┌─────────────────────────────────┐"
+"┌───────────── Help ──────────────┐"
 "│              Help               │"
 "│                                 │"
 "│          Enter   Status         │"
