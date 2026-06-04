@@ -1,9 +1,11 @@
 pub mod dashboard;
 pub mod help;
+pub mod quit;
 pub mod welcome;
 
 pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
+pub use quit::QuitModal;
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};

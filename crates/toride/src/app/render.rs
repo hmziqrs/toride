@@ -4,12 +4,7 @@
 //! swaps at the midpoint), per-screen cache invalidation, and the help modal
 //! overlay.
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout},
-    widgets::Paragraph,
-};
-use ratatui::style::Stylize;
+use ratatui::Frame;
 use tachyonfx::Interpolation;
 
 use crate::navigation::Screen;
@@ -98,45 +93,7 @@ impl App {
 
         // Quit confirmation modal
         if self.quit_visible {
-            // Sync focus state to buttons
-            let focused = self.quit_focus.current().copied();
-            for (i, btn) in self.quit_buttons.iter_mut().enumerate() {
-                btn.set_focused(focused == Some(i));
-            }
-
-            let viewport = Viewport::from_area(frame.area());
-            let quit_buttons = &mut self.quit_buttons;
-            Modal::new("Quit?")
-                .dimensions(36, 7)
-                .render(frame, *p, |frame, content_area| {
-                    let [_, msg_area, _, keys_area, _] = Layout::vertical([
-                        Constraint::Fill(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Fill(1),
-                    ])
-                    .areas(content_area);
-
-                    frame.render_widget(
-                        Paragraph::new("Are you sure you want to quit?").centered(),
-                        msg_area,
-                    );
-
-                    // Render interactive Yes / No buttons
-                    let gap: u16 = 4;
-                    let widths: [u16; 2] =
-                        std::array::from_fn(|i| quit_buttons[i].min_width(viewport));
-                    let total_w = widths[0] + gap + widths[1];
-                    let mut cx = keys_area.x + (keys_area.width.saturating_sub(total_w)) / 2;
-
-                    let buf = frame.buffer_mut();
-                    for (i, &w) in widths.iter().enumerate() {
-                        let btn_area = ratatui::layout::Rect::new(cx, keys_area.y, w, 1);
-                        quit_buttons[i].render(buf, btn_area, *p, viewport);
-                        cx += w + gap;
-                    }
-                });
+            self.quit_modal.render(frame, *p);
         }
     }
 

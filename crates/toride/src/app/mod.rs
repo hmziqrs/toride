@@ -16,9 +16,9 @@ use tokio::select;
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
 use crate::status_collector::StatusCollector;
-use crate::ui::components::interactive_button::InteractiveButton;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
+use crate::ui::screens::quit::QuitModal;
 use crate::ui::screens::dashboard::DashboardScreen;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
@@ -35,8 +35,7 @@ pub struct App {
     help: HelpScreen,
     help_visible: bool,
     quit_visible: bool,
-    quit_buttons: [InteractiveButton<Action>; 2],
-    quit_focus: ratatui_interact::state::FocusManager<usize>,
+    quit_modal: QuitModal,
     active_theme: Theme,
     should_quit: bool,
     needs_redraw: bool,
@@ -62,15 +61,7 @@ impl App {
             help: HelpScreen::new(),
             help_visible: false,
             quit_visible: false,
-            quit_buttons: [
-                InteractiveButton::new("yes", "y", Action::Quit),
-                InteractiveButton::new("no", "n", Action::DismissQuit),
-            ],
-            quit_focus: {
-                let mut fm = ratatui_interact::state::FocusManager::new();
-                fm.register_all([0, 1]);
-                fm
-            },
+            quit_modal: QuitModal::new(),
             active_theme: Theme::default(),
             should_quit: false,
             needs_redraw: false,
