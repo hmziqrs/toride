@@ -93,6 +93,12 @@ pub struct DashboardScreen {
     open_module: Option<usize>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
+    /// Live network throughput (bytes/sec).
+    net_rx_rate: Option<f64>,
+    net_tx_rate: Option<f64>,
+    /// Live disk I/O throughput (bytes/sec).
+    disk_read_rate: Option<f64>,
+    disk_write_rate: Option<f64>,
     base: ScreenBase,
     clock: String,
     shimmer_start: Instant,
@@ -124,14 +130,40 @@ impl DashboardScreen {
             open_module: None,
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
+            net_rx_rate: None,
+            net_tx_rate: None,
+            disk_read_rate: None,
+            disk_write_rate: None,
             base: ScreenBase::new(),
             clock,
             shimmer_start: Instant::now(),
         }
     }
 
-    /// Store the latest collected system status (header gauges + system card).
+    /// Store the latest collected system status and compute live throughput rates.
     pub fn set_status(&mut self, status: TorideStatus) {
+        if let Some(prev) = &self.status {
+            let dt = (status.collected_at)
+                .duration_since(prev.collected_at)
+                .map_or(0.5, |d| d.as_secs_f64())
+                .max(0.1);
+
+            // Network throughput
+            let rx = status.system.network.bytes_received as f64
+                - prev.system.network.bytes_received as f64;
+            let tx = status.system.network.bytes_transmitted as f64
+                - prev.system.network.bytes_transmitted as f64;
+            self.net_rx_rate = Some(rx.max(0.0) / dt);
+            self.net_tx_rate = Some(tx.max(0.0) / dt);
+
+            // Disk I/O throughput
+            let dr = status.system.disk_io.read_bytes as f64
+                - prev.system.disk_io.read_bytes as f64;
+            let dw = status.system.disk_io.written_bytes as f64
+                - prev.system.disk_io.written_bytes as f64;
+            self.disk_read_rate = Some(dr.max(0.0) / dt);
+            self.disk_write_rate = Some(dw.max(0.0) / dt);
+        }
         self.status = Some(status);
     }
 
@@ -296,27 +328,30 @@ impl DashboardScreen {
         if self.open_module.is_none() {
             if let Some(gauge) = self.gauge_hover {
                 if let Some(status) = &self.status {
-                    render_gauge_tooltip(frame, p, gauge, &self.gauge_hitboxes, shell.header, status);
+                    let rates = LiveRates {
+                        net_rx: self.net_rx_rate,
+                        net_tx: self.net_tx_rate,
+                        disk_read: self.disk_read_rate,
+                        disk_write: self.disk_write_rate,
+                    };
+                    render_gauge_tooltip(frame, p, gauge, &self.gauge_hitboxes, shell.header, status, &rates);
                 }
             }
         }
     }
 
     fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<String>) {
+        let net_label = match (self.net_rx_rate, self.net_tx_rate) {
+            (Some(rx), Some(tx)) => Some(format!("{}↓ {}↑", format_rate(rx), format_rate(tx))),
+            _ => None,
+        };
         match &self.status {
-            Some(s) => {
-                let net_label = {
-                    let rx = s.system.network.bytes_received;
-                    let tx = s.system.network.bytes_transmitted;
-                    Some(format!("{}↑ {}↓", format_bytes(tx), format_bytes(rx)))
-                };
-                (
-                    s.system.cpu_usage,
-                    Some(s.system.memory.percentage),
-                    Some(s.system.disk.percentage),
-                    net_label,
-                )
-            }
+            Some(s) => (
+                s.system.cpu_usage,
+                Some(s.system.memory.percentage),
+                Some(s.system.disk.percentage),
+                net_label,
+            ),
             None => (Some(35.0), Some(23.0), Some(23.0), None),
         }
     }
@@ -824,6 +859,14 @@ fn render_module_modal(frame: &mut Frame, p: Palette, m: &Module) {
 
 // ── Header gauge tooltip ─────────────────────────────────────────────────────
 
+/// Live throughput rates passed to tooltip renderers.
+struct LiveRates {
+    net_rx: Option<f64>,
+    net_tx: Option<f64>,
+    disk_read: Option<f64>,
+    disk_write: Option<f64>,
+}
+
 /// Render a floating popup card anchored below the hovered header gauge.
 fn render_gauge_tooltip(
     frame: &mut Frame,
@@ -832,6 +875,7 @@ fn render_gauge_tooltip(
     hitboxes: &[Rect; 4],
     header_area: Rect,
     status: &TorideStatus,
+    rates: &LiveRates,
 ) {
     let idx = match gauge {
         GaugeKind::Cpu => 0,
@@ -840,7 +884,7 @@ fn render_gauge_tooltip(
         GaugeKind::Net => 3,
     };
     let anchor = hitboxes[idx];
-    let lines = gauge_tooltip_lines(gauge, status, p);
+    let lines = gauge_tooltip_lines(gauge, status, p, rates);
 
     let max_w = lines.iter().map(|l| l.width()).max().unwrap_or(10);
     let w = u16::try_from(max_w).unwrap_or(20).saturating_add(4); // 2 padding + 2 border
@@ -875,12 +919,12 @@ fn render_gauge_tooltip(
 }
 
 /// Build tooltip content lines for a given gauge kind.
-fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette) -> Vec<Line<'static>> {
+fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
     match gauge {
         GaugeKind::Cpu => cpu_tooltip_lines(&status.system, p),
         GaugeKind::Ram => ram_tooltip_lines(&status.system, p),
-        GaugeKind::Disk => disk_tooltip_lines(&status.system, p),
-        GaugeKind::Net => net_tooltip_lines(&status.system, p),
+        GaugeKind::Disk => disk_tooltip_lines(&status.system, p, rates),
+        GaugeKind::Net => net_tooltip_lines(p, rates),
     }
 }
 
@@ -987,7 +1031,7 @@ fn ram_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
     lines
 }
 
-fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
+fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
     let d = &sys.disk;
     let mut lines = Vec::new();
 
@@ -1026,51 +1070,58 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line
         Span::styled(d.disk_type.clone(), Style::new().fg(p.text)),
     ]));
 
-    // Disk I/O
-    let io = &sys.disk_io;
-    if io.read_bytes > 0 || io.written_bytes > 0 {
+    // Disk I/O — live throughput
+    if rates.disk_read.is_some() || rates.disk_write.is_some() {
+        let read_s = rates.disk_read.map_or_else(|| "—".to_string(), format_rate);
+        let write_s = rates.disk_write.map_or_else(|| "—".to_string(), format_rate);
         lines.push(Line::from(vec![
             Span::styled("Read   ", Style::new().fg(p.text_muted)),
-            Span::styled(format_bytes(io.read_bytes), Style::new().fg(p.text)),
+            Span::styled(format!("{read_s}/s"), Style::new().fg(p.text)),
         ]));
         lines.push(Line::from(vec![
             Span::styled("Write  ", Style::new().fg(p.text_muted)),
-            Span::styled(format_bytes(io.written_bytes), Style::new().fg(p.text)),
+            Span::styled(format!("{write_s}/s"), Style::new().fg(p.text)),
         ]));
     }
 
     lines
 }
 
-fn net_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
-    let n = &sys.network;
+fn net_tooltip_lines(p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     lines.push(Line::from(Span::styled("Network", Style::new().fg(p.accent).bold())));
 
+    let dl = rates.net_rx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+    let ul = rates.net_tx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+
     lines.push(Line::from(vec![
-        Span::styled("TX     ", Style::new().fg(p.text_muted)),
-        Span::styled(format_bytes(n.bytes_transmitted), Style::new().fg(p.text)),
+        Span::styled("Down   ", Style::new().fg(p.text_muted)),
+        Span::styled(dl, Style::new().fg(p.text)),
     ]));
 
     lines.push(Line::from(vec![
-        Span::styled("RX     ", Style::new().fg(p.text_muted)),
-        Span::styled(format_bytes(n.bytes_received), Style::new().fg(p.text)),
+        Span::styled("Up     ", Style::new().fg(p.text_muted)),
+        Span::styled(ul, Style::new().fg(p.text)),
     ]));
-
-    // Per-interface summary
-    if !sys.network_interfaces.is_empty() {
-        lines.push(Line::raw(""));
-        for iface in &sys.network_interfaces {
-            let status = iface.link_status.as_deref().unwrap_or("—");
-            lines.push(Line::from(vec![
-                Span::styled(format!("{:<8}", iface.name), Style::new().fg(p.text_dim)),
-                Span::styled(status.to_string(), Style::new().fg(p.text_muted)),
-            ]));
-        }
-    }
 
     lines
+}
+
+/// Format a bytes/sec rate as a human-readable string (e.g. `"12.3 KB"`).
+fn format_rate(bytes_per_sec: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    if bytes_per_sec >= GB {
+        format!("{:.1} GB", bytes_per_sec / GB)
+    } else if bytes_per_sec >= MB {
+        format!("{:.1} MB", bytes_per_sec / MB)
+    } else if bytes_per_sec >= KB {
+        format!("{:.1} KB", bytes_per_sec / KB)
+    } else {
+        format!("{:.0} B", bytes_per_sec)
+    }
 }
 
 // ── Clock ─────────────────────────────────────────────────────────────────────
