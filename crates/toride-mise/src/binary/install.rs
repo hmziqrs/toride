@@ -41,6 +41,35 @@ pub enum BootstrapMethod {
 }
 
 // ---------------------------------------------------------------------------
+// Platform detection
+// ---------------------------------------------------------------------------
+
+/// Return the asset name substring used to find the right GitHub release asset.
+///
+/// Maps the current OS/arch to the naming convention used by mise releases:
+/// `mise-{os}-{arch}.tar.gz` (e.g. `mise-macos-arm64`, `mise-linux-x64`).
+#[cfg_attr(not(feature = "bootstrap"), allow(dead_code))]
+fn platform_asset_keyword() -> Option<String> {
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        return None;
+    };
+
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else {
+        return None;
+    };
+
+    Some(format!("{os}-{arch}"))
+}
+
+// ---------------------------------------------------------------------------
 // install_mise
 // ---------------------------------------------------------------------------
 
@@ -52,12 +81,7 @@ pub enum BootstrapMethod {
 /// - [`MiseError::BootstrapFailed`] when the chosen method cannot complete.
 pub async fn install_mise(method: BootstrapMethod, opts: BootstrapOptions) -> MiseResult<Utf8PathBuf> {
     match method {
-        BootstrapMethod::GithubRelease => Err(MiseError::BootstrapFailed {
-            reason: "GitHub release download is not yet implemented. \
-                     Install mise with your package manager or see \
-                     https://mise.jdx.dev/getting-started.html"
-                .into(),
-        }),
+        BootstrapMethod::GithubRelease => install_from_github(&opts).await,
         BootstrapMethod::HintOnly => Err(MiseError::BootstrapHint {
             message: format!(
                 "mise is not installed.\n\
@@ -76,6 +100,198 @@ pub async fn install_mise(method: BootstrapMethod, opts: BootstrapOptions) -> Mi
             ),
         }),
     }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub release implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "bootstrap")]
+mod github {
+    use super::*;
+
+    /// GitHub API base URL for mise releases.
+    const GITHUB_API: &str = "https://api.github.com/repos/jdx/mise/releases";
+
+    /// Fetch the download URL and tag for the latest (or specific) mise release.
+    async fn fetch_release_info(
+        client: &reqwest::Client,
+        version: Option<&str>,
+    ) -> MiseResult<(String, String)> {
+        let url = match version {
+            Some(v) => format!("{GITHUB_API}/tags/v{v}"),
+            None => format!("{GITHUB_API}/latest"),
+        };
+
+        let resp = client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to contact GitHub API: {e}"),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(MiseError::BootstrapFailed {
+                reason: format!("GitHub API returned {status}: {body}"),
+            });
+        }
+
+        let release: serde_json::Value = resp.json().await.map_err(|e| MiseError::BootstrapFailed {
+            reason: format!("failed to parse GitHub release JSON: {e}"),
+        })?;
+
+        let tag = release["tag_name"].as_str().unwrap_or("unknown").to_string();
+
+        let keyword = platform_asset_keyword().ok_or_else(|| MiseError::BootstrapFailed {
+            reason: "unsupported platform for GitHub release download".into(),
+        })?;
+
+        let assets = release["assets"].as_array().ok_or_else(|| MiseError::BootstrapFailed {
+            reason: "no assets found in GitHub release".into(),
+        })?;
+
+        let asset = assets
+            .iter()
+            .find(|a| {
+                a["name"]
+                    .as_str()
+                    .is_some_and(|n| n.contains(&keyword) && n.ends_with(".tar.gz"))
+            })
+            .ok_or_else(|| MiseError::BootstrapFailed {
+                reason: format!(
+                    "no suitable asset found for platform '{keyword}' in release {tag}"
+                ),
+            })?;
+
+        let download_url = asset["browser_download_url"]
+            .as_str()
+            .ok_or_else(|| MiseError::BootstrapFailed {
+                reason: "asset has no download URL".into(),
+            })?
+            .to_string();
+
+        Ok((download_url, tag))
+    }
+
+    /// Download a tar.gz archive and extract the `mise` binary to `target_dir`.
+    async fn download_and_extract(
+        client: &reqwest::Client,
+        url: &str,
+        target_dir: &camino::Utf8Path,
+    ) -> MiseResult<Utf8PathBuf> {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to download archive: {e}"),
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(MiseError::BootstrapFailed {
+                reason: format!("download failed with status {}", resp.status()),
+            });
+        }
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to read download body: {e}"),
+            })?;
+
+        // Ensure the target directory exists.
+        fs_err::create_dir_all(target_dir).map_err(|e| MiseError::BootstrapFailed {
+            reason: format!("failed to create directory {}: {e}", target_dir),
+        })?;
+
+        // Extract the `mise` binary from the tar.gz archive.
+        let decoder = flate2::read::GzDecoder::new(bytes.as_ref());
+        let mut archive = tar::Archive::new(decoder);
+
+        let mut found_path: Option<Utf8PathBuf> = None;
+        for entry in archive.entries().map_err(|e| MiseError::BootstrapFailed {
+            reason: format!("failed to enumerate tar entries: {e}"),
+        })? {
+            let mut entry = entry.map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to read tar entry: {e}"),
+            })?;
+
+            let path = entry.path().map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to read entry path: {e}"),
+            })?;
+
+            let file_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+
+            if file_name == "mise" {
+                let dest = target_dir.join("mise");
+                entry.unpack(&dest).map_err(|e| MiseError::BootstrapFailed {
+                    reason: format!("failed to extract mise binary: {e}"),
+                })?;
+                found_path = Some(dest);
+                break;
+            }
+        }
+
+        let bin_path =
+            found_path.ok_or_else(|| MiseError::BootstrapFailed {
+                reason: "archive did not contain a 'mise' binary".into(),
+            })?;
+
+        // Set executable permissions on unix.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            fs_err::set_permissions(&bin_path, perms).map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to set executable permissions: {e}"),
+            })?;
+        }
+
+        Ok(bin_path)
+    }
+
+    /// Full GitHub release bootstrap pipeline.
+    pub async fn install_from_github(opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf> {
+        let client = reqwest::Client::new();
+
+        let (download_url, tag) =
+            fetch_release_info(&client, opts.version.as_deref()).await?;
+
+        let target_dir = match &opts.target_dir {
+            Some(d) => d.clone(),
+            None => dirs::home_dir()
+                .map(|h| Utf8PathBuf::from_path_buf(h.join(".local/bin")).unwrap_or_default())
+                .ok_or_else(|| MiseError::BootstrapFailed {
+                    reason: "cannot determine home directory for default target".into(),
+                })?,
+        };
+
+        let bin_path = download_and_extract(&client, &download_url, &target_dir).await?;
+
+        let _ = tag; // available for logging if needed
+
+        Ok(bin_path)
+    }
+}
+
+#[cfg(feature = "bootstrap")]
+use github::install_from_github;
+
+#[cfg(not(feature = "bootstrap"))]
+async fn install_from_github(_opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf> {
+    Err(MiseError::BootstrapFailed {
+        reason: "GitHub release download requires the 'bootstrap' feature. \
+                 Enable it in Cargo.toml or use --features bootstrap."
+            .into(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -138,15 +354,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_mise_github_release_returns_not_implemented() {
-        let result = install_mise(BootstrapMethod::GithubRelease, BootstrapOptions::default()).await;
-        let Err(MiseError::BootstrapFailed { reason }) = result else {
-            panic!("expected BootstrapFailed error, got {result:?}");
-        };
-        assert!(reason.contains("not yet implemented"));
-    }
-
-    #[tokio::test]
     async fn install_mise_hint_includes_requested_version() {
         let opts = BootstrapOptions {
             version: Some("2025.4.0".into()),
@@ -157,5 +364,22 @@ mod tests {
             panic!("expected BootstrapHint error");
         };
         assert!(message.contains("2025.4.0"));
+    }
+
+    #[test]
+    fn platform_asset_keyword_returns_some_on_supported() {
+        // This test simply verifies the function returns Some on the current
+        // platform if it is one of the supported ones.
+        let kw = platform_asset_keyword();
+        // On CI or dev machines this is usually macos-arm64 or linux-x64.
+        if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+            assert!(kw.is_some());
+            let kw = kw.unwrap();
+            if cfg!(target_arch = "aarch64") {
+                assert!(kw.contains("arm64"));
+            } else if cfg!(target_arch = "x86_64") {
+                assert!(kw.contains("x64"));
+            }
+        }
     }
 }
