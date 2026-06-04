@@ -172,11 +172,11 @@ fn gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> 
 
 /// Build the spans for a gauge that is still loading (animated braille spinner).
 fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
-    use rattles::presets::braille::Wave;
+    use rattles::presets::braille::WaveRows;
     use rattles::Rattle;
 
-    let frames = Wave::FRAMES;
-    let interval_ms = Wave::INTERVAL.as_millis() as u32;
+    let frames = WaveRows::FRAMES;
+    let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
     let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32;
     let frame = frames[idx as usize % frames.len()];
     // Take the first line of the frame for inline display.
