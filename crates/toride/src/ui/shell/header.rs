@@ -21,6 +21,8 @@ pub struct HeaderData<'a> {
     pub ram: Option<f64>,
     /// Disk usage percentage (0–100), if known.
     pub disk: Option<f64>,
+    /// Network usage label (e.g. `"12 MB/s"`), if known.
+    pub net: Option<&'a str>,
     /// Right-aligned clock label (e.g. `09:17 PM`).
     pub clock: &'a str,
     /// Timestamp used to drive the logo shimmer animation.
@@ -39,15 +41,19 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     let sep = Span::styled("   ·   ", Style::new().fg(p.text_muted));
 
     let mut left = vec![
-        Span::styled(" 砦 ", Style::new().fg(p.accent2).bold()),
-        Span::styled("toride", Style::new().fg(p.text).bold()),
+        Span::styled(" 砦 ", Style::new().fg(p.accent).bold()),
+        Span::styled("toride", Style::new().fg(p.accent).bold()),
         sep.clone(),
     ];
     left.extend(gauge_spans("cpu", data.cpu, p));
     left.push(sep.clone());
     left.extend(gauge_spans("ram", data.ram, p));
-    left.push(sep);
+    left.push(sep.clone());
     left.extend(gauge_spans("disk", data.disk, p));
+    if let Some(net_label) = data.net {
+        left.push(sep);
+        left.extend(net_gauge_spans(net_label, p));
+    }
 
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
 
@@ -62,25 +68,87 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     frame.render_widget(Paragraph::new(clock).right_aligned(), inner);
 }
 
-/// Pulsing brightness on the kanji logo cell.
+/// Gaussian brightness sweep across the kanji + "toride" logo cells.
 fn apply_logo_shimmer(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f32) {
     use tachyonfx::ColorSpace;
 
-    // " 砦 " → kanji is at inner.x + 1
-    let kanji_x = inner.x + 1;
-    if kanji_x >= inner.right() || inner.y >= buf.area.height {
-        return;
+    // " 砦 " (CJK width-2 → 4 cols) + "toride" (6 cols) = 10 columns
+    const LOGO_W: u16 = 10;
+    let logo_end = (inner.x + LOGO_W).min(inner.right());
+
+    let sweep_period = 3.0f32;
+    let sweep_pos = (elapsed % sweep_period) / sweep_period;
+    let sigma = 0.06f32;
+
+    for x in inner.x..logo_end {
+        let cell = &mut buf[Position::new(x, inner.y)];
+        if cell.symbol() == " " {
+            continue;
+        }
+
+        let cell_norm = f32::from(x - inner.x) / f32::from(LOGO_W);
+        let dist = cell_norm - sweep_pos;
+        let brightness = (-dist * dist / (2.0 * sigma * sigma)).exp();
+
+        if brightness > 0.01 {
+            let fg = cell.fg;
+            let lightened = ColorSpace::Hsl.lighten(&fg, brightness * 0.4);
+            cell.set_fg(lightened);
+        }
+    }
+}
+
+/// Compute the hitbox [`Rect`] for each gauge span within the header's inner row.
+///
+/// Returns `[cpu_rect, ram_rect, disk_rect, net_rect]`. `data` must match the
+/// data passed to [`render_header`] for the same frame so the widths are
+/// consistent.
+#[must_use]
+pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
+    let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
+    let inner = block.inner(area);
+
+    // Walk the same span layout as render_header to find x offsets.
+    let mut x = inner.x;
+    // " 砦 " (CJK width-2 = 4 cols) + "toride" (6 cols) + "   ·   " (7 cols)
+    x += 4 + 6 + 7;
+
+    let labels = ["cpu", "ram", "disk"];
+    let pcts = [data.cpu, data.ram, data.disk];
+    let mut rects = [Rect::default(); 4];
+
+    for (i, (&label, &pct)) in labels.iter().zip(pcts.iter()).enumerate() {
+        let w = gauge_span_width(label, pct);
+        rects[i] = Rect::new(x, inner.y, w, 1);
+        x += w;
+        x += 7; // separator "   ·   "
     }
 
-    let pulse = (elapsed * 1.8f32).sin() * 0.5 + 0.5; // 0..1 oscillation
-    if pulse < 0.01 {
-        return;
+    // Net gauge
+    if let Some(net_label) = data.net {
+        let w = net_gauge_width(net_label);
+        rects[3] = Rect::new(x, inner.y, w, 1);
     }
 
-    let cell = &mut buf[Position::new(kanji_x, inner.y)];
-    let fg = cell.fg;
-    let lightened = ColorSpace::Hsl.lighten(&fg, pulse * 0.35);
-    cell.set_fg(lightened);
+    rects
+}
+
+/// Unicode display width of the net gauge spans produced by [`net_gauge_spans`].
+fn net_gauge_width(label: &str) -> u16 {
+    // "net " (4) + "▮ " (2) + label text
+    u16::try_from(4 + 2 + label.len()).unwrap_or(10)
+}
+
+/// Unicode display width of the spans produced by [`gauge_spans`].
+fn gauge_span_width(label: &str, pct: Option<f64>) -> u16 {
+    // "{label} " (4–5 chars) + "▮ " (2 chars) + "{pct}%" or "—" (1–4 chars)
+    let label_w = label.len() + 1; // "cpu "
+    let glyph_w = 2;               // "▮ "
+    let text_w = match pct {
+        Some(v) => format!("{v:.0}%").len(),
+        None => 1, // "—"
+    };
+    u16::try_from(label_w + glyph_w + text_w).unwrap_or(10)
 }
 
 /// Build the spans for one inline gauge (`cpu ▮ 35%`).
@@ -93,6 +161,15 @@ fn gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> 
         Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
         Span::styled("▮ ", Style::new().fg(glyph_color)),
         Span::styled(text, Style::new().fg(p.text).bold()),
+    ]
+}
+
+/// Build the spans for the network gauge (`net ▮ 12 MB/s`).
+fn net_gauge_spans(label: &str, p: Palette) -> Vec<Span<'static>> {
+    vec![
+        Span::styled("net ", Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(p.accent3)),
+        Span::styled(label.to_string(), Style::new().fg(p.text).bold()),
     ]
 }
 
@@ -115,6 +192,7 @@ mod tests {
             cpu,
             ram,
             disk,
+            net: None,
             clock,
             shimmer_start: Instant::now(),
         }

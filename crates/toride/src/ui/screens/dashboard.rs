@@ -13,18 +13,18 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Padding, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 
 use crate::action::Action;
 use crate::data::{ActivityEntry, DashboardData, Module, ModuleUpdate, Section};
 use crate::status::TorideStatus;
-use crate::ui::helpers::{format_bytes, format_duration};
+use crate::ui::helpers::{format_bytes, format_duration, percent_color};
 use crate::ui::responsive::truncate_str;
 use crate::ui::screens::AppScreen;
 use crate::ui::shell::{
-    SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar, render_footer, render_header, shell_layout,
-    header::HeaderData,
+    SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar, gauge_hitboxes, render_footer, render_header,
+    shell_layout, header::HeaderData,
 };
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, tag_badge};
@@ -40,6 +40,15 @@ const STAT_ROW_H: u16 = 6;
 const MODULE_CARD_H: u16 = 5;
 /// Number of columns in the module grid (used for keyboard navigation).
 const GRID_COLS: usize = 2;
+
+/// Which header gauge is currently hovered by the mouse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GaugeKind {
+    Cpu,
+    Ram,
+    Disk,
+    Net,
+}
 
 /// Which region currently has keyboard focus.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +91,8 @@ pub struct DashboardScreen {
     updates_scroll: usize,
     activity_scroll: usize,
     open_module: Option<usize>,
+    gauge_hover: Option<GaugeKind>,
+    gauge_hitboxes: [Rect; 4],
     base: ScreenBase,
     clock: String,
     shimmer_start: Instant,
@@ -111,6 +122,8 @@ impl DashboardScreen {
             updates_scroll: 0,
             activity_scroll: 0,
             open_module: None,
+            gauge_hover: None,
+            gauge_hitboxes: [Rect::default(); 4],
             base: ScreenBase::new(),
             clock,
             shimmer_start: Instant::now(),
@@ -190,6 +203,17 @@ impl DashboardScreen {
         }
     }
 
+    /// Check if a screen coordinate falls within a header gauge hitbox.
+    fn gauge_at(&self, col: u16, row: u16) -> Option<GaugeKind> {
+        let kinds = [GaugeKind::Cpu, GaugeKind::Ram, GaugeKind::Disk, GaugeKind::Net];
+        for (i, rect) in self.gauge_hitboxes.iter().enumerate() {
+            if col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom() {
+                return Some(kinds[i]);
+            }
+        }
+        None
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────────
 
     fn render(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
@@ -210,19 +234,24 @@ impl DashboardScreen {
         let shell = shell_layout(area, sidebar_w);
 
         // Header gauges from live status when available.
-        let (cpu, ram, disk) = self.gauges();
+        let (cpu, ram, disk, net_label) = self.gauges();
+        let header_data = HeaderData {
+            cpu,
+            ram,
+            disk,
+            net: net_label.as_deref(),
+            clock: &self.clock,
+            shimmer_start: self.shimmer_start,
+        };
         render_header(
             frame,
             shell.header,
             p,
-            &HeaderData {
-                cpu,
-                ram,
-                disk,
-                clock: &self.clock,
-                shimmer_start: self.shimmer_start,
-            },
+            &header_data,
         );
+
+        // Refresh gauge hitboxes for hover detection.
+        self.gauge_hitboxes = gauge_hitboxes(shell.header, &header_data);
 
         self.sidebar.render(
             frame,
@@ -262,16 +291,33 @@ impl DashboardScreen {
         {
             render_module_modal(frame, p, m);
         }
+
+        // ── Header gauge tooltip overlay ────────────────────────────────────
+        if self.open_module.is_none() {
+            if let Some(gauge) = self.gauge_hover {
+                if let Some(status) = &self.status {
+                    render_gauge_tooltip(frame, p, gauge, &self.gauge_hitboxes, shell.header, status);
+                }
+            }
+        }
     }
 
-    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>) {
+    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<String>) {
         match &self.status {
-            Some(s) => (
-                s.system.cpu_usage,
-                Some(s.system.memory.percentage),
-                Some(s.system.disk.percentage),
-            ),
-            None => (Some(35.0), Some(23.0), Some(23.0)),
+            Some(s) => {
+                let net_label = {
+                    let rx = s.system.network.bytes_received;
+                    let tx = s.system.network.bytes_transmitted;
+                    Some(format!("{}↑ {}↓", format_bytes(tx), format_bytes(rx)))
+                };
+                (
+                    s.system.cpu_usage,
+                    Some(s.system.memory.percentage),
+                    Some(s.system.disk.percentage),
+                    net_label,
+                )
+            }
+            None => (Some(35.0), Some(23.0), Some(23.0), None),
         }
     }
 
@@ -569,6 +615,7 @@ impl AppScreen for DashboardScreen {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let idx = self.sidebar.item_at(mouse.column, mouse.row);
                 self.sidebar.set_hovered(idx);
+                self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
             }
             // Click: select + activate the sidebar item, focus the sidebar.
             MouseEventKind::Down(MouseButton::Left) => {
@@ -773,6 +820,257 @@ fn render_module_modal(frame: &mut Frame, p: Palette, m: &Module) {
         ];
         frame.render_widget(Paragraph::new(lines), area);
     });
+}
+
+// ── Header gauge tooltip ─────────────────────────────────────────────────────
+
+/// Render a floating popup card anchored below the hovered header gauge.
+fn render_gauge_tooltip(
+    frame: &mut Frame,
+    p: Palette,
+    gauge: GaugeKind,
+    hitboxes: &[Rect; 4],
+    header_area: Rect,
+    status: &TorideStatus,
+) {
+    let idx = match gauge {
+        GaugeKind::Cpu => 0,
+        GaugeKind::Ram => 1,
+        GaugeKind::Disk => 2,
+        GaugeKind::Net => 3,
+    };
+    let anchor = hitboxes[idx];
+    let lines = gauge_tooltip_lines(gauge, status, p);
+
+    let max_w = lines.iter().map(|l| l.width()).max().unwrap_or(10);
+    let w = u16::try_from(max_w).unwrap_or(20).saturating_add(4); // 2 padding + 2 border
+    let h = u16::try_from(lines.len()).unwrap_or(1).saturating_add(2); // 2 border rows
+
+    // Position: centered below the header, clamped to frame.
+    let frame_area = frame.area();
+    let x = (anchor.x + anchor.width / 2)
+        .saturating_sub(w / 2)
+        .max(frame_area.x)
+        .min(frame_area.right().saturating_sub(w));
+    let y = header_area.bottom();
+
+    if y + h > frame_area.bottom() || x + w > frame_area.right() {
+        return;
+    }
+
+    let rect = Rect::new(x, y, w, h);
+
+    // Clear so the tooltip is opaque.
+    frame.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(p.border_hi))
+        .style(Style::new().bg(p.panel))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Build tooltip content lines for a given gauge kind.
+fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette) -> Vec<Line<'static>> {
+    match gauge {
+        GaugeKind::Cpu => cpu_tooltip_lines(&status.system, p),
+        GaugeKind::Ram => ram_tooltip_lines(&status.system, p),
+        GaugeKind::Disk => disk_tooltip_lines(&status.system, p),
+        GaugeKind::Net => net_tooltip_lines(&status.system, p),
+    }
+}
+
+fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+
+    // Title
+    let brand = if sys.static_info.cpu_brand.is_empty() {
+        String::new()
+    } else {
+        format!("  ·  {}", sys.static_info.cpu_brand)
+    };
+    lines.push(Line::from(vec![
+        Span::styled("CPU", Style::new().fg(p.accent).bold()),
+        Span::styled(brand, Style::new().fg(p.text_dim)),
+    ]));
+
+    // Usage
+    if let Some(usage) = sys.cpu_usage {
+        let color = percent_color(usage, p);
+        lines.push(Line::from(vec![
+            Span::styled("Usage  ", Style::new().fg(p.text_muted)),
+            Span::styled(format!("{usage:.0}%"), Style::new().fg(color).bold()),
+        ]));
+    }
+
+    // Cores
+    let phys = sys.physical_cores.map_or_else(|| "—".to_string(), |c| c.to_string());
+    let log = sys.static_info.logical_cores;
+    lines.push(Line::from(vec![
+        Span::styled("Cores  ", Style::new().fg(p.text_muted)),
+        Span::styled(format!("{phys} / {log}"), Style::new().fg(p.text)),
+    ]));
+
+    // Load average
+    if let Some(load) = &sys.load_average {
+        lines.push(Line::from(vec![
+            Span::styled("Load   ", Style::new().fg(p.text_muted)),
+            Span::styled(
+                format!("{:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen),
+                Style::new().fg(p.text),
+            ),
+        ]));
+    }
+
+    // Per-core mini readout
+    if !sys.cpu_cores.is_empty() {
+        let mut cores: Vec<Span<'static>> = Vec::new();
+        for (i, c) in sys.cpu_cores.iter().enumerate() {
+            if i > 0 {
+                cores.push(Span::styled(" ", Style::new()));
+            }
+            let color = percent_color(c.usage, p);
+            cores.push(Span::styled(format!("{:.0}", c.usage), Style::new().fg(color)));
+        }
+        let mut line = vec![Span::styled("Core   ", Style::new().fg(p.text_muted))];
+        line.append(&mut cores);
+        lines.push(Line::from(line));
+    }
+
+    lines
+}
+
+fn ram_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
+    let m = &sys.memory;
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(Span::styled("Memory", Style::new().fg(p.accent).bold())));
+
+    let color = percent_color(m.percentage, p);
+    lines.push(Line::from(vec![
+        Span::styled("Used   ", Style::new().fg(p.text_muted)),
+        Span::styled(
+            format!("{} / {}", format_bytes(m.used_bytes), format_bytes(m.total_bytes)),
+            Style::new().fg(p.text),
+        ),
+        Span::styled(format!("  ({:.0}%)", m.percentage), Style::new().fg(color)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Free   ", Style::new().fg(p.text_muted)),
+        Span::styled(format_bytes(m.available_bytes), Style::new().fg(p.text)),
+    ]));
+
+    if m.cached_bytes > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("Cached ", Style::new().fg(p.text_muted)),
+            Span::styled(format_bytes(m.cached_bytes), Style::new().fg(p.text)),
+        ]));
+    }
+
+    if let Some(swap) = &sys.swap {
+        let swap_color = percent_color(swap.percentage, p);
+        lines.push(Line::from(vec![
+            Span::styled("Swap   ", Style::new().fg(p.text_muted)),
+            Span::styled(
+                format!("{} / {}", format_bytes(swap.used_bytes), format_bytes(swap.total_bytes)),
+                Style::new().fg(p.text),
+            ),
+            Span::styled(format!("  ({:.0}%)", swap.percentage), Style::new().fg(swap_color)),
+        ]));
+    }
+
+    lines
+}
+
+fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
+    let d = &sys.disk;
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(vec![
+        Span::styled("Disk", Style::new().fg(p.accent).bold()),
+        Span::styled(format!("  ·  {}", d.name), Style::new().fg(p.text_dim)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Mount  ", Style::new().fg(p.text_muted)),
+        Span::styled(d.mount_point.clone(), Style::new().fg(p.text)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("FS     ", Style::new().fg(p.text_muted)),
+        Span::styled(d.filesystem.clone(), Style::new().fg(p.text)),
+    ]));
+
+    let color = percent_color(d.percentage, p);
+    lines.push(Line::from(vec![
+        Span::styled("Used   ", Style::new().fg(p.text_muted)),
+        Span::styled(
+            format!("{} / {}", format_bytes(d.used_bytes), format_bytes(d.total_bytes)),
+            Style::new().fg(p.text),
+        ),
+        Span::styled(format!("  ({:.0}%)", d.percentage), Style::new().fg(color)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Free   ", Style::new().fg(p.text_muted)),
+        Span::styled(format_bytes(d.available_bytes), Style::new().fg(p.text)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("Type   ", Style::new().fg(p.text_muted)),
+        Span::styled(d.disk_type.clone(), Style::new().fg(p.text)),
+    ]));
+
+    // Disk I/O
+    let io = &sys.disk_io;
+    if io.read_bytes > 0 || io.written_bytes > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("Read   ", Style::new().fg(p.text_muted)),
+            Span::styled(format_bytes(io.read_bytes), Style::new().fg(p.text)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Write  ", Style::new().fg(p.text_muted)),
+            Span::styled(format_bytes(io.written_bytes), Style::new().fg(p.text)),
+        ]));
+    }
+
+    lines
+}
+
+fn net_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
+    let n = &sys.network;
+    let mut lines = Vec::new();
+
+    lines.push(Line::from(Span::styled("Network", Style::new().fg(p.accent).bold())));
+
+    lines.push(Line::from(vec![
+        Span::styled("TX     ", Style::new().fg(p.text_muted)),
+        Span::styled(format_bytes(n.bytes_transmitted), Style::new().fg(p.text)),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled("RX     ", Style::new().fg(p.text_muted)),
+        Span::styled(format_bytes(n.bytes_received), Style::new().fg(p.text)),
+    ]));
+
+    // Per-interface summary
+    if !sys.network_interfaces.is_empty() {
+        lines.push(Line::raw(""));
+        for iface in &sys.network_interfaces {
+            let status = iface.link_status.as_deref().unwrap_or("—");
+            lines.push(Line::from(vec![
+                Span::styled(format!("{:<8}", iface.name), Style::new().fg(p.text_dim)),
+                Span::styled(status.to_string(), Style::new().fg(p.text_muted)),
+            ]));
+        }
+    }
+
+    lines
 }
 
 // ── Clock ─────────────────────────────────────────────────────────────────────

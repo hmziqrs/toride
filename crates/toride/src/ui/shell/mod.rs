@@ -10,7 +10,7 @@ pub mod header;
 pub mod sidebar;
 
 pub use footer::render_footer;
-pub use header::{HeaderData, render_header};
+pub use header::{HeaderData, gauge_hitboxes, render_header};
 pub use sidebar::{SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar};
 
 use ratatui::layout::{Constraint, Layout, Rect};
