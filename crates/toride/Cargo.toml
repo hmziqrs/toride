@@ -23,6 +23,7 @@ ratatui-interact = "0.5.3"
 
 toride-ssh = { path = "../toride-ssh" }
 toride-status = { path = "../toride-status" }
+rattles = "0.3.1"
 
 [dev-dependencies]
 insta = "1"

@@ -50,9 +50,12 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     left.extend(gauge_spans("ram", data.ram, p));
     left.push(sep.clone());
     left.extend(gauge_spans("disk", data.disk, p));
+    left.push(sep);
     if let Some(net_label) = data.net {
-        left.push(sep);
         left.extend(net_gauge_spans(net_label, p));
+    } else {
+        let elapsed = data.shimmer_start.elapsed().as_secs_f32();
+        left.extend(spinner_gauge_spans("net", elapsed, p));
     }
 
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
@@ -124,9 +127,12 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
         x += 7; // separator "   ·   "
     }
 
-    // Net gauge
-    if let Some(net_label) = data.net {
-        let w = net_gauge_width(net_label);
+    // Net gauge (always present: spinner when loading, label when loaded).
+    {
+        let w = match data.net {
+            Some(net_label) => net_gauge_width(net_label),
+            None => 4 + 2 + 1, // "net " + "▮ " + spinner char
+        };
         rects[3] = Rect::new(x, inner.y, w, 1);
     }
 
@@ -161,6 +167,24 @@ fn gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> 
         Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
         Span::styled("▮ ", Style::new().fg(glyph_color)),
         Span::styled(text, Style::new().fg(p.text).bold()),
+    ]
+}
+
+/// Build the spans for a gauge that is still loading (animated braille spinner).
+fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
+    use rattles::presets::braille::Wave;
+    use rattles::Rattle;
+
+    let frames = Wave::FRAMES;
+    let interval_ms = Wave::INTERVAL.as_millis() as u32;
+    let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32;
+    let frame = frames[idx as usize % frames.len()];
+    // Take the first line of the frame for inline display.
+    let text = frame.first().map_or("·", |s| *s);
+    vec![
+        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(p.text_muted)),
+        Span::styled(text.to_string(), Style::new().fg(p.text_dim)),
     ]
 }
 
