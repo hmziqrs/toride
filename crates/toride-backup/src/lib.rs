@@ -56,6 +56,7 @@ pub mod parse;
 pub mod paths;
 pub mod render;
 pub mod report;
+pub mod validate;
 pub mod restic;
 pub mod restore;
 pub mod schedule;
