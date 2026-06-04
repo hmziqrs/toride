@@ -22,7 +22,7 @@ toride-service = { path = "../toride-service", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
-duct = { version = "0.13", optional = true }
+duct = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
 regex = { version = "1", optional = true }
