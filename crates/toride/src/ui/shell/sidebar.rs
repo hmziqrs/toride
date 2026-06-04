@@ -136,6 +136,7 @@ impl Sidebar {
         // Reserve two rows at the bottom for the SSH footer.
         let footer_h: u16 = if collapsed { 1 } else { 2 };
         let list_bottom = inner.bottom().saturating_sub(footer_h + 1);
+        let foot_y = inner.bottom().saturating_sub(footer_h);
 
         // Each item gets a blank row beneath it for vertical breathing room.
         let step: u16 = if collapsed { 1 } else { ROW_STEP };
@@ -150,17 +151,31 @@ impl Sidebar {
             let is_sel = i == self.selected;
             let is_active = i == active;
 
-            let line = Self::item_line(i, item, p, is_active, is_sel, focused, collapsed);
-            let mut para = Paragraph::new(line);
+            // Selection highlight: a padded "pill" that bleeds a quarter-cell
+            // into the blank rows above and below (expanded mode only).
             if is_sel {
                 let bg = if focused { p.sel_bg } else { p.bg_inset };
-                para = para.style(Style::new().bg(bg));
+                if !collapsed {
+                    Self::render_pill_caps(frame, inner, p, bg, y, foot_y);
+                }
+                frame.render_widget(
+                    Paragraph::new(Self::item_line(
+                        i, item, p, is_active, is_sel, focused, collapsed,
+                    ))
+                    .style(Style::new().bg(bg)),
+                    row,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new(Self::item_line(
+                        i, item, p, is_active, is_sel, focused, collapsed,
+                    )),
+                    row,
+                );
             }
-            frame.render_widget(para, row);
         }
 
         // ── SSH footer ──────────────────────────────────────────────────────
-        let foot_y = inner.bottom().saturating_sub(footer_h);
         let dot = Span::styled(" ● ", Style::new().fg(p.ok));
         if collapsed {
             frame.render_widget(
@@ -183,6 +198,44 @@ impl Sidebar {
             frame.render_widget(
                 Paragraph::new(target),
                 Rect::new(inner.x, foot_y + 1, inner.width, 1),
+            );
+        }
+    }
+
+    /// Render the quarter-cell "caps" above and below a selected item so the
+    /// highlight reads as a padded pill rather than a thin one-row band.
+    ///
+    /// The cap above fills the bottom quarter of its cell; the cap below fills
+    /// the top quarter — both in the selection background `bg`.
+    fn render_pill_caps(
+        frame: &mut Frame,
+        inner: Rect,
+        p: Palette,
+        bg: ratatui::style::Color,
+        y: u16,
+        foot_y: u16,
+    ) {
+        let w = usize::from(inner.width);
+
+        if y > inner.y {
+            let top = Rect::new(inner.x, y - 1, inner.width, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "▂".repeat(w),
+                    Style::new().fg(bg).bg(p.bg_alt),
+                ))),
+                top,
+            );
+        }
+
+        if y + 1 < foot_y {
+            let bottom = Rect::new(inner.x, y + 1, inner.width, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "▆".repeat(w),
+                    Style::new().fg(p.bg_alt).bg(bg),
+                ))),
+                bottom,
             );
         }
     }
