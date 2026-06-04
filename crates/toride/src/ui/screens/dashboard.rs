@@ -48,7 +48,6 @@ enum GaugeKind {
     Cpu,
     Ram,
     Disk,
-    DiskIo,
     Net,
 }
 
@@ -94,7 +93,7 @@ pub struct DashboardScreen {
     activity_scroll: usize,
     open_module: Option<usize>,
     gauge_hover: Option<GaugeKind>,
-    gauge_hitboxes: [Rect; 5],
+    gauge_hitboxes: [Rect; 4],
     /// Live network throughput (bytes/sec).
     net_rx_rate: Option<f64>,
     net_tx_rate: Option<f64>,
@@ -137,7 +136,7 @@ impl DashboardScreen {
             activity_scroll: 0,
             open_module: None,
             gauge_hover: None,
-            gauge_hitboxes: [Rect::default(); 5],
+            gauge_hitboxes: [Rect::default(); 4],
             net_rx_rate: None,
             net_tx_rate: None,
             disk_read_rate: None,
@@ -248,7 +247,7 @@ impl DashboardScreen {
 
     /// Check if a screen coordinate falls within a header gauge hitbox.
     fn gauge_at(&self, col: u16, row: u16) -> Option<GaugeKind> {
-        let kinds = [GaugeKind::Cpu, GaugeKind::Ram, GaugeKind::Disk, GaugeKind::DiskIo, GaugeKind::Net];
+        let kinds = [GaugeKind::Cpu, GaugeKind::Ram, GaugeKind::Disk, GaugeKind::Net];
         for (i, rect) in self.gauge_hitboxes.iter().enumerate() {
             if col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom() {
                 return Some(kinds[i]);
@@ -277,12 +276,11 @@ impl DashboardScreen {
         let shell = shell_layout(area, sidebar_w);
 
         // Header gauges from live status when available.
-        let (cpu, ram, disk, disk_io_label, net_label) = self.gauges();
+        let (cpu, ram, disk_label, net_label) = self.gauges();
         let header_data = HeaderData {
             cpu,
             ram,
-            disk,
-            disk_io: disk_io_label.as_deref(),
+            disk: disk_label.as_deref(),
             net: net_label.as_deref(),
             clock: &self.clock,
             shimmer_start: self.shimmer_start,
@@ -375,12 +373,12 @@ impl DashboardScreen {
         }
     }
 
-    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<f64>, Option<String>, Option<String>) {
+    fn gauges(&self) -> (Option<f64>, Option<f64>, Option<String>, Option<String>) {
         let net_label = match (self.net_rx_rate, self.net_tx_rate) {
             (Some(rx), Some(tx)) => Some(format!("{}↓ {}↑", format_rate(rx), format_rate(tx))),
             _ => None,
         };
-        let disk_io_label = match (self.disk_read_rate, self.disk_write_rate) {
+        let disk_label = match (self.disk_read_rate, self.disk_write_rate) {
             (Some(read), Some(write)) => Some(format!("{}↓ {}↑", format_rate(read), format_rate(write))),
             _ => None,
         };
@@ -388,11 +386,10 @@ impl DashboardScreen {
             Some(s) => (
                 s.system.cpu_usage,
                 Some(s.system.memory.percentage),
-                Some(s.system.disk.percentage),
-                disk_io_label,
+                disk_label,
                 net_label,
             ),
-            None => (Some(35.0), Some(23.0), Some(23.0), None, None),
+            None => (Some(35.0), Some(23.0), None, None),
         }
     }
 
@@ -876,7 +873,7 @@ fn render_gauge_tooltip(
     frame: &mut Frame,
     p: Palette,
     gauge: GaugeKind,
-    hitboxes: &[Rect; 5],
+    hitboxes: &[Rect; 4],
     header_area: Rect,
     status: &TorideStatus,
     rates: &LiveRates,
@@ -885,8 +882,7 @@ fn render_gauge_tooltip(
         GaugeKind::Cpu => 0,
         GaugeKind::Ram => 1,
         GaugeKind::Disk => 2,
-        GaugeKind::DiskIo => 3,
-        GaugeKind::Net => 4,
+        GaugeKind::Net => 3,
     };
     let anchor = hitboxes[idx];
     let lines = gauge_tooltip_lines(gauge, status, p, rates);
@@ -924,7 +920,6 @@ fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette, rate
         GaugeKind::Cpu => cpu_tooltip_lines(&status.system, p),
         GaugeKind::Ram => ram_tooltip_lines(&status.system, p),
         GaugeKind::Disk => disk_tooltip_lines(&status.system, p, rates),
-        GaugeKind::DiskIo => disk_io_tooltip_lines(p, rates),
         GaugeKind::Net => net_tooltip_lines(&status.system, p, rates),
     }
 }
@@ -1084,27 +1079,6 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &Liv
             Span::styled(format!("{write_s}/s"), Style::new().fg(p.text)),
         ]));
     }
-
-    lines
-}
-
-fn disk_io_tooltip_lines(p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-
-    lines.push(Line::from(Span::styled("Disk I/O", Style::new().fg(p.accent).bold())));
-
-    let read_s = rates.disk_read.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
-    let write_s = rates.disk_write.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
-
-    lines.push(Line::from(vec![
-        Span::styled("Read   ", Style::new().fg(p.text_muted)),
-        Span::styled(read_s, Style::new().fg(p.text)),
-    ]));
-
-    lines.push(Line::from(vec![
-        Span::styled("Write  ", Style::new().fg(p.text_muted)),
-        Span::styled(write_s, Style::new().fg(p.text)),
-    ]));
 
     lines
 }

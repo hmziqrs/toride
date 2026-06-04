@@ -31,6 +31,10 @@ pub struct InteractiveButton<A: Copy + PartialEq> {
     label_minimal: &'static str,
     action: A,
     state: ButtonState,
+    /// Keyboard focus (set externally by `FocusManager` via `set_focused`).
+    kb_focused: bool,
+    /// Mouse hover (updated on every `Moved`/`Drag` event).
+    hovered: bool,
     area: Rect,
     pending_click: bool,
 }
@@ -47,6 +51,8 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
             label_minimal,
             action,
             state: ButtonState::enabled(),
+            kb_focused: false,
+            hovered: false,
             area: Rect::default(),
             pending_click: false,
         }
@@ -61,12 +67,13 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
     /// Whether this button currently has keyboard focus.
     #[must_use]
     pub fn is_focused(&self) -> bool {
-        self.state.focused
+        self.kb_focused
     }
 
     /// Set or clear keyboard focus (called by the screen's `FocusManager`).
     pub fn set_focused(&mut self, focused: bool) {
-        self.state.focused = focused;
+        self.kb_focused = focused;
+        self.state.focused = focused || self.hovered;
     }
 
     /// Handle a mouse event.
@@ -83,7 +90,8 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
 
         match mouse.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(..) => {
-                self.state.focused |= self.area.contains(Position::new(col, row));
+                self.hovered = self.area.contains(Position::new(col, row));
+                self.state.focused = self.kb_focused || self.hovered;
                 None
             }
             MouseEventKind::Down(_) => {

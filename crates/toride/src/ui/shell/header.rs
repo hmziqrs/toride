@@ -19,10 +19,8 @@ pub struct HeaderData<'a> {
     pub cpu: Option<f64>,
     /// RAM usage percentage (0–100), if known.
     pub ram: Option<f64>,
-    /// Disk usage percentage (0–100), if known.
-    pub disk: Option<f64>,
     /// Disk I/O throughput label (e.g. `"50↓ 20↑ MB/s"`), if known.
-    pub disk_io: Option<&'a str>,
+    pub disk: Option<&'a str>,
     /// Network usage label (e.g. `"12 MB/s"`), if known.
     pub net: Option<&'a str>,
     /// Right-aligned clock label (e.g. `09:17 PM`).
@@ -51,10 +49,10 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     left.push(sep.clone());
     left.extend(pct_gauge_spans("ram", data.ram, p));
     left.push(sep.clone());
-    left.extend(pct_gauge_spans("disk", data.disk, p));
-    if let Some(disk_io_label) = data.disk_io {
-        left.push(sep.clone());
-        left.extend(gauge_spans("io", disk_io_label, p.accent3, p));
+    if let Some(disk_label) = data.disk {
+        left.extend(gauge_spans("disk", disk_label, p.accent3, p));
+    } else {
+        left.extend(gauge_spans("disk", "—", p.text_muted, p));
     }
     if let Some(net_label) = data.net {
         left.push(sep);
@@ -125,11 +123,11 @@ fn apply_loading_pulse(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: 
 
 /// Compute the hitbox [`Rect`] for each gauge span within the header's inner row.
 ///
-/// Returns `[cpu_rect, ram_rect, disk_rect, disk_io_rect, net_rect]`. `data` must
-/// match the data passed to [`render_header`] for the same frame so the widths are
+/// Returns `[cpu_rect, ram_rect, disk_rect, net_rect]`. `data` must match the
+/// data passed to [`render_header`] for the same frame so the widths are
 /// consistent.
 #[must_use]
-pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 5] {
+pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
     let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
     let inner = block.inner(area);
 
@@ -138,9 +136,9 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 5] {
     // " 砦 " (CJK width-2 = 4 cols) + "toride" (6 cols) + "   ·   " (7 cols)
     x += 4 + 6 + 7;
 
-    let labels = ["cpu", "ram", "disk"];
-    let pcts = [data.cpu, data.ram, data.disk];
-    let mut rects = [Rect::default(); 5];
+    let labels = ["cpu", "ram"];
+    let pcts = [data.cpu, data.ram];
+    let mut rects = [Rect::default(); 4];
 
     for (i, (&label, &pct)) in labels.iter().zip(pcts.iter()).enumerate() {
         let w = pct_gauge_width(label, pct);
@@ -149,18 +147,17 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 5] {
         x += 7; // separator "   ·   "
     }
 
-    // Disk I/O gauge (index 3)
-    if let Some(disk_io_label) = data.disk_io {
-        let w = gauge_width("io", disk_io_label);
-        rects[3] = Rect::new(x, inner.y, w, 1);
-        x += w;
-        x += 7; // separator
-    }
+    // Disk I/O gauge (index 2)
+    let disk_val = data.disk.unwrap_or("—");
+    let w = gauge_width("disk", disk_val);
+    rects[2] = Rect::new(x, inner.y, w, 1);
+    x += w;
+    x += 7; // separator
 
-    // Net gauge (index 4)
+    // Net gauge (index 3)
     if let Some(net_label) = data.net {
         let w = gauge_width("net", net_label);
-        rects[4] = Rect::new(x, inner.y, w, 1);
+        rects[3] = Rect::new(x, inner.y, w, 1);
     }
 
     rects
@@ -213,12 +210,11 @@ mod tests {
         terminal.backend().to_string()
     }
 
-    fn header_data(cpu: Option<f64>, ram: Option<f64>, disk: Option<f64>, clock: &str) -> HeaderData<'_> {
+    fn header_data(cpu: Option<f64>, ram: Option<f64>, disk: Option<&'static str>, clock: &'static str) -> HeaderData<'static> {
         HeaderData {
             cpu,
             ram,
             disk,
-            disk_io: None,
             net: None,
             clock,
             shimmer_start: Instant::now(),
@@ -227,7 +223,7 @@ mod tests {
 
     #[test]
     fn renders_logo_and_clock() {
-        let out = render(&header_data(Some(35.0), Some(23.0), Some(23.0), "09:17 PM"));
+        let out = render(&header_data(Some(35.0), Some(23.0), Some("1.2↓ 0.5↑ MB"), "09:17 PM"));
         assert!(out.contains("toride"), "logo: {out}");
         assert!(out.contains("09:17 PM"), "clock: {out}");
         assert!(out.contains("35%"), "cpu gauge: {out}");
