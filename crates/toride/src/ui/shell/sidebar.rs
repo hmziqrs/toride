@@ -5,10 +5,12 @@
 //! the item list is passed at [`render`](Sidebar::render) time so the screen
 //! remains the single owner of the data.
 
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     layout::Rect,
-    style::Style,
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
 };
@@ -23,22 +25,80 @@ pub const SIDEBAR_W: u16 = 30;
 pub const SIDEBAR_W_COLLAPSED: u16 = 6;
 /// Rows consumed per expanded item (one content row + one padding row).
 const ROW_STEP: u16 = 2;
+/// Seconds for a highlight to fully fade in / out.
+const ANIM_SECS: f32 = 0.15;
+/// Highlight strength applied to a hovered (but unselected) item.
+const HOVER_STRENGTH: f32 = 0.5;
+/// Below this strength the pill / border are skipped (effectively invisible).
+const VISIBLE_EPS: f32 = 0.01;
 
 /// Sidebar interaction state.
 pub struct Sidebar {
     selected: usize,
     collapsed: bool,
     len: usize,
+    /// Index of the item currently under the mouse, if any.
+    hovered: Option<usize>,
+    /// Per-item highlight strength (0 = none, 1 = fully selected), animated.
+    anim: Vec<f32>,
+    /// Clickable rect for each item, refreshed every render (index = item).
+    hitboxes: Vec<Rect>,
+    /// Timestamp of the last animation tick.
+    last_tick: Instant,
 }
 
 impl Sidebar {
     /// Create a sidebar for `len` items with the first item selected.
     #[must_use]
     pub fn new(len: usize) -> Self {
+        let n = len.max(1);
+        let mut anim = vec![0.0_f32; n];
+        anim[0] = 1.0;
         Self {
             selected: 0,
             collapsed: false,
-            len: len.max(1),
+            len: n,
+            hovered: None,
+            anim,
+            hitboxes: Vec::new(),
+            last_tick: Instant::now(),
+        }
+    }
+
+    /// Set (or clear) the hovered item.
+    pub fn set_hovered(&mut self, hovered: Option<usize>) {
+        self.hovered = hovered;
+    }
+
+    /// Hit-test a screen coordinate against the last-rendered item rects.
+    #[must_use]
+    pub fn item_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.hitboxes
+            .iter()
+            .position(|r| col >= r.x && col < r.right() && row >= r.y && row < r.bottom())
+    }
+
+    /// Advance the per-item highlight animation toward each item's target.
+    fn tick_anim(&mut self) {
+        let now = Instant::now();
+        let dt = now.duration_since(self.last_tick).as_secs_f32();
+        self.last_tick = now;
+        let step = (dt / ANIM_SECS).min(1.0);
+        for i in 0..self.anim.len() {
+            let target = if i == self.selected {
+                1.0
+            } else if self.hovered == Some(i) {
+                HOVER_STRENGTH
+            } else {
+                0.0
+            };
+            let cur = self.anim[i];
+            let diff = target - cur;
+            if diff.abs() <= step {
+                self.anim[i] = target;
+            } else {
+                self.anim[i] = cur + step * diff.signum();
+            }
         }
     }
 
@@ -98,12 +158,12 @@ impl Sidebar {
     /// in so the screen can override the manual flag on narrow terminals.
     #[expect(clippy::too_many_arguments, reason = "shell render needs full context")]
     pub fn render(
-        &self,
+        &mut self,
         frame: &mut Frame,
         area: Rect,
         p: Palette,
         items: &[SidebarItem],
-        active: usize,
+        _active: usize,
         focused: bool,
         collapsed: bool,
         ssh_target: &str,
@@ -141,6 +201,15 @@ impl Sidebar {
         // Each item gets a blank row beneath it for vertical breathing room.
         let step: u16 = if collapsed { 1 } else { ROW_STEP };
 
+        // Advance the highlight animation and refresh hit-test rects.
+        self.tick_anim();
+        self.hitboxes.clear();
+
+        // Highlight target colours (depend on focus state).
+        let h_bg = if focused { p.sel_bg } else { p.bg_inset };
+        let h_text = if focused { p.accent } else { p.text };
+        let h_border = if focused { p.accent } else { p.text_muted };
+
         for (i, item) in items.iter().enumerate() {
             let Ok(idx) = u16::try_from(i) else { break };
             let y = list_top + idx * step;
@@ -148,35 +217,27 @@ impl Sidebar {
                 break;
             }
             let row = Rect::new(inner.x, y, inner.width, 1);
-            let is_sel = i == self.selected;
-            let is_active = i == active;
+            self.hitboxes.push(row);
 
-            // Selection highlight: a padded "pill" that bleeds a quarter-cell
-            // into the blank rows above and below (expanded mode only).
-            if is_sel {
-                let bg = if focused { p.sel_bg } else { p.bg_inset };
-                let bar = if focused { p.accent } else { p.text_muted };
-                if !collapsed {
-                    Self::render_pill_caps(frame, inner, p, bg, bar, y, foot_y);
-                }
+            // Interpolated colours for this item's current highlight strength.
+            let s = self.anim.get(i).copied().unwrap_or(0.0);
+            let row_bg = lerp_color(p.bg_alt, h_bg, s);
+            let border = lerp_color(p.bg_alt, h_border, s);
+
+            // Padded pill caps fade in along with the background.
+            if s > VISIBLE_EPS && !collapsed {
+                Self::render_pill_caps(frame, inner, p, row_bg, border, y, foot_y);
+            }
+            frame.render_widget(
+                Paragraph::new(Self::item_line(i, item, p, s, h_text, collapsed))
+                    .style(Style::new().bg(row_bg)),
+                row,
+            );
+            // Left border = first cell recoloured toward the accent.
+            if s > VISIBLE_EPS {
                 frame.render_widget(
-                    Paragraph::new(Self::item_line(
-                        i, item, p, is_active, is_sel, focused, collapsed,
-                    ))
-                    .style(Style::new().bg(bg)),
-                    row,
-                );
-                // Border = the first cell recoloured to the accent.
-                frame.render_widget(
-                    Paragraph::new(Span::styled(" ", Style::new().bg(bar))),
+                    Paragraph::new(Span::styled(" ", Style::new().bg(border))),
                     Rect::new(inner.x, y, 1, 1),
-                );
-            } else {
-                frame.render_widget(
-                    Paragraph::new(Self::item_line(
-                        i, item, p, is_active, is_sel, focused, collapsed,
-                    )),
-                    row,
                 );
             }
         }
@@ -259,32 +320,21 @@ impl Sidebar {
 
     /// Build the styled line for a single sidebar item.
     ///
-    /// The selection highlight is a left-edge bar (`▌`) rather than a full-row
-    /// background; it is bright when the sidebar is focused and dim otherwise.
-    #[expect(
-        clippy::fn_params_excessive_bools,
-        reason = "item render state: active/selected/focused/collapsed"
-    )]
+    /// Icon and label colours are interpolated from their base toward `accent`
+    /// by the highlight `strength`, giving an animated fade. Column 0 is left
+    /// blank — the selection border is painted separately by recolouring that
+    /// cell (see `render` / `render_pill_caps`).
     fn item_line(
         i: usize,
         item: &SidebarItem,
         p: Palette,
-        is_active: bool,
-        is_selected: bool,
-        focused: bool,
+        strength: f32,
+        accent: Color,
         collapsed: bool,
     ) -> Line<'static> {
-        let _ = (is_selected, focused);
         let num_style = Style::new().fg(p.text_muted);
-        let highlight = is_active || is_selected;
-        let (icon_color, label_color) = if highlight {
-            (p.accent, p.accent)
-        } else {
-            (p.text_dim, p.text)
-        };
-
-        // Column 0 is reserved for the selection border, which is painted
-        // separately by recolouring that cell — see `render` / `render_pill_caps`.
+        let icon_color = lerp_color(p.text_dim, accent, strength);
+        let label_color = lerp_color(p.text, accent, strength);
         let bar = Span::raw(" ");
 
         if collapsed {
@@ -308,6 +358,29 @@ impl Sidebar {
             ));
         }
         Line::from(spans)
+    }
+}
+
+/// Linearly interpolate between two colours (`t` clamped to `0..=1`).
+/// Non-RGB inputs are treated as black.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "blended channel is 0..=255 and fits in u8"
+)]
+fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let (ar, ag, ab) = to_rgb(a);
+    let (br, bg, bb) = to_rgb(b);
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+}
+
+/// Extract RGB channels, defaulting non-RGB colours to black.
+fn to_rgb(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
     }
 }
 

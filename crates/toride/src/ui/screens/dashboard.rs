@@ -152,6 +152,40 @@ impl DashboardScreen {
         }
     }
 
+    /// Scroll/move within the currently focused region (used by the mouse wheel).
+    fn scroll_focused(&mut self, down: bool) {
+        match self.focus {
+            Focus::Updates => {
+                self.updates_scroll = if down {
+                    self.updates_scroll + 1
+                } else {
+                    self.updates_scroll.saturating_sub(1)
+                };
+            }
+            Focus::Activity => {
+                self.activity_scroll = if down {
+                    self.activity_scroll + 1
+                } else {
+                    self.activity_scroll.saturating_sub(1)
+                };
+            }
+            Focus::Modules => {
+                if down {
+                    self.module_down();
+                } else {
+                    self.module_up();
+                }
+            }
+            Focus::Sidebar => {
+                if down {
+                    self.sidebar.select_next();
+                } else {
+                    self.sidebar.select_prev();
+                }
+            }
+        }
+    }
+
     // ── Render ─────────────────────────────────────────────────────────────────
 
     fn render(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
@@ -515,40 +549,24 @@ impl AppScreen for DashboardScreen {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        let down = match mouse.kind {
-            MouseEventKind::ScrollDown => true,
-            MouseEventKind::ScrollUp => false,
-            _ => return None,
-        };
-        match self.focus {
-            Focus::Updates => {
-                self.updates_scroll = if down {
-                    self.updates_scroll + 1
-                } else {
-                    self.updates_scroll.saturating_sub(1)
-                };
+        use crossterm::event::MouseButton;
+        match mouse.kind {
+            // Hover: highlight whatever sidebar item is under the cursor.
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                let idx = self.sidebar.item_at(mouse.column, mouse.row);
+                self.sidebar.set_hovered(idx);
             }
-            Focus::Activity => {
-                self.activity_scroll = if down {
-                    self.activity_scroll + 1
-                } else {
-                    self.activity_scroll.saturating_sub(1)
-                };
-            }
-            Focus::Modules => {
-                if down {
-                    self.module_down();
-                } else {
-                    self.module_up();
+            // Click: select + activate the sidebar item, focus the sidebar.
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(idx) = self.sidebar.item_at(mouse.column, mouse.row) {
+                    self.sidebar.select_to(idx);
+                    self.active = idx;
+                    self.focus = Focus::Sidebar;
                 }
             }
-            Focus::Sidebar => {
-                if down {
-                    self.sidebar.select_next();
-                } else {
-                    self.sidebar.select_prev();
-                }
-            }
+            MouseEventKind::ScrollDown => self.scroll_focused(true),
+            MouseEventKind::ScrollUp => self.scroll_focused(false),
+            _ => {}
         }
         None
     }
