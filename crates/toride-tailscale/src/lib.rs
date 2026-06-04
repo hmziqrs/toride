@@ -62,6 +62,8 @@ pub mod paths;
 pub mod spec;
 pub mod report;
 pub mod parse;
+pub mod render;
+pub mod validate;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated
