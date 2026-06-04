@@ -1,4 +1,5 @@
-//! Top header bar: logo, inline cpu/ram/disk gauges, and a right-aligned clock.
+//! Top header bar: logo, inline cpu/ram gauges, disk/net throughput (or spinner),
+//! and a right-aligned clock.
 
 use std::time::Instant;
 
@@ -48,23 +49,27 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     left.extend(pct_gauge_spans("cpu", data.cpu, p));
     left.push(sep.clone());
     left.extend(pct_gauge_spans("ram", data.ram, p));
+
+    let elapsed = data.shimmer_start.elapsed().as_secs_f32();
+
     left.push(sep.clone());
     if let Some(disk_label) = data.disk {
-        left.extend(gauge_spans("disk", disk_label, p.accent3, p));
+        left.extend(throughput_gauge_spans("disk", disk_label, p.accent3, p));
     } else {
-        left.extend(gauge_spans("disk", "—", p.text_muted, p));
+        left.extend(spinner_gauge_spans("disk", elapsed, p));
     }
+
+    left.push(sep);
     if let Some(net_label) = data.net {
-        left.push(sep);
-        left.extend(gauge_spans("net", net_label, p.accent3, p));
+        left.extend(throughput_gauge_spans("net", net_label, p.accent3, p));
+    } else {
+        left.extend(spinner_gauge_spans("net", elapsed, p));
     }
 
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
 
     // Shimmer sweep across the logo (" 砦 toride" = 9 cells in header row 1).
-    let elapsed = data.shimmer_start.elapsed().as_secs_f32();
     apply_logo_shimmer(frame.buffer_mut(), inner, elapsed);
-    apply_loading_pulse(frame.buffer_mut(), inner, elapsed, p);
 
     let clock = Line::from(Span::styled(
         format!("{} ", data.clock),
@@ -103,24 +108,6 @@ fn apply_logo_shimmer(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f
     }
 }
 
-/// Subtle brightness pulse on "—" placeholder cells for gauges still loading.
-fn apply_loading_pulse(buf: &mut ratatui::buffer::Buffer, inner: Rect, elapsed: f32, _p: Palette) {
-    // Suppress unused-variable warning — palette kept for future tint options.
-    use tachyonfx::ColorSpace;
-
-    // 1.5 s cycle — smooth sine wave between 0 and 0.25.
-    let alpha = ((elapsed * std::f32::consts::TAU / 1.5).sin() + 1.0) * 0.5 * 0.25;
-
-    for x in inner.x..inner.right() {
-        let cell = &mut buf[Position::new(x, inner.y)];
-        if cell.symbol() == "—" {
-            let fg = cell.fg;
-            let lightened = ColorSpace::Hsl.lighten(&fg, alpha);
-            cell.set_fg(lightened);
-        }
-    }
-}
-
 /// Compute the hitbox [`Rect`] for each gauge span within the header's inner row.
 ///
 /// Returns `[cpu_rect, ram_rect, disk_rect, net_rect]`. `data` must match the
@@ -147,45 +134,48 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
         x += 7; // separator "   ·   "
     }
 
-    // Disk I/O gauge (index 2)
-    let disk_val = data.disk.unwrap_or("—");
-    let w = gauge_width("disk", disk_val);
-    rects[2] = Rect::new(x, inner.y, w, 1);
-    x += w;
-    x += 7; // separator
+    // Disk gauge (index 2): spinner or throughput label.
+    {
+        let w = match data.disk {
+            Some(label) => throughput_gauge_width("disk", label),
+            None => spinner_gauge_width("disk"),
+        };
+        rects[2] = Rect::new(x, inner.y, w, 1);
+        x += w;
+        x += 7; // separator
+    }
 
-    // Net gauge (index 3)
+    // Net gauge (index 3): spinner or throughput label.
     if let Some(net_label) = data.net {
-        let w = gauge_width("net", net_label);
+        let w = throughput_gauge_width("net", net_label);
         rects[3] = Rect::new(x, inner.y, w, 1);
     }
 
     rects
 }
 
-/// Unicode display width of the spans produced by [`gauge_spans`].
-fn gauge_width(label: &str, value: &str) -> u16 {
-    // "{label} " + "▮ " + "{value}"
+// ── Width helpers ──────────────────────────────────────────────────────────
+
+/// Width of a throughput gauge: `"disk " + "▮ " + label`.
+fn throughput_gauge_width(label: &str, value: &str) -> u16 {
     u16::try_from(label.len() + 1 + 2 + value.len()).unwrap_or(10)
 }
 
-/// Unicode display width of the spans produced by [`pct_gauge_spans`].
+/// Width of a spinner gauge: `"disk " + "▮ " + 1 spinner char`.
+fn spinner_gauge_width(label: &str) -> u16 {
+    u16::try_from(label.len() + 1 + 2 + 1).unwrap_or(10)
+}
+
+/// Width of a percentage gauge: `"cpu " + "▮ " + "35%"`.
 fn pct_gauge_width(label: &str, pct: Option<f64>) -> u16 {
     let text = match pct {
         Some(v) => format!("{v:.0}%"),
         None => "—".to_string(),
     };
-    gauge_width(label, &text)
+    throughput_gauge_width(label, &text)
 }
 
-/// Build the spans for one inline gauge (`label ▮ value`).
-fn gauge_spans(label: &str, value: &str, glyph_color: Color, p: Palette) -> Vec<Span<'static>> {
-    vec![
-        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
-        Span::styled("▮ ", Style::new().fg(glyph_color)),
-        Span::styled(value.to_string(), Style::new().fg(p.text).bold()),
-    ]
-}
+// ── Span builders ─────────────────────────────────────────────────────────
 
 /// Build the spans for a percentage-based inline gauge (`cpu ▮ 35%`).
 fn pct_gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'static>> {
@@ -193,7 +183,38 @@ fn pct_gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'stati
         Some(v) => (percent_color(v, p), format!("{v:.0}%")),
         None => (p.text_muted, "—".to_string()),
     };
-    gauge_spans(label, &text, glyph_color, p)
+    vec![
+        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(glyph_color)),
+        Span::styled(text, Style::new().fg(p.text).bold()),
+    ]
+}
+
+/// Build the spans for a throughput gauge (`disk ▮ 50↓ 20↑ MB/s`).
+fn throughput_gauge_spans(label: &str, value: &str, color: Color, p: Palette) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(color)),
+        Span::styled(value.to_string(), Style::new().fg(p.text).bold()),
+    ]
+}
+
+/// Build the spans for a gauge that is still loading (animated braille spinner).
+fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
+    use rattles::presets::braille::WaveRows;
+    use rattles::Rattle;
+
+    let frames = WaveRows::FRAMES;
+    let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
+    let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32;
+    let frame = frames[idx as usize % frames.len()];
+    // Take the first line of the frame for inline display.
+    let text = frame.first().map_or("·", |s| *s);
+    vec![
+        Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
+        Span::styled("▮ ", Style::new().fg(p.text_muted)),
+        Span::styled(text.to_string(), Style::new().fg(p.text_dim)),
+    ]
 }
 
 #[cfg(test)]

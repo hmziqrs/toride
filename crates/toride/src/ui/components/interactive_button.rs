@@ -17,12 +17,12 @@ use crate::ui::theme::{KEY_BG, Palette};
 ///
 /// # Visual states (all use static palette colours)
 ///
-/// | State   | Foreground | Background |
-/// |---------|-----------|------------|
-/// | Default | `p.text`  | `KEY_BG`   |
-/// | Focused | `p.bg`    | `p.accent` |
-/// | Hovered | `p.bg`    | `p.accent` |
-/// | Pressed | `p.bg`    | `p.accent2`|
+/// | State            | Foreground | Background |
+/// |------------------|-----------|------------|
+/// | Default          | `p.text`  | `KEY_BG`   |
+/// | Keyboard focused | `p.bg`    | `p.accent` |
+/// | Hovered (mouse)  | `p.text`  | `p.sel_bg` |
+/// | Pressed          | `p.bg`    | `p.accent2`|
 ///
 /// [`render`]: InteractiveButton::render
 /// [`handle_mouse`]: InteractiveButton::handle_mouse
@@ -73,7 +73,6 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
     /// Set or clear keyboard focus (called by the screen's `FocusManager`).
     pub fn set_focused(&mut self, focused: bool) {
         self.kb_focused = focused;
-        self.state.focused = focused || self.hovered;
     }
 
     /// Handle a mouse event.
@@ -91,7 +90,6 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         match mouse.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(..) => {
                 self.hovered = self.area.contains(Position::new(col, row));
-                self.state.focused = self.kb_focused || self.hovered;
                 None
             }
             MouseEventKind::Down(_) => {
@@ -134,9 +132,21 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         btn_style.pressed_fg = p.bg;
         btn_style.pressed_bg = p.accent2;
 
+        // Keyboard focus drives the focused visual; hover is layered separately.
+        self.state.focused = self.kb_focused;
         Button::new(label, &self.state)
             .style(btn_style)
             .render(rect, buf);
+
+        // Apply distinct hover highlight when hovered but not keyboard-focused
+        // (matches the sidebar selection style: subtle `sel_bg` background).
+        if self.hovered && !self.kb_focused && !self.state.pressed {
+            for pos in rect.positions() {
+                if let Some(cell) = buf.cell_mut(pos) {
+                    cell.set_bg(p.sel_bg);
+                }
+            }
+        }
     }
 
     fn label(&self, viewport: Viewport) -> &'static str {
