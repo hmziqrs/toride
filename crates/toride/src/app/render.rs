@@ -4,7 +4,13 @@
 //! swaps at the midpoint), per-screen cache invalidation, and the help modal
 //! overlay.
 
-use ratatui::Frame;
+use ratatui::{
+    Frame,
+    layout::{Constraint, Layout},
+    text::{Line, Span},
+    widgets::Paragraph,
+};
+use ratatui::style::Stylize;
 use tachyonfx::Interpolation;
 
 use crate::navigation::Screen;
@@ -89,6 +95,36 @@ impl App {
             Modal::new("Help").render(frame, *p, |frame, content_area| {
                 HelpScreen::render(frame, content_area, *p, viewport);
             });
+        }
+
+        // Quit confirmation modal
+        if self.quit_visible {
+            Modal::new("Quit?")
+                .dimensions(36, 7)
+                .render(frame, *p, |frame, content_area| {
+                    let [_, msg_area, _, keys_area, _] = Layout::vertical([
+                        Constraint::Fill(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Fill(1),
+                    ])
+                    .areas(content_area);
+
+                    let key_style = p.key_style();
+                    frame.render_widget(
+                        Paragraph::new("Are you sure you want to quit?").centered(),
+                        msg_area,
+                    );
+
+                    let hint = Line::from(vec![
+                        Span::styled(" y ", key_style),
+                        Span::styled("yes  ", p.label_style()),
+                        Span::styled(" n ", key_style),
+                        Span::styled("no", p.label_style()),
+                    ]);
+                    frame.render_widget(Paragraph::new(hint).centered(), keys_area);
+                });
         }
     }
 

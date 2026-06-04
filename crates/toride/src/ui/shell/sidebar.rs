@@ -21,6 +21,8 @@ use crate::ui::theme::Palette;
 pub const SIDEBAR_W: u16 = 30;
 /// Collapsed (icon-rail) sidebar width.
 pub const SIDEBAR_W_COLLAPSED: u16 = 6;
+/// Rows consumed per expanded item (one content row + one padding row).
+const ROW_STEP: u16 = 2;
 
 /// Sidebar interaction state.
 pub struct Sidebar {
@@ -109,7 +111,7 @@ impl Sidebar {
         let block = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::new().fg(p.border))
-            .style(Style::new().bg(p.bg));
+            .style(Style::new().bg(p.bg_alt));
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
@@ -135,9 +137,12 @@ impl Sidebar {
         let footer_h: u16 = if collapsed { 1 } else { 2 };
         let list_bottom = inner.bottom().saturating_sub(footer_h + 1);
 
+        // Each item gets a blank row beneath it for vertical breathing room.
+        let step: u16 = if collapsed { 1 } else { ROW_STEP };
+
         for (i, item) in items.iter().enumerate() {
-            let Ok(offset) = u16::try_from(i) else { break };
-            let y = list_top + offset;
+            let Ok(idx) = u16::try_from(i) else { break };
+            let y = list_top + idx * step;
             if y > list_bottom {
                 break;
             }
@@ -145,14 +150,8 @@ impl Sidebar {
             let is_sel = i == self.selected;
             let is_active = i == active;
 
-            let line = Self::item_line(i, item, p, is_active, collapsed);
-
-            let mut para = Paragraph::new(line);
-            if is_sel {
-                let bg = if focused { p.sel_bg } else { p.bg_inset };
-                para = para.style(Style::new().bg(bg));
-            }
-            frame.render_widget(para, row);
+            let line = Self::item_line(i, item, p, is_active, is_sel, focused, collapsed);
+            frame.render_widget(Paragraph::new(line), row);
         }
 
         // ── SSH footer ──────────────────────────────────────────────────────
@@ -184,28 +183,44 @@ impl Sidebar {
     }
 
     /// Build the styled line for a single sidebar item.
+    ///
+    /// The selection highlight is a left-edge bar (`▌`) rather than a full-row
+    /// background; it is bright when the sidebar is focused and dim otherwise.
     fn item_line(
         i: usize,
         item: &SidebarItem,
         p: Palette,
         is_active: bool,
+        is_selected: bool,
+        focused: bool,
         collapsed: bool,
     ) -> Line<'static> {
         let num_style = Style::new().fg(p.text_muted);
-        let (icon_color, label_color) = if is_active {
+        let highlight = is_active || is_selected;
+        let (icon_color, label_color) = if highlight {
             (p.accent, p.accent)
         } else {
             (p.text_dim, p.text)
         };
 
+        // Left selection bar: accent when focused, dimmed otherwise.
+        let bar = if is_selected {
+            let c = if focused { p.accent } else { p.text_muted };
+            Span::styled("▌", Style::new().fg(c))
+        } else {
+            Span::raw(" ")
+        };
+
         if collapsed {
             return Line::from(vec![
-                Span::styled(format!(" {} ", i + 1), num_style),
+                bar,
+                Span::styled(format!("{:>2} ", i + 1), num_style),
                 Span::styled(item.icon, Style::new().fg(icon_color)),
             ]);
         }
 
         let mut spans = vec![
+            bar,
             Span::styled(format!(" {:>2} ", i + 1), num_style),
             Span::styled(format!("{} ", item.icon), Style::new().fg(icon_color)),
             Span::styled(item.section.label().to_string(), Style::new().fg(label_color)),

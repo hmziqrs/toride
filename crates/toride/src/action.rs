@@ -11,6 +11,10 @@ pub enum Action {
     CloseHelp,
     /// Navigate back to the previous screen.
     Back,
+    /// Show the quit confirmation modal.
+    ConfirmQuit,
+    /// Dismiss the quit confirmation modal.
+    DismissQuit,
     /// Quit the application.
     Quit,
     /// Scroll content down (j / Down / mouse-wheel).
@@ -46,6 +50,8 @@ mod tests {
             Action::Continue,
             Action::Help,
             Action::CloseHelp,
+            Action::ConfirmQuit,
+            Action::DismissQuit,
             Action::Back,
             Action::Quit,
             Action::ScrollDown,
@@ -85,6 +91,8 @@ mod tests {
             Action::Continue,
             Action::Help,
             Action::CloseHelp,
+            Action::ConfirmQuit,
+            Action::DismissQuit,
             Action::Back,
             Action::Quit,
             Action::ScrollDown,

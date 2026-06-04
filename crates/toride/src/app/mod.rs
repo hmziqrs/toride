@@ -33,6 +33,7 @@ pub struct App {
     dashboard: DashboardScreen,
     help: HelpScreen,
     help_visible: bool,
+    quit_visible: bool,
     active_theme: Theme,
     should_quit: bool,
     needs_redraw: bool,
@@ -57,6 +58,7 @@ impl App {
             dashboard: DashboardScreen::new(),
             help: HelpScreen::new(),
             help_visible: false,
+            quit_visible: false,
             active_theme: Theme::default(),
             should_quit: false,
             needs_redraw: false,
@@ -81,6 +83,14 @@ impl App {
 
         match action {
             Action::Quit => self.should_quit = true,
+            Action::ConfirmQuit => {
+                self.quit_visible = true;
+                self.needs_redraw = true;
+            }
+            Action::DismissQuit => {
+                self.quit_visible = false;
+                self.needs_redraw = true;
+            }
             Action::Continue => self.start_forward(Screen::Dashboard),
             Action::Help => {
                 self.help_visible = !self.help_visible;
@@ -260,5 +270,21 @@ mod tests {
         assert!(app.transition.is_none());
         assert_eq!(app.nav.current(), Screen::Welcome);
         assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn update_confirm_quit_shows_modal() {
+        let mut app = App::new();
+        assert!(!app.quit_visible);
+        app.update(Action::ConfirmQuit);
+        assert!(app.quit_visible);
+    }
+
+    #[test]
+    fn update_dismiss_quit_hides_modal() {
+        let mut app = App::new();
+        app.quit_visible = true;
+        app.update(Action::DismissQuit);
+        assert!(!app.quit_visible);
     }
 }
