@@ -362,18 +362,18 @@ impl<'a> PortReader<'a> {
             .collect())
     }
 
-    /// Check whether nothing is listening on `port`.
+    /// Check whether nothing is bound to `port` (TCP *or* UDP).
     ///
-    /// Returns `Ok(true)` if the port is free, `Ok(false)` if something is
-    /// listening on it.
+    /// Returns `Ok(true)` if the port is free, `Ok(false)` if any TCP or UDP
+    /// socket is bound to it.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if the kernel socket enumeration fails.
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
     #[cfg(feature = "client")]
     pub fn is_port_free(&self, port: u16) -> Result<bool> {
-        let listeners = self.list_listening()?;
-        Ok(!listeners.iter().any(|e| e.local_port == port))
+        let all = self.collect_all()?;
+        Ok(!all.iter().any(|e| e.local_port == port))
     }
 
     /// Flexible query — returns entries matching all non-None filters in `q`.
@@ -505,21 +505,71 @@ fn tcp_state_to_port_state(ts: netstat2::TcpState) -> PortState {
 
 /// Look up a process name from its PID.
 ///
-/// Tries `/proc/<pid>/comm` first (Linux), falls back to `sysctl` or
-/// a best-effort approach. Returns `None` if the process is gone or the
-/// name cannot be resolved.
+/// Platform-specific approach:
+/// - **Linux**: reads `/proc/<pid>/comm`.
+/// - **macOS**: calls `proc_pidinfo` via `libc` to get the process name.
+///
+/// Returns `None` if the process is gone or the name cannot be resolved.
 #[cfg(feature = "client")]
 fn lookup_process_name(pid: u32) -> Option<String> {
-    // Try /proc first (Linux).
-    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
-    let name = comm.trim().to_string();
+    // Linux: read /proc/<pid>/comm.
+    #[cfg(target_os = "linux")]
+    {
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        let name = comm.trim().to_string();
+        if name.is_empty() {
+            return None;
+        }
+        Some(name)
+    }
+
+    // macOS: use proc_pidinfo via libc.
+    #[cfg(target_os = "macos")]
+    {
+        lookup_process_name_macos(pid)
+    }
+
+    // Other platforms: not supported yet.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// macOS-specific process name lookup using `proc_pidinfo`.
+///
+/// This function uses `unsafe` to call `libc::proc_name`, which is the
+/// standard macOS API for resolving a PID to a process name. There is no
+/// safe Rust wrapper available.
+#[cfg(all(feature = "client", target_os = "macos"))]
+#[expect(unsafe_code, reason = "libc::proc_name has no safe wrapper")]
+fn lookup_process_name_macos(pid: u32) -> Option<String> {
+    use std::ffi::CStr;
+    let mut buf: [std::os::raw::c_char; 256] = [0; 256];
+    // Safety: proc_name is a well-documented libc call. We provide a valid
+    // PID and a buffer with known size.
+    let len = unsafe {
+        libc::proc_name(
+            pid as i32,
+            buf.as_mut_ptr() as *mut _,
+            std::mem::size_of_val(&buf) as u32,
+        )
+    };
+    if len <= 0 {
+        return None;
+    }
+    // Safety: proc_name writes a NUL-terminated string into buf.
+    // len > 0 guarantees at least one byte was written.
+    let cstr = unsafe { CStr::from_ptr(buf.as_ptr()) };
+    let name = cstr.to_string_lossy().into_owned();
     if name.is_empty() {
         return None;
     }
     Some(name)
 }
 
-#[cfg(all(test, not(feature = "client")))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
