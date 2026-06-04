@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    widgets::Block,
+    widgets::{Block, Clear},
 };
 use tachyonfx::Interpolation;
 
@@ -98,20 +98,33 @@ impl App {
     fn render_help_modal(frame: &mut Frame, p: Palette) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
+        let modal_area = modal_area(area);
 
-        // 1. Dim the existing screen content in-place (no Clear — keeps the
-        //    underlying screen visible through a darkened scrim).
+        // 1. Dim the existing screen content in-place, skipping the modal rect
+        //    so it stays clean for the block + content rendering.
         let buf = frame.buffer_mut();
         let scrim_bg = dim_color(p.bg);
-        for cell in buf.content.iter_mut() {
+        let area_w = area.width as usize;
+        for (i, cell) in buf.content.iter_mut().enumerate() {
+            let x = area.x + (i % area_w) as u16;
+            let y = area.y + (i / area_w) as u16;
+            if x >= modal_area.left()
+                && x < modal_area.right()
+                && y >= modal_area.top()
+                && y < modal_area.bottom()
+            {
+                continue;
+            }
             let dimmed = blend_toward(cell.bg, scrim_bg, 0.55);
             cell.set_bg(dimmed);
             let dimmed_fg = blend_toward(cell.fg, scrim_bg, 0.45);
             cell.set_fg(dimmed_fg);
         }
 
-        // 2. Centered modal box
-        let modal_area = modal_area(area);
+        // 2. Clear the modal area so the block's bg style fills every cell
+        frame.render_widget(Clear, modal_area);
+
+        // 3. Centered modal box
         let block = Block::bordered()
             .border_style(Style::new().fg(p.border_hi))
             .style(Style::new().bg(p.panel));

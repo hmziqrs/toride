@@ -105,9 +105,9 @@ mod tests {
 
     #[test]
     fn help_screen_snapshot() {
-        use ratatui::layout::{Position, Rect};
+        use ratatui::layout::Rect;
         use ratatui::style::Style;
-        use ratatui::widgets::Block;
+        use ratatui::widgets::{Block, Clear};
 
         use crate::ui::responsive::Viewport;
 
@@ -115,26 +115,14 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                // Simulate in-place dimming (same as App::render_help_modal)
-                let dimmed_bg = match CHARM.bg {
-                    ratatui::style::Color::Rgb(r, g, b) => {
-                        ratatui::style::Color::Rgb(r / 3, g / 3, b / 3)
-                    }
-                    other => other,
-                };
-                let buf = f.buffer_mut();
-                for cell in buf.content.iter_mut() {
-                    let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
-                    cell.set_bg(bg);
-                    let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
-                    cell.set_fg(fg);
-                }
                 let modal = Rect::new(
                     (area.width.saturating_sub(52)) / 2,
                     (area.height.saturating_sub(16)) / 2,
                     52,
                     16,
                 );
+                dim_screenshot_buffer(f, area, modal);
+                f.render_widget(Clear, modal);
                 let block = Block::bordered()
                     .border_style(Style::new().fg(CHARM.border_hi))
                     .style(Style::new().bg(CHARM.panel));
@@ -151,7 +139,7 @@ mod tests {
     fn help_screen_minimal_viewport() {
         use ratatui::layout::Rect;
         use ratatui::style::Style;
-        use ratatui::widgets::Block;
+        use ratatui::widgets::{Block, Clear};
 
         use crate::ui::responsive::Viewport;
 
@@ -159,26 +147,14 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                let dimmed_bg = match CHARM.bg {
-                    ratatui::style::Color::Rgb(r, g, b) => {
-                        ratatui::style::Color::Rgb(r / 3, g / 3, b / 3)
-                    }
-                    other => other,
-                };
-                let buf = f.buffer_mut();
-                for pos in buf.area().cells() {
-                    let cell = &mut buf[pos];
-                    let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
-                    cell.set_bg(bg);
-                    let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
-                    cell.set_fg(fg);
-                }
                 let modal = Rect::new(
                     (area.width.saturating_sub(52)) / 2,
                     (area.height.saturating_sub(16)) / 2,
                     52.min(area.width),
                     16.min(area.height),
                 );
+                dim_screenshot_buffer(f, area, modal);
+                f.render_widget(Clear, modal);
                 let block = Block::bordered()
                     .border_style(Style::new().fg(CHARM.border_hi))
                     .style(Style::new().bg(CHARM.panel));
@@ -189,6 +165,31 @@ mod tests {
             .unwrap();
         let output = terminal.backend().to_string();
         insta::assert_snapshot!("help_screen_35x12", output);
+    }
+
+    /// Dim all buffer cells outside the modal rect (mirrors `App::render_help_modal`).
+    fn dim_screenshot_buffer(f: &mut ratatui::Frame, area: ratatui::layout::Rect, modal: ratatui::layout::Rect) {
+        let dimmed_bg = match CHARM.bg {
+            ratatui::style::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r / 3, g / 3, b / 3),
+            other => other,
+        };
+        let buf = f.buffer_mut();
+        let area_w = area.width as usize;
+        for (i, cell) in buf.content.iter_mut().enumerate() {
+            let x = area.x + (i % area_w) as u16;
+            let y = area.y + (i / area_w) as u16;
+            if x >= modal.left()
+                && x < modal.right()
+                && y >= modal.top()
+                && y < modal.bottom()
+            {
+                continue;
+            }
+            let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
+            cell.set_bg(bg);
+            let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
+            cell.set_fg(fg);
+        }
     }
 
     /// Linearly interpolate a color toward a target (mirrors `blend_toward` in render.rs).
