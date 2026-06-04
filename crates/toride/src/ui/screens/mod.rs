@@ -1,9 +1,9 @@
+pub mod dashboard;
 pub mod help;
-pub mod status;
 pub mod welcome;
 
+pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
-pub use status::StatusScreen;
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};
@@ -139,38 +139,36 @@ mod tests {
         insta::assert_snapshot!("help_screen_35x12", output);
     }
 
-    // ── StatusScreen loading snapshot ───────────────────────────────────────
+    // ── DashboardScreen snapshots ───────────────────────────────────────────
 
     #[test]
-    fn status_screen_loading_snapshot() {
-        let mut screen = super::status::StatusScreen::new();
-        // No status set -- shows loading spinner
-        let output = render_to_string(&mut screen, 80, 24);
-        insta::assert_snapshot!("status_screen_loading_80x24", output);
+    fn dashboard_screen_full_snapshot() {
+        let mut screen = super::dashboard::DashboardScreen::new();
+        let output = render_to_string(&mut screen, 160, 44);
+        insta::assert_snapshot!("dashboard_screen_160x44", output);
     }
 
     #[test]
-    fn status_screen_with_mock_data_snapshot() {
-        // Collect a real status snapshot to populate the screen.
-        // This is an integration-style test that verifies rendering with
-        // real system data. The snapshot will vary per machine but provides
-        // a regression baseline.
-        let status = toride_status::TorideStatus::collect();
-
-        let mut screen = super::status::StatusScreen::new();
-        screen.set_status(status);
-        let output = render_to_string(&mut screen, 80, 24);
-        // Verify key sections are rendered
-        assert!(
-            output.contains("System Status"),
-            "header should contain 'System Status'"
-        );
-        assert!(output.contains("Hostname"), "should contain 'Hostname'");
+    fn dashboard_screen_compact_snapshot() {
+        let mut screen = super::dashboard::DashboardScreen::new();
+        let output = render_to_string(&mut screen, 90, 30);
+        insta::assert_snapshot!("dashboard_screen_90x30", output);
     }
 
     #[test]
-    fn status_screen_too_small() {
-        let mut screen = super::status::StatusScreen::new();
+    fn dashboard_screen_has_chrome_and_content() {
+        let mut screen = super::dashboard::DashboardScreen::new();
+        let output = render_to_string(&mut screen, 160, 44);
+        assert!(output.contains("toride"), "header logo: {output}");
+        assert!(output.contains("MODULES"), "sidebar/panel label");
+        assert!(output.contains("UPDATES AVAILABLE"), "updates panel");
+        assert!(output.contains("RECENTLY INSTALLED"), "activity panel");
+        assert!(output.contains("ssh hardening"), "module card");
+    }
+
+    #[test]
+    fn dashboard_screen_too_small() {
+        let mut screen = super::dashboard::DashboardScreen::new();
         let output = render_to_string(&mut screen, 20, 8);
         assert!(
             output.contains("too small"),

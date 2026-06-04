@@ -10,7 +10,6 @@ use tachyonfx::Interpolation;
 use crate::navigation::Screen;
 use crate::ui::responsive::Viewport;
 use crate::ui::screens::help::HelpScreen;
-use crate::ui::theme::Palette;
 use crate::ui::widgets::Modal;
 
 use super::App;
@@ -100,7 +99,7 @@ impl App {
     fn screen_by_enum(&mut self, screen: Screen) -> &mut dyn crate::ui::screens::AppScreen {
         match screen {
             Screen::Welcome => &mut self.welcome,
-            Screen::Status => &mut self.status,
+            Screen::Dashboard => &mut self.dashboard,
         }
     }
 }

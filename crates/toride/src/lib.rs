@@ -11,6 +11,7 @@
 pub mod action;
 pub mod app;
 pub mod config;
+pub mod data;
 pub mod navigation;
 pub mod persistence;
 pub mod prediction;

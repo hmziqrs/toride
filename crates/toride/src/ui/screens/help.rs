@@ -63,20 +63,21 @@ impl HelpScreen {
 
         let entries: Vec<Line<'_>> = if viewport >= Viewport::Compact {
             vec![
-                keybinding_line("Enter", "Show system status", key_style, lbl_style),
-                keybinding_line("?", "Toggle this help", key_style, lbl_style),
+                keybinding_line("Tab", "Cycle focus region", key_style, lbl_style),
+                keybinding_line("j / k", "Move / scroll", key_style, lbl_style),
+                keybinding_line("Enter", "Open / select", key_style, lbl_style),
+                keybinding_line("1–9", "Jump to section", key_style, lbl_style),
+                keybinding_line("\\", "Collapse sidebar", key_style, lbl_style),
+                keybinding_line("? / Esc", "Toggle help / back", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
-                keybinding_line("j / Down", "Scroll down", key_style, lbl_style),
-                keybinding_line("k / Up", "Scroll up", key_style, lbl_style),
-                keybinding_line("b / Esc", "Close dialog", key_style, lbl_style),
             ]
         } else {
             vec![
-                keybinding_line("Enter", "Status", key_style, lbl_style),
-                keybinding_line("?", "Help", key_style, lbl_style),
+                keybinding_line("Tab", "Focus", key_style, lbl_style),
+                keybinding_line("j/k", "Move", key_style, lbl_style),
+                keybinding_line("Enter", "Open", key_style, lbl_style),
+                keybinding_line("\\", "Collapse", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
-                keybinding_line("j/k", "Scroll", key_style, lbl_style),
-                keybinding_line("b", "Close", key_style, lbl_style),
             ]
         };
 

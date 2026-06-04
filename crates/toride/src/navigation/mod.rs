@@ -14,8 +14,8 @@ pub enum Screen {
     /// Welcome / splash screen.
     #[default]
     Welcome = 0,
-    /// System status dashboard.
-    Status = 1,
+    /// Main dashboard (modules, updates, activity).
+    Dashboard = 1,
 }
 
 impl Screen {
@@ -35,7 +35,7 @@ impl Screen {
     pub(crate) fn from_key(key: u8) -> Self {
         match key {
             0 => Screen::Welcome,
-            1 => Screen::Status,
+            1 => Screen::Dashboard,
             _ => Screen::Welcome,
         }
     }
@@ -122,12 +122,12 @@ mod tests {
     #[test]
     fn screen_key_values() {
         assert_eq!(Screen::Welcome.key(), 0);
-        assert_eq!(Screen::Status.key(), 1);
+        assert_eq!(Screen::Dashboard.key(), 1);
     }
 
     #[test]
     fn screen_from_key_roundtrip() {
-        for screen in [Screen::Welcome, Screen::Status] {
+        for screen in [Screen::Welcome, Screen::Dashboard] {
             assert_eq!(Screen::from_key(screen.key()), screen);
         }
     }
@@ -164,9 +164,9 @@ mod tests {
         let mut cache = TransitionCache::new();
 
         // Navigate Welcome -> Status
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
+        let _ts = nav.start_forward(Screen::Dashboard, &mut cache);
+        nav.commit_forward(Screen::Dashboard);
+        assert_eq!(nav.current(), Screen::Dashboard);
         assert!(nav.can_go_back());
     }
 
@@ -176,7 +176,7 @@ mod tests {
         let mut cache = TransitionCache::new();
 
         // Forward: Welcome -> Status
-        nav.commit_forward(Screen::Status);
+        nav.commit_forward(Screen::Dashboard);
 
         // Back: Status -> Welcome
         let ts = nav.start_backward(&mut cache);
@@ -193,9 +193,9 @@ mod tests {
         let mut cache = TransitionCache::new();
 
         // Welcome -> Status
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
+        let _ts = nav.start_forward(Screen::Dashboard, &mut cache);
+        nav.commit_forward(Screen::Dashboard);
+        assert_eq!(nav.current(), Screen::Dashboard);
         assert!(nav.can_go_back());
 
         // Back: Status -> Welcome
@@ -237,9 +237,9 @@ mod tests {
         let mut cache = TransitionCache::new();
 
         // Welcome -> Status
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
+        let _ts = nav.start_forward(Screen::Dashboard, &mut cache);
+        nav.commit_forward(Screen::Dashboard);
+        assert_eq!(nav.current(), Screen::Dashboard);
         assert!(nav.can_go_back());
         assert_eq!(nav.nav_stack.len(), 2);
 
@@ -257,9 +257,9 @@ mod tests {
         let mut cache = TransitionCache::new();
 
         // Commit forward: Welcome -> Status
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
+        let _ts = nav.start_forward(Screen::Dashboard, &mut cache);
+        nav.commit_forward(Screen::Dashboard);
+        assert_eq!(nav.current(), Screen::Dashboard);
 
         // Commit forward: Status -> Welcome
         let _ts = nav.start_forward(Screen::Welcome, &mut cache);
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(nav.nav_stack.len(), 1);
 
         // After 1 forward: stack has 2 entries [Welcome, Status]
-        nav.commit_forward(Screen::Status);
+        nav.commit_forward(Screen::Dashboard);
         assert_eq!(nav.nav_stack.len(), 2);
 
         // After 1 back: stack has 1 entry [Welcome]
@@ -289,8 +289,8 @@ mod tests {
         assert_eq!(nav.nav_stack.len(), 1);
 
         // After another forward: stack has 2 entries [Welcome, Status]
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
+        let _ts = nav.start_forward(Screen::Dashboard, &mut cache);
+        nav.commit_forward(Screen::Dashboard);
         assert_eq!(nav.nav_stack.len(), 2);
 
         // Cannot go back further after one back

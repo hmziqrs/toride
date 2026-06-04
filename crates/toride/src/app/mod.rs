@@ -18,7 +18,7 @@ use crate::navigation::{Navigator, Screen};
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
-use crate::ui::screens::status::StatusScreen;
+use crate::ui::screens::dashboard::DashboardScreen;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
 use crate::ui::transition::{TransitionCache, TransitionState};
@@ -30,7 +30,7 @@ use crate::ui::transition::{TransitionCache, TransitionState};
 pub struct App {
     nav: Navigator,
     welcome: WelcomeScreen,
-    status: StatusScreen,
+    dashboard: DashboardScreen,
     help: HelpScreen,
     help_visible: bool,
     active_theme: Theme,
@@ -54,7 +54,7 @@ impl App {
         Self {
             nav: Navigator::new(),
             welcome: WelcomeScreen::new(),
-            status: StatusScreen::new(),
+            dashboard: DashboardScreen::new(),
             help: HelpScreen::new(),
             help_visible: false,
             active_theme: Theme::default(),
@@ -70,7 +70,7 @@ impl App {
     fn current_screen(&mut self) -> &mut dyn AppScreen {
         match self.nav.current() {
             Screen::Welcome => &mut self.welcome,
-            Screen::Status => &mut self.status,
+            Screen::Dashboard => &mut self.dashboard,
         }
     }
 
@@ -81,7 +81,7 @@ impl App {
 
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Continue => self.start_forward(Screen::Status),
+            Action::Continue => self.start_forward(Screen::Dashboard),
             Action::Help => {
                 self.help_visible = !self.help_visible;
                 self.needs_redraw = true;
@@ -101,7 +101,7 @@ impl App {
                 self.active_theme = next;
                 self.welcome.set_border_color(next.palette().accent);
                 self.welcome.invalidate_cache();
-                self.status.invalidate_cache();
+                self.dashboard.invalidate_cache();
                 self.needs_redraw = true;
             }
             // Scroll actions (and any future screen-local actions) are routed
@@ -149,7 +149,7 @@ impl App {
                         Event::Mouse(mouse) => self.handle_mouse(mouse),
                         Event::Resize(..) => {
                             self.welcome.invalidate_cache();
-                            self.status.invalidate_cache();
+                            self.dashboard.invalidate_cache();
                             self.needs_redraw = true;
                             None
                         }
@@ -163,14 +163,16 @@ impl App {
 
                 // Receive collected status data
                 Some(status) = self.collector.poll(), if self.collector.is_pending() => {
-                    self.status.set_status(status);
+                    self.dashboard.set_status(status);
                     self.needs_redraw = true;
                 }
 
                 // Periodic status refresh
                 _ = refresh_interval.tick() => {
-                    if matches!(self.nav.current(), Screen::Status) {
+                    if matches!(self.nav.current(), Screen::Dashboard) {
+                        self.dashboard.tick_clock();
                         self.collector.start();
+                        self.needs_redraw = true;
                     }
                 }
 
@@ -178,7 +180,7 @@ impl App {
                 _ = anim_tick.tick(),
                     if self.transition.is_some()
                         || self.needs_redraw
-                        || matches!(self.nav.current(), Screen::Welcome | Screen::Status) => {}
+                        || matches!(self.nav.current(), Screen::Welcome | Screen::Dashboard) => {}
             }
 
             if self.should_quit {
