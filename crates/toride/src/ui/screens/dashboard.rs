@@ -924,7 +924,7 @@ fn gauge_tooltip_lines(gauge: GaugeKind, status: &TorideStatus, p: Palette, rate
         GaugeKind::Cpu => cpu_tooltip_lines(&status.system, p),
         GaugeKind::Ram => ram_tooltip_lines(&status.system, p),
         GaugeKind::Disk => disk_tooltip_lines(&status.system, p, rates),
-        GaugeKind::Net => net_tooltip_lines(p, rates),
+        GaugeKind::Net => net_tooltip_lines(&status.system, p, rates),
     }
 }
 
@@ -1087,22 +1087,32 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &Liv
     lines
 }
 
-fn net_tooltip_lines(p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
+fn net_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
     lines.push(Line::from(Span::styled("Network", Style::new().fg(p.accent).bold())));
 
-    let dl = rates.net_rx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
-    let ul = rates.net_tx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+    let dl_rate = rates.net_rx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
+    let ul_rate = rates.net_tx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
 
     lines.push(Line::from(vec![
         Span::styled("Down   ", Style::new().fg(p.text_muted)),
-        Span::styled(dl, Style::new().fg(p.text)),
+        Span::styled(dl_rate, Style::new().fg(p.text)),
     ]));
 
     lines.push(Line::from(vec![
         Span::styled("Up     ", Style::new().fg(p.text_muted)),
-        Span::styled(ul, Style::new().fg(p.text)),
+        Span::styled(ul_rate, Style::new().fg(p.text)),
+    ]));
+
+    lines.push(Line::raw(""));
+
+    lines.push(Line::from(vec![
+        Span::styled("Total  ", Style::new().fg(p.text_muted)),
+        Span::styled(
+            format!("{} ↓  {} ↑", format_bytes(sys.network.bytes_received), format_bytes(sys.network.bytes_transmitted)),
+            Style::new().fg(p.text_dim),
+        ),
     ]));
 
     lines
