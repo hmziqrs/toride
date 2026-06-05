@@ -1,8 +1,8 @@
-//! Keys sub-tab for the SSH management screen.
+//! Known Hosts sub-tab for the SSH management screen.
 //!
-//! Displays all SSH keys found in `~/.ssh/` as a scrollable list with type,
-//! fingerprint, encryption status, permissions, and badge indicators. Supports
-//! keyboard navigation, selection, and a detail modal.
+//! Displays all entries from `~/.ssh/known_hosts` as a scrollable list with host,
+//! key type, fingerprint, and status badges. Supports keyboard navigation,
+//! selection, and a detail modal.
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -18,19 +18,19 @@ use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Modal, render_titled_panel};
 
-use super::{SshKeyEntry, SshTab};
+use super::{KnownHostEntry, SshTab};
 
-// ── KeysTab ──────────────────────────────────────────────────────────────────
+// ── KnownHostsTab ────────────────────────────────────────────────────────────
 
-/// State for the Keys sub-tab.
-pub struct KeysTab {
-    /// Key entries to display.
-    keys: Vec<SshKeyEntry>,
-    /// Index of the currently selected key.
+/// State for the Known Hosts sub-tab.
+pub struct KnownHostsTab {
+    /// Known host entries to display.
+    hosts: Vec<KnownHostEntry>,
+    /// Index of the currently selected host.
     selected: usize,
     /// Vertical scroll offset.
     scroll: usize,
-    /// Whether the detail modal is open, and for which key index.
+    /// Whether the detail modal is open, and for which host index.
     detail_open: Option<usize>,
     /// Rendered rect of the detail modal (for click-outside detection).
     detail_modal_rect: Option<Rect>,
@@ -40,12 +40,12 @@ pub struct KeysTab {
     hovered_row: Option<usize>,
 }
 
-impl KeysTab {
-    /// Create a new empty keys tab.
+impl KnownHostsTab {
+    /// Create a new empty known hosts tab.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            keys: Vec::new(),
+            hosts: Vec::new(),
             selected: 0,
             scroll: 0,
             detail_open: None,
@@ -55,11 +55,11 @@ impl KeysTab {
         }
     }
 
-    /// Replace the key list with new data.
-    pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
-        self.keys = keys;
-        if self.selected >= self.keys.len() && !self.keys.is_empty() {
-            self.selected = self.keys.len() - 1;
+    /// Replace the host list with new data.
+    pub fn set_hosts(&mut self, hosts: Vec<KnownHostEntry>) {
+        self.hosts = hosts;
+        if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
+            self.selected = self.hosts.len() - 1;
         }
         self.clamp_scroll();
     }
@@ -72,13 +72,13 @@ impl KeysTab {
 
     /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
-        if self.keys.is_empty() {
+        if self.hosts.is_empty() {
             self.scroll = 0;
             return;
         }
         // Ensure selected is within bounds
-        if self.selected >= self.keys.len() {
-            self.selected = self.keys.len() - 1;
+        if self.selected >= self.hosts.len() {
+            self.selected = self.hosts.len() - 1;
         }
     }
 
@@ -87,7 +87,7 @@ impl KeysTab {
         self.detail_open = None;
     }
 
-    /// Handle a mouse event for the key list.
+    /// Handle a mouse event for the host list.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
@@ -115,7 +115,7 @@ impl KeysTab {
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.selected < self.keys.len().saturating_sub(1) {
+                if self.selected < self.hosts.len().saturating_sub(1) {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
@@ -139,13 +139,13 @@ impl KeysTab {
     }
 }
 
-impl Default for KeysTab {
+impl Default for KnownHostsTab {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SshTab for KeysTab {
+impl SshTab for KnownHostsTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, handle modal keys
         if self.detail_open.is_some() {
@@ -166,37 +166,33 @@ impl SshTab for KeysTab {
                     None
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if !self.keys.is_empty() && self.selected < self.keys.len() - 1 {
+                    if !self.hosts.is_empty() && self.selected < self.hosts.len() - 1 {
                         self.selected += 1;
                         self.clamp_scroll();
                     }
                     None
                 }
                 KeyCode::Enter => {
-                    if !self.keys.is_empty() {
+                    if !self.hosts.is_empty() {
                         self.detail_open = Some(self.selected);
                     }
                     None
                 }
                 // CRUD shortcuts — Phase 2
-                KeyCode::Char('n') => {
-                    // TODO: Open generate key modal
+                KeyCode::Char('a') => {
+                    // TODO: Open add host modal
                     None
                 }
                 KeyCode::Char('d') => {
-                    // TODO: Open delete confirm modal
+                    // TODO: Open remove host confirm modal
                     None
                 }
-                KeyCode::Char('r') => {
-                    // TODO: Open rename modal
+                KeyCode::Char('s') => {
+                    // TODO: Scan host key
                     None
                 }
-                KeyCode::Char('i') => {
-                    // TODO: Open install to remote modal
-                    None
-                }
-                KeyCode::Char('x') => {
-                    // TODO: Fix permissions
+                KeyCode::Char('h') => {
+                    // TODO: Hash all hostnames
                     None
                 }
                 _ => None,
@@ -206,7 +202,7 @@ impl SshTab for KeysTab {
 
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
-        if self.keys.is_empty() {
+        if self.hosts.is_empty() {
             self.render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
@@ -214,8 +210,8 @@ impl SshTab for KeysTab {
 
         // Render detail modal if open
         if let Some(idx) = self.detail_open {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
+            if let Some(host) = self.hosts.get(idx).cloned() {
+                self.render_detail_modal(frame, p, &host);
             }
         }
     }
@@ -232,13 +228,13 @@ impl SshTab for KeysTab {
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-impl KeysTab {
+impl KnownHostsTab {
     fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_titled_panel(frame, area, p, " SSH KEYS ", p.text, false);
+        let inner = render_titled_panel(frame, area, p, " KNOWN HOSTS ", p.text, false);
         let msg = Line::from(vec![
-            Span::styled("No SSH keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  n", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" generate", Style::new().fg(p.text_muted)),
+            Span::styled("No known hosts found", Style::new().fg(p.text_dim)),
+            Span::styled("  a", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" add", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
@@ -249,7 +245,7 @@ impl KeysTab {
             frame,
             area,
             p,
-            &format!(" SSH KEYS ({}) ", self.keys.len()),
+            &format!(" KNOWN HOSTS ({}) ", self.hosts.len()),
             p.text,
             false,
         );
@@ -259,7 +255,7 @@ impl KeysTab {
         }
 
         let visible = inner.height as usize;
-        let max_scroll = self.keys.len().saturating_sub(visible);
+        let max_scroll = self.hosts.len().saturating_sub(visible);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
@@ -272,10 +268,10 @@ impl KeysTab {
 
         for row in 0..visible {
             let idx = self.scroll + row;
-            if idx >= self.keys.len() {
+            if idx >= self.hosts.len() {
                 break;
             }
-            let key = &self.keys[idx];
+            let host = &self.hosts[idx];
             let is_selected = idx == self.selected;
             let is_hovered = self.hovered_row == Some(idx);
             let y = inner.y + row as u16;
@@ -301,63 +297,46 @@ impl KeysTab {
                 Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
             ));
 
-            // Key name (truncated to fit)
-            let name_w = 18.min(inner.width.saturating_sub(4) as usize);
-            let name = truncate_str(&key.name, name_w);
-            let name_chars = name.chars().count();
+            // Host name (truncated to 22 chars)
+            let host_w = 22.min(inner.width.saturating_sub(4) as usize);
+            let host_display = truncate_str(&host.host, host_w);
+            let host_chars = host_display.chars().count();
             spans.push(Span::styled(
-                name,
+                host_display,
                 Style::new()
                     .fg(p.text)
                     .add_modifier(Modifier::BOLD),
             ));
 
             // Padding
-            let padded = format!("{:width$}", "", width = name_w.saturating_sub(name_chars));
+            let padded = format!("{:width$}", "", width = host_w.saturating_sub(host_chars));
             spans.push(Span::raw(padded));
 
             // Key type
             spans.push(Span::styled(
-                format!(" {} ", key.key_type),
+                format!(" {} ", host.key_type),
                 Style::new().fg(p.info),
             ));
 
-            // Fingerprint (truncated)
+            // Fingerprint (truncated to 16 chars)
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
-            let fp = truncate_str(&key.fingerprint, fp_w);
+            let fp = truncate_str(&host.fingerprint, fp_w);
             spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
 
-            // Encrypted badge
-            if key.encrypted {
+            // Status badges
+            let is_revoked = host.marker.as_deref() == Some("@revoked");
+            let is_ca = host.marker.as_deref() == Some("@cert-authority");
+
+            if is_revoked {
+                spans.push(Span::styled(" !", Style::new().fg(p.err)));
+            } else if is_ca {
+                spans.push(Span::styled(" CA", Style::new().fg(p.accent2)));
+            } else {
+                spans.push(Span::styled(" ✓", Style::new().fg(p.ok)));
+            }
+
+            if host.is_hashed {
                 spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
-            }
-
-            // Permissions
-            spans.push(Span::styled(
-                format!(" {} ", key.permissions),
-                Style::new().fg(if key.permissions == "0600" || key.permissions == "0400" {
-                    p.text_muted
-                } else {
-                    p.err
-                }),
-            ));
-
-            // Public key check
-            if key.has_public {
-                spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
-            }
-
-            // Certificate check
-            if key.has_cert {
-                spans.push(Span::styled("✓cert", Style::new().fg(p.accent2)));
-            }
-
-            // Host count badge
-            if key.host_count > 0 {
-                spans.push(Span::styled(
-                    format!(" →{}", key.host_count),
-                    Style::new().fg(p.text_muted),
-                ));
             }
 
             let line = Line::from(spans);
@@ -375,66 +354,68 @@ impl KeysTab {
         let hints = Line::from(vec![
             Span::styled(" ↵ ", p.key_style()),
             Span::styled("detail ", p.label_style()),
-            Span::styled(" n ", p.key_style()),
-            Span::styled("new ", p.label_style()),
+            Span::styled(" a ", p.key_style()),
+            Span::styled("add ", p.label_style()),
             Span::styled(" d ", p.key_style()),
-            Span::styled("del ", p.label_style()),
-            Span::styled(" r ", p.key_style()),
-            Span::styled("rename ", p.label_style()),
-            Span::styled(" i ", p.key_style()),
-            Span::styled("install ", p.label_style()),
+            Span::styled("remove ", p.label_style()),
+            Span::styled(" s ", p.key_style()),
+            Span::styled("scan ", p.label_style()),
+            Span::styled(" h ", p.key_style()),
+            Span::styled("hash all ", p.label_style()),
         ]);
 
         frame.render_widget(Paragraph::new(hints), footer_area);
     }
 
-    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
-        let modal = Modal::new("Key Detail").dimensions(54, 12);
+    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, host: &KnownHostEntry) {
+        let modal = Modal::new("Host Detail").dimensions(54, 12);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
+                let marker_display = match host.marker.as_deref() {
+                    Some("@revoked") => "@revoked",
+                    Some("@cert-authority") => "@cert-authority",
+                    Some(other) => other,
+                    None => "none",
+                };
+
                 let lines = vec![
                     Line::from(vec![
-                        Span::styled("Name:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                        Span::styled("Host:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(&host.host, Style::new().fg(p.text).bold()),
                     ]),
                     Line::from(vec![
-                        Span::styled("Type:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
+                        Span::styled("Type:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(&host.key_type, Style::new().fg(p.info)),
                     ]),
                     Line::from(vec![
-                        Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
+                        Span::styled("FP:     ", Style::new().fg(p.text_dim)),
+                        Span::styled(&host.fingerprint, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
+                        Span::styled("Hashed: ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.encrypted { "encrypted" } else { "unencrypted" },
-                            Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
+                            if host.is_hashed { "yes" } else { "no" },
+                            Style::new().fg(if host.is_hashed { p.ok } else { p.text_muted }),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("Perms: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.permissions, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
+                        Span::styled("Marker: ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.has_public { "✓ present" } else { "✗ missing" },
-                            Style::new().fg(if key.has_public { p.ok } else { p.err }),
+                            marker_display,
+                            Style::new().fg(if host.marker.as_deref() == Some("@revoked") {
+                                p.err
+                            } else if host.marker.as_deref() == Some("@cert-authority") {
+                                p.accent2
+                            } else {
+                                p.text
+                            }),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
+                        Span::styled("Comment:", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.has_cert { "✓ attached" } else { "— none" },
-                            Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{} referencing", key.host_count),
-                            Style::new().fg(p.text),
+                            if host.has_comment { "yes" } else { "no" },
+                            Style::new().fg(if host.has_comment { p.text } else { p.text_muted }),
                         ),
                     ]),
                     Line::raw(""),
@@ -461,49 +442,53 @@ impl KeysTab {
 mod tests {
     use super::*;
 
-    fn sample_keys() -> Vec<SshKeyEntry> {
+    fn sample_hosts() -> Vec<KnownHostEntry> {
         vec![
-            SshKeyEntry {
-                name: "id_ed25519".into(),
-                key_type: "Ed25519".into(),
+            KnownHostEntry {
+                host: "github.com".into(),
+                key_type: "ssh-ed25519".into(),
                 fingerprint: "SHA256:abc123def456".into(),
-                encrypted: true,
-                permissions: "0600".into(),
-                has_public: true,
-                has_cert: false,
-                host_count: 2,
+                is_hashed: false,
+                marker: None,
+                has_comment: false,
             },
-            SshKeyEntry {
-                name: "id_rsa".into(),
-                key_type: "RSA 4096".into(),
+            KnownHostEntry {
+                host: "gitlab.com".into(),
+                key_type: "ssh-rsa".into(),
                 fingerprint: "SHA256:xyz789".into(),
-                encrypted: false,
-                permissions: "0644".into(),
-                has_public: true,
-                has_cert: true,
-                host_count: 0,
+                is_hashed: true,
+                marker: Some("@cert-authority".into()),
+                has_comment: true,
+            },
+            KnownHostEntry {
+                host: "revoked.example.com".into(),
+                key_type: "ecdsa-sha2-nistp256".into(),
+                fingerprint: "SHA256:revokedkey".into(),
+                is_hashed: false,
+                marker: Some("@revoked".into()),
+                has_comment: false,
             },
         ]
     }
 
     #[test]
     fn new_is_empty() {
-        let tab = KeysTab::new();
-        assert!(tab.keys.is_empty());
+        let tab = KnownHostsTab::new();
+        assert!(tab.hosts.is_empty());
         assert!(!tab.has_modal());
     }
 
     #[test]
-    fn set_keys_updates_list() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        assert_eq!(tab.keys.len(), 2);
+    fn set_hosts_updates_list() {
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
+        assert_eq!(tab.hosts.len(), 3);
     }
 
     #[test]
     fn scroll_up_decrements_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.selected = 1;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -511,8 +496,8 @@ mod tests {
 
     #[test]
     fn scroll_down_increments_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.selected = 0;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -520,8 +505,8 @@ mod tests {
 
     #[test]
     fn scroll_up_at_zero_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.selected = 0;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -529,17 +514,17 @@ mod tests {
 
     #[test]
     fn scroll_down_at_end_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.selected = 1;
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
+        tab.selected = 2;
         tab.handle_key(KeyCode::Down);
-        assert_eq!(tab.selected, 1);
+        assert_eq!(tab.selected, 2);
     }
 
     #[test]
     fn enter_opens_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.handle_key(KeyCode::Enter);
         assert!(tab.has_modal());
         assert_eq!(tab.detail_open, Some(0));
@@ -547,8 +532,8 @@ mod tests {
 
     #[test]
     fn esc_closes_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.detail_open = Some(0);
         tab.handle_key(KeyCode::Esc);
         assert!(!tab.has_modal());
@@ -559,25 +544,25 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
+        let mut tab = KnownHostsTab::new();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH keys found"), "empty state: {output}");
+        assert!(output.contains("No known hosts found"), "empty state: {output}");
     }
 
     #[test]
-    fn render_with_keys() {
+    fn render_with_hosts() {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("id_ed25519"), "key name: {output}");
-        assert!(output.contains("Ed25519"), "key type: {output}");
+        assert!(output.contains("github.com"), "host name: {output}");
+        assert!(output.contains("ssh-ed25519"), "key type: {output}");
     }
 
     #[test]
@@ -585,14 +570,14 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
         tab.detail_open = Some(0);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Key Detail"), "modal title: {output}");
-        assert!(output.contains("encrypted"), "encryption status: {output}");
+        assert!(output.contains("Host Detail"), "modal title: {output}");
+        assert!(output.contains("github.com"), "host name in modal: {output}");
     }
 
     #[test]
@@ -607,7 +592,6 @@ mod tests {
 
     #[test]
     fn truncate_str_long() {
-        // responsive::truncate_str reserves 2 chars for ".." suffix
         assert_eq!(truncate_str("abcdefgh", 5), "abc..");
     }
 
@@ -617,10 +601,10 @@ mod tests {
     }
 
     #[test]
-    fn set_keys_clamps_selected() {
-        let mut tab = KeysTab::new();
+    fn set_hosts_clamps_selected() {
+        let mut tab = KnownHostsTab::new();
         tab.selected = 5;
-        tab.set_keys(sample_keys()); // 2 items
-        assert!(tab.selected < 2);
+        tab.set_hosts(sample_hosts()); // 3 items
+        assert!(tab.selected < 3);
     }
 }

@@ -19,9 +19,19 @@ use crate::data::SshSection;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_panel;
 
+use self::agent_tab::AgentTab;
+use self::config_tab::ConfigTab;
+use self::diagnostics_tab::DiagnosticsTab;
+use self::forwarding_tab::ForwardingTab;
 use self::keys_tab::KeysTab;
+use self::known_hosts_tab::KnownHostsTab;
 
+pub mod agent_tab;
+pub mod config_tab;
+pub mod diagnostics_tab;
+pub mod forwarding_tab;
 pub mod keys_tab;
+pub mod known_hosts_tab;
 
 // ── Focus ────────────────────────────────────────────────────────────────────
 
@@ -46,6 +56,16 @@ pub struct SshContent {
     focus: Focus,
     /// Keys sub-tab state.
     keys: KeysTab,
+    /// Known hosts sub-tab state.
+    known_hosts: KnownHostsTab,
+    /// Config sub-tab state.
+    config: ConfigTab,
+    /// Agent sub-tab state.
+    agent: AgentTab,
+    /// Forwarding sub-tab state.
+    forwarding: ForwardingTab,
+    /// Diagnostics sub-tab state.
+    diagnostics: DiagnosticsTab,
     /// Hitbox rects for tab bar labels (rebuilt each frame).
     tab_hitboxes: Vec<Rect>,
     /// Which tab is hovered by the mouse.
@@ -60,6 +80,11 @@ impl SshContent {
             tab: SshSection::Keys,
             focus: Focus::List,
             keys: KeysTab::new(),
+            known_hosts: KnownHostsTab::new(),
+            config: ConfigTab::new(),
+            agent: AgentTab::new(),
+            forwarding: ForwardingTab::new(),
+            diagnostics: DiagnosticsTab::new(),
             tab_hitboxes: Vec::new(),
             hovered_tab: None,
         }
@@ -71,15 +96,42 @@ impl SshContent {
         self.tab
     }
 
-    /// Whether any sub-tab has a modal currently open.
+    /// Whether the active sub-tab has a modal currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.keys.has_modal()
+        self.active_tab().has_modal()
     }
+
+    // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Provide live SSH key data (called from the data collector).
     pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
         self.keys.set_keys(keys);
+    }
+
+    /// Provide known hosts data.
+    pub fn set_known_hosts(&mut self, hosts: Vec<KnownHostEntry>) {
+        self.known_hosts.set_hosts(hosts);
+    }
+
+    /// Provide SSH config host entries.
+    pub fn set_config_hosts(&mut self, hosts: Vec<ConfigHostEntry>) {
+        self.config.set_hosts(hosts);
+    }
+
+    /// Provide SSH agent status and loaded keys.
+    pub fn set_agent_data(&mut self, status: AgentStatus, keys: Vec<AgentKeyEntry>) {
+        self.agent.set_data(status, keys);
+    }
+
+    /// Provide forwarding session data.
+    pub fn set_forwarding(&mut self, sessions: Vec<ForwardSessionEntry>) {
+        self.forwarding.set_sessions(sessions);
+    }
+
+    /// Provide diagnostic entries.
+    pub fn set_diagnostics(&mut self, entries: Vec<DiagnosticEntry>) {
+        self.diagnostics.set_entries(entries);
     }
 
     // ── Input handling ──────────────────────────────────────────────────────
@@ -87,8 +139,8 @@ impl SshContent {
     /// Handle a key press. Returns `Some(Action)` for navigation, `None` if consumed.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If the active tab has a modal open, route input there first.
-        if self.keys.has_modal() {
-            return self.keys.handle_key(code);
+        if self.active_tab().has_modal() {
+            return self.active_tab_mut().handle_key(code);
         }
 
         match self.focus {
@@ -139,16 +191,16 @@ impl SshContent {
     /// Handle a mouse event for the SSH content area.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // If the active tab has a modal open, delegate to it for
-        // click-outside detection (KeysTab handles this internally).
-        if self.keys.has_modal() {
-            self.keys.handle_mouse(mouse);
+        // click-outside detection.
+        if self.active_tab().has_modal() {
+            self.active_tab_mut().handle_mouse(mouse);
             return None;
         }
 
         match mouse.kind {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 self.hovered_tab = self.tab_at(mouse.column, mouse.row);
-                self.keys.handle_mouse(mouse);
+                self.active_tab_mut().handle_mouse(mouse);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 // Tab bar click takes priority.
@@ -158,11 +210,11 @@ impl SshContent {
                 } else {
                     // Delegate to active tab for list area interaction.
                     self.focus = Focus::List;
-                    self.keys.handle_mouse(mouse);
+                    self.active_tab_mut().handle_mouse(mouse);
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                self.keys.handle_mouse(mouse);
+                self.active_tab_mut().handle_mouse(mouse);
             }
             _ => {}
         }
@@ -179,22 +231,22 @@ impl SshContent {
     fn active_tab(&self) -> &dyn SshTab {
         match self.tab {
             SshSection::Keys => &self.keys,
-            SshSection::KnownHosts => &self.keys, // placeholder
-            SshSection::Config => &self.keys,     // placeholder
-            SshSection::Agent => &self.keys,      // placeholder
-            SshSection::Forwarding => &self.keys, // placeholder
-            SshSection::Diagnostics => &self.keys, // placeholder
+            SshSection::KnownHosts => &self.known_hosts,
+            SshSection::Config => &self.config,
+            SshSection::Agent => &self.agent,
+            SshSection::Forwarding => &self.forwarding,
+            SshSection::Diagnostics => &self.diagnostics,
         }
     }
 
     fn active_tab_mut(&mut self) -> &mut dyn SshTab {
         match self.tab {
             SshSection::Keys => &mut self.keys,
-            SshSection::KnownHosts => &mut self.keys, // placeholder
-            SshSection::Config => &mut self.keys,     // placeholder
-            SshSection::Agent => &mut self.keys,      // placeholder
-            SshSection::Forwarding => &mut self.keys, // placeholder
-            SshSection::Diagnostics => &mut self.keys, // placeholder
+            SshSection::KnownHosts => &mut self.known_hosts,
+            SshSection::Config => &mut self.config,
+            SshSection::Agent => &mut self.agent,
+            SshSection::Forwarding => &mut self.forwarding,
+            SshSection::Diagnostics => &mut self.diagnostics,
         }
     }
 
@@ -213,7 +265,7 @@ impl SshContent {
         .areas(inner);
 
         self.render_tab_bar(frame, tab_bar_area, p);
-        self.render_content(frame, content_area, p);
+        self.active_tab_mut().view(frame, content_area, p);
     }
 
     fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -260,25 +312,6 @@ impl SshContent {
             x += label_w;
         }
     }
-
-    fn render_content(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
-        match self.tab {
-            SshSection::Keys => self.keys.view(frame, area, p),
-            SshSection::KnownHosts
-            | SshSection::Config
-            | SshSection::Agent
-            | SshSection::Forwarding
-            | SshSection::Diagnostics => {
-                // Placeholder for unimplemented tabs
-                let msg = Line::from(vec![
-                    Span::styled(self.tab.label(), Style::new().fg(p.accent).bold()),
-                    Span::styled(" tab — coming in next phase", Style::new().fg(p.text_dim)),
-                ]);
-                let centered = Rect::new(area.x, area.y + area.height / 2, area.width, 1);
-                frame.render_widget(Paragraph::new(msg).centered(), centered);
-            }
-        }
-    }
 }
 
 impl Default for SshContent {
@@ -299,9 +332,15 @@ trait SshTab {
     }
     /// Render the tab content.
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette);
+    /// Whether this tab currently has a modal open.
+    fn has_modal(&self) -> bool {
+        false
+    }
+    /// Close any open modal on this tab.
+    fn close_modal(&mut self) {}
 }
 
-// ── SshKeyEntry ──────────────────────────────────────────────────────────────
+// ── Data entry structs ───────────────────────────────────────────────────────
 
 /// Lightweight presentation model for an SSH key row in the Keys tab.
 #[derive(Clone, Debug)]
@@ -322,6 +361,119 @@ pub struct SshKeyEntry {
     pub has_cert: bool,
     /// Number of config hosts referencing this key.
     pub host_count: usize,
+}
+
+/// Presentation model for a known_hosts entry in the Hosts tab.
+#[derive(Clone, Debug)]
+pub struct KnownHostEntry {
+    /// Host name or pattern (e.g. "github.com" or "[192.168.1.1]:2222").
+    pub host: String,
+    /// Key type (e.g. "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256").
+    pub key_type: String,
+    /// SHA-256 fingerprint.
+    pub fingerprint: String,
+    /// Whether the hostname is hashed (`|1|...`).
+    pub is_hashed: bool,
+    /// Optional marker (e.g. "@cert-authority", "@revoked").
+    pub marker: Option<String>,
+    /// Whether the entry has a trailing comment.
+    pub has_comment: bool,
+}
+
+/// Presentation model for an SSH config Host block in the Config tab.
+#[derive(Clone, Debug)]
+pub struct ConfigHostEntry {
+    /// Primary Host name / pattern (e.g. "myserver", "*.example.com").
+    pub name: String,
+    /// All Host patterns in the block.
+    pub patterns: Vec<String>,
+    /// HostName directive value, if set.
+    pub host_name: Option<String>,
+    /// User directive value, if set.
+    pub user: Option<String>,
+    /// Port directive value, if set.
+    pub port: Option<u16>,
+    /// IdentityFile directive value, if set.
+    pub identity_file: Option<String>,
+    /// ProxyJump directive value, if set.
+    pub proxy_jump: Option<String>,
+    /// Total number of directives in the block.
+    pub directive_count: usize,
+    /// Whether `ssh_config diagnose()` flagged this block.
+    pub has_diagnostic: bool,
+}
+
+/// Presentation model for a key loaded in the SSH agent.
+#[derive(Clone, Debug)]
+pub struct AgentKeyEntry {
+    /// Key name / comment.
+    pub name: String,
+    /// Key type label (e.g. "Ed25519", "RSA 4096").
+    pub key_type: String,
+    /// SHA-256 fingerprint.
+    pub fingerprint: String,
+    /// Whether the key requires confirmation to use.
+    pub is_locked: bool,
+    /// Whether the key has constraints (destination, lifetime, confirm).
+    pub has_constraints: bool,
+}
+
+/// Agent connection status.
+#[derive(Clone, Debug)]
+pub struct AgentStatus {
+    /// Whether the SSH agent is reachable.
+    pub reachable: bool,
+    /// Agent socket path, if available.
+    pub socket_path: Option<String>,
+    /// Number of keys loaded in the agent.
+    pub key_count: usize,
+}
+
+/// Presentation model for an active port-forwarding session.
+#[derive(Clone, Debug)]
+pub struct ForwardSessionEntry {
+    /// Connected host alias or name.
+    pub host: String,
+    /// ControlMaster socket path.
+    pub control_path: String,
+    /// Process ID of the SSH session.
+    pub pid: Option<u32>,
+    /// Time since the session was established (e.g. "2h 15m").
+    pub established_ago: String,
+    /// Active port forwards in this session.
+    pub forwards: Vec<ForwardEntry>,
+    /// Number of active forwards (convenience for display).
+    pub forward_count: usize,
+}
+
+/// A single port forward within a session.
+#[derive(Clone, Debug)]
+pub struct ForwardEntry {
+    /// Forward type: "local", "remote", or "dynamic".
+    pub forward_type: String,
+    /// Local bind address.
+    pub local_addr: String,
+    /// Local port number.
+    pub local_port: u16,
+    /// Remote target address (or "SOCKS" for dynamic).
+    pub remote_addr: String,
+    /// Remote port number.
+    pub remote_port: u16,
+}
+
+/// Presentation model for a diagnostic check result.
+#[derive(Clone, Debug)]
+pub struct DiagnosticEntry {
+    /// Check identifier (e.g. "ssh_dir_permissions").
+    pub id: String,
+    /// Severity level: "ok", "info", "warning", "error".
+    pub severity: String,
+    /// Source module (e.g. "local", "config", "agent").
+    pub module: String,
+    /// Human-readable finding message.
+    pub message: String,
+    /// Suggested fix, if applicable.
+    pub hint: Option<String>,
 }
 
 #[cfg(test)]
@@ -408,5 +560,20 @@ mod tests {
         content.focus = Focus::List;
         content.handle_key(KeyCode::Tab);
         assert_eq!(content.focus, Focus::TabBar);
+    }
+
+    #[test]
+    fn all_tabs_render_without_panic() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        for section in SshSection::all() {
+            let mut content = SshContent::new();
+            content.tab = *section;
+            let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
+            terminal
+                .draw(|f| content.view(f, f.area(), CHARM))
+                .unwrap();
+        }
     }
 }

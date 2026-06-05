@@ -205,9 +205,14 @@ impl DashboardScreen {
         self.clock = current_clock();
     }
 
-    /// Provide live SSH key data (called from the SSH data collector).
-    pub fn set_ssh_keys(&mut self, keys: Vec<crate::ui::screens::ssh::SshKeyEntry>) {
-        self.ssh_content.set_keys(keys);
+    /// Provide live SSH data for all subsystems (called from the SSH data collector).
+    pub fn set_ssh_data(&mut self, bundle: crate::ssh_data::SshDataBundle) {
+        self.ssh_content.set_keys(bundle.keys);
+        self.ssh_content.set_known_hosts(bundle.known_hosts);
+        self.ssh_content.set_config_hosts(bundle.config_hosts);
+        self.ssh_content.set_agent_data(bundle.agent_status, bundle.agent_keys);
+        self.ssh_content.set_forwarding(bundle.forwarding);
+        self.ssh_content.set_diagnostics(bundle.diagnostics);
     }
 
     /// The currently active section.

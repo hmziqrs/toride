@@ -9,7 +9,10 @@ pub use base::ScreenBase;
 pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
 pub use quit::QuitModal;
-pub use ssh::{SshContent, SshKeyEntry};
+pub use ssh::{
+    AgentKeyEntry, AgentStatus, ConfigHostEntry, DiagnosticEntry, ForwardEntry,
+    ForwardSessionEntry, KnownHostEntry, SshContent, SshKeyEntry,
+};
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};

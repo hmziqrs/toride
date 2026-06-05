@@ -1,17 +1,38 @@
 //! Async SSH data collection.
 //!
-//! [`SshDataCollector`] manages background collection of SSH key data via a
-//! tokio oneshot channel, following the same pattern as [`StatusCollector`].
+//! [`SshDataCollector`] manages background collection of all SSH subsystem data
+//! via a tokio oneshot channel, following the same pattern as [`StatusCollector`].
 //!
 //! Currently seeds mock data. Will be wired to [`SshManager`] in a later phase.
 
 use tokio::sync::oneshot;
 
-use crate::ui::screens::ssh::SshKeyEntry;
+use crate::ui::screens::ssh::{
+    AgentKeyEntry, AgentStatus, ConfigHostEntry, DiagnosticEntry, ForwardEntry,
+    ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
+};
 
-/// Manages periodic async collection of SSH key data.
+/// Aggregated SSH data for all tabs.
+pub struct SshDataBundle {
+    /// SSH key entries.
+    pub keys: Vec<SshKeyEntry>,
+    /// Known hosts entries.
+    pub known_hosts: Vec<KnownHostEntry>,
+    /// SSH config host blocks.
+    pub config_hosts: Vec<ConfigHostEntry>,
+    /// SSH agent connection status.
+    pub agent_status: AgentStatus,
+    /// Keys loaded in the SSH agent.
+    pub agent_keys: Vec<AgentKeyEntry>,
+    /// Active port forwarding sessions.
+    pub forwarding: Vec<ForwardSessionEntry>,
+    /// Diagnostic check results.
+    pub diagnostics: Vec<DiagnosticEntry>,
+}
+
+/// Manages periodic async collection of SSH data.
 pub struct SshDataCollector {
-    rx: Option<oneshot::Receiver<Vec<SshKeyEntry>>>,
+    rx: Option<oneshot::Receiver<SshDataBundle>>,
 }
 
 impl SshDataCollector {
@@ -36,16 +57,16 @@ impl SshDataCollector {
         let (tx, rx) = oneshot::channel();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let keys = collect_mock_keys();
-            let _ = tx.send(keys);
+            let bundle = collect_mock_data();
+            let _ = tx.send(bundle);
         });
     }
 
     /// Poll for a completed collection result.
     ///
-    /// Returns `Some(keys)` if the collection completed, `None` if still
+    /// Returns `Some(bundle)` if the collection completed, `None` if still
     /// pending or if the collection failed.
-    pub async fn poll(&mut self) -> Option<Vec<SshKeyEntry>> {
+    pub async fn poll(&mut self) -> Option<SshDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
@@ -63,9 +84,21 @@ impl Default for SshDataCollector {
     }
 }
 
-/// Collect mock SSH key data for development.
+/// Collect mock SSH data for all subsystems.
 ///
-/// TODO: Replace with `SshManager::keys().list()` calls in Phase 2.
+/// TODO: Replace with `SshManager` calls in Phase 2.
+fn collect_mock_data() -> SshDataBundle {
+    SshDataBundle {
+        keys: collect_mock_keys(),
+        known_hosts: collect_mock_known_hosts(),
+        config_hosts: collect_mock_config_hosts(),
+        agent_status: collect_mock_agent_status(),
+        agent_keys: collect_mock_agent_keys(),
+        forwarding: collect_mock_forwarding(),
+        diagnostics: collect_mock_diagnostics(),
+    }
+}
+
 fn collect_mock_keys() -> Vec<SshKeyEntry> {
     vec![
         SshKeyEntry {
@@ -101,6 +134,243 @@ fn collect_mock_keys() -> Vec<SshKeyEntry> {
     ]
 }
 
+fn collect_mock_known_hosts() -> Vec<KnownHostEntry> {
+    vec![
+        KnownHostEntry {
+            host: "github.com".into(),
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
+            is_hashed: false,
+            marker: None,
+            has_comment: false,
+        },
+        KnownHostEntry {
+            host: "gitlab.com".into(),
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:WSCtr3bEeJGgcb0UrkMFWxQJqchWXzwWMNESdgqxo".into(),
+            is_hashed: false,
+            marker: None,
+            has_comment: false,
+        },
+        KnownHostEntry {
+            host: "[192.168.1.1]:2222".into(),
+            key_type: "ssh-rsa".into(),
+            fingerprint: "SHA256:abc123def456ghi789jkl012mno345pqr678".into(),
+            is_hashed: false,
+            marker: None,
+            has_comment: true,
+        },
+        KnownHostEntry {
+            host: "|1|ba4dEeFgHiJkLmNoPqRsTu|XxYyZz0123456789".into(),
+            key_type: "ecdsa-sha2-nistp256".into(),
+            fingerprint: "SHA256:qwe456rty789uio012pqr345stu678vwx".into(),
+            is_hashed: true,
+            marker: None,
+            has_comment: false,
+        },
+        KnownHostEntry {
+            host: "old.server.example.com".into(),
+            key_type: "ssh-ed25519".into(),
+            fingerprint: "SHA256:xyz789abc456def123ghi456jkl789mno012".into(),
+            is_hashed: false,
+            marker: Some("@revoked".into()),
+            has_comment: false,
+        },
+    ]
+}
+
+fn collect_mock_config_hosts() -> Vec<ConfigHostEntry> {
+    vec![
+        ConfigHostEntry {
+            name: "myserver".into(),
+            patterns: vec!["myserver".into()],
+            host_name: Some("example.com".into()),
+            user: Some("alice".into()),
+            port: Some(2222),
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+            proxy_jump: None,
+            directive_count: 5,
+            has_diagnostic: false,
+        },
+        ConfigHostEntry {
+            name: "*.example.com".into(),
+            patterns: vec!["*.example.com".into()],
+            host_name: None,
+            user: Some("deploy".into()),
+            port: None,
+            identity_file: None,
+            proxy_jump: None,
+            directive_count: 3,
+            has_diagnostic: false,
+        },
+        ConfigHostEntry {
+            name: "*".into(),
+            patterns: vec!["*".into()],
+            host_name: None,
+            user: None,
+            port: None,
+            identity_file: None,
+            proxy_jump: None,
+            directive_count: 2,
+            has_diagnostic: false,
+        },
+        ConfigHostEntry {
+            name: "staging".into(),
+            patterns: vec!["staging".into()],
+            host_name: Some("stage.example.com".into()),
+            user: Some("bob".into()),
+            port: Some(22),
+            identity_file: Some("~/.ssh/deploy_key".into()),
+            proxy_jump: Some("bastion.example.com".into()),
+            directive_count: 8,
+            has_diagnostic: true,
+        },
+        ConfigHostEntry {
+            name: "bastion".into(),
+            patterns: vec!["bastion.example.com".into()],
+            host_name: None,
+            user: Some("admin".into()),
+            port: Some(443),
+            identity_file: Some("~/.ssh/id_ed25519".into()),
+            proxy_jump: None,
+            directive_count: 4,
+            has_diagnostic: false,
+        },
+    ]
+}
+
+fn collect_mock_agent_status() -> AgentStatus {
+    AgentStatus {
+        reachable: true,
+        socket_path: Some("/tmp/ssh-abc123/agent.1234".into()),
+        key_count: 3,
+    }
+}
+
+fn collect_mock_agent_keys() -> Vec<AgentKeyEntry> {
+    vec![
+        AgentKeyEntry {
+            name: "id_ed25519".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:abc123def456ghi789".into(),
+            is_locked: false,
+            has_constraints: false,
+        },
+        AgentKeyEntry {
+            name: "deploy_key".into(),
+            key_type: "RSA 4096".into(),
+            fingerprint: "SHA256:xyz789abc456def123".into(),
+            is_locked: true,
+            has_constraints: true,
+        },
+        AgentKeyEntry {
+            name: "staging_key".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:qwe456rty789uio012".into(),
+            is_locked: false,
+            has_constraints: false,
+        },
+    ]
+}
+
+fn collect_mock_forwarding() -> Vec<ForwardSessionEntry> {
+    vec![
+        ForwardSessionEntry {
+            host: "myserver".into(),
+            control_path: "/home/alice/.ssh/cm-alice@example.com:22".into(),
+            pid: Some(1234),
+            established_ago: "2h 15m".into(),
+            forward_count: 2,
+            forwards: vec![
+                ForwardEntry {
+                    forward_type: "local".into(),
+                    local_addr: "127.0.0.1".into(),
+                    local_port: 8080,
+                    remote_addr: "example.com".into(),
+                    remote_port: 80,
+                },
+                ForwardEntry {
+                    forward_type: "local".into(),
+                    local_addr: "127.0.0.1".into(),
+                    local_port: 3306,
+                    remote_addr: "db.example.com".into(),
+                    remote_port: 3306,
+                },
+            ],
+        },
+        ForwardSessionEntry {
+            host: "bastion".into(),
+            control_path: "/home/alice/.ssh/ctrl-bastion".into(),
+            pid: Some(5678),
+            established_ago: "45m".into(),
+            forward_count: 2,
+            forwards: vec![
+                ForwardEntry {
+                    forward_type: "dynamic".into(),
+                    local_addr: "127.0.0.1".into(),
+                    local_port: 1080,
+                    remote_addr: "SOCKS".into(),
+                    remote_port: 0,
+                },
+                ForwardEntry {
+                    forward_type: "remote".into(),
+                    local_addr: "0.0.0.0".into(),
+                    local_port: 2222,
+                    remote_addr: "127.0.0.1".into(),
+                    remote_port: 22,
+                },
+            ],
+        },
+    ]
+}
+
+fn collect_mock_diagnostics() -> Vec<DiagnosticEntry> {
+    vec![
+        DiagnosticEntry {
+            id: "ssh_dir_exists".into(),
+            severity: "ok".into(),
+            module: "local".into(),
+            message: "SSH directory exists with correct permissions (0700)".into(),
+            hint: None,
+        },
+        DiagnosticEntry {
+            id: "config_found".into(),
+            severity: "info".into(),
+            module: "config".into(),
+            message: "SSH config file found at ~/.ssh/config".into(),
+            hint: None,
+        },
+        DiagnosticEntry {
+            id: "key_permissions".into(),
+            severity: "warning".into(),
+            module: "local".into(),
+            message: "Private key id_rsa has overly permissive mode (0644)".into(),
+            hint: Some("Run chmod 600 ~/.ssh/id_rsa to fix".into()),
+        },
+        DiagnosticEntry {
+            id: "agent_not_running".into(),
+            severity: "error".into(),
+            module: "agent".into(),
+            message: "No SSH agent is running (SSH_AUTH_SOCK not set)".into(),
+            hint: Some("Start ssh-agent or add eval $(ssh-agent) to your shell profile".into()),
+        },
+        DiagnosticEntry {
+            id: "config_host_star_placement".into(),
+            severity: "warning".into(),
+            module: "config".into(),
+            message: "'Host *' appears before specific Host blocks".into(),
+            hint: Some("Move 'Host *' to the end of the config file".into()),
+        },
+        DiagnosticEntry {
+            id: "known_hosts_exists".into(),
+            severity: "ok".into(),
+            module: "local".into(),
+            message: "Known hosts file exists at ~/.ssh/known_hosts".into(),
+            hint: None,
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,7 +383,10 @@ mod tests {
 
     #[test]
     fn default_matches_new() {
-        assert_eq!(SshDataCollector::new().is_pending(), SshDataCollector::default().is_pending());
+        assert_eq!(
+            SshDataCollector::new().is_pending(),
+            SshDataCollector::default().is_pending()
+        );
     }
 
     #[tokio::test]
@@ -133,15 +406,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn poll_returns_keys_after_collection() {
+    async fn poll_returns_bundle_after_collection() {
         let mut collector = SshDataCollector::new();
         collector.start();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let result = collector.poll().await;
         assert!(result.is_some());
-        let keys = result.unwrap();
-        assert_eq!(keys.len(), 3);
-        assert_eq!(keys[0].name, "id_ed25519");
+        let bundle = result.unwrap();
+        assert_eq!(bundle.keys.len(), 3);
+        assert_eq!(bundle.known_hosts.len(), 5);
+        assert_eq!(bundle.config_hosts.len(), 5);
+        assert_eq!(bundle.agent_keys.len(), 3);
+        assert_eq!(bundle.forwarding.len(), 2);
+        assert_eq!(bundle.diagnostics.len(), 6);
     }
 
     #[tokio::test]
@@ -161,11 +438,14 @@ mod tests {
     }
 
     #[test]
-    fn mock_keys_have_expected_content() {
-        let keys = collect_mock_keys();
-        assert_eq!(keys.len(), 3);
-        assert!(keys.iter().all(|k| !k.name.is_empty()));
-        assert!(keys.iter().all(|k| !k.key_type.is_empty()));
-        assert!(keys.iter().all(|k| !k.fingerprint.is_empty()));
+    fn mock_data_have_expected_content() {
+        let bundle = collect_mock_data();
+        assert!(!bundle.keys.is_empty());
+        assert!(!bundle.known_hosts.is_empty());
+        assert!(!bundle.config_hosts.is_empty());
+        assert!(!bundle.agent_keys.is_empty());
+        assert!(!bundle.forwarding.is_empty());
+        assert!(!bundle.diagnostics.is_empty());
+        assert!(bundle.agent_status.reachable);
     }
 }

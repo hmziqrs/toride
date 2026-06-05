@@ -1,8 +1,8 @@
-//! Keys sub-tab for the SSH management screen.
+//! Diagnostics sub-tab for the SSH management screen.
 //!
-//! Displays all SSH keys found in `~/.ssh/` as a scrollable list with type,
-//! fingerprint, encryption status, permissions, and badge indicators. Supports
-//! keyboard navigation, selection, and a detail modal.
+//! Displays diagnostic check results (SSH directory permissions, config issues,
+//! agent status, etc.) as a scrollable list with severity icons, messages, and
+//! module badges. Supports keyboard navigation, selection, and a detail modal.
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -18,19 +18,19 @@ use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Modal, render_titled_panel};
 
-use super::{SshKeyEntry, SshTab};
+use super::{DiagnosticEntry, SshTab};
 
-// ── KeysTab ──────────────────────────────────────────────────────────────────
+// ── DiagnosticsTab ────────────────────────────────────────────────────────────
 
-/// State for the Keys sub-tab.
-pub struct KeysTab {
-    /// Key entries to display.
-    keys: Vec<SshKeyEntry>,
-    /// Index of the currently selected key.
+/// State for the Diagnostics sub-tab.
+pub struct DiagnosticsTab {
+    /// Diagnostic entries to display.
+    entries: Vec<DiagnosticEntry>,
+    /// Index of the currently selected entry.
     selected: usize,
     /// Vertical scroll offset.
     scroll: usize,
-    /// Whether the detail modal is open, and for which key index.
+    /// Whether the detail modal is open, and for which entry index.
     detail_open: Option<usize>,
     /// Rendered rect of the detail modal (for click-outside detection).
     detail_modal_rect: Option<Rect>,
@@ -40,12 +40,12 @@ pub struct KeysTab {
     hovered_row: Option<usize>,
 }
 
-impl KeysTab {
-    /// Create a new empty keys tab.
+impl DiagnosticsTab {
+    /// Create a new empty diagnostics tab.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            keys: Vec::new(),
+            entries: Vec::new(),
             selected: 0,
             scroll: 0,
             detail_open: None,
@@ -55,11 +55,11 @@ impl KeysTab {
         }
     }
 
-    /// Replace the key list with new data.
-    pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
-        self.keys = keys;
-        if self.selected >= self.keys.len() && !self.keys.is_empty() {
-            self.selected = self.keys.len() - 1;
+    /// Replace the diagnostic entries with new data.
+    pub fn set_entries(&mut self, entries: Vec<DiagnosticEntry>) {
+        self.entries = entries;
+        if self.selected >= self.entries.len() && !self.entries.is_empty() {
+            self.selected = self.entries.len() - 1;
         }
         self.clamp_scroll();
     }
@@ -72,13 +72,13 @@ impl KeysTab {
 
     /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.scroll = 0;
             return;
         }
         // Ensure selected is within bounds
-        if self.selected >= self.keys.len() {
-            self.selected = self.keys.len() - 1;
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len() - 1;
         }
     }
 
@@ -87,7 +87,7 @@ impl KeysTab {
         self.detail_open = None;
     }
 
-    /// Handle a mouse event for the key list.
+    /// Handle a mouse event for the diagnostic entry list.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
@@ -115,7 +115,7 @@ impl KeysTab {
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.selected < self.keys.len().saturating_sub(1) {
+                if self.selected < self.entries.len().saturating_sub(1) {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
@@ -139,13 +139,13 @@ impl KeysTab {
     }
 }
 
-impl Default for KeysTab {
+impl Default for DiagnosticsTab {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SshTab for KeysTab {
+impl SshTab for DiagnosticsTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, handle modal keys
         if self.detail_open.is_some() {
@@ -166,37 +166,25 @@ impl SshTab for KeysTab {
                     None
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    if !self.keys.is_empty() && self.selected < self.keys.len() - 1 {
+                    if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
                         self.selected += 1;
                         self.clamp_scroll();
                     }
                     None
                 }
                 KeyCode::Enter => {
-                    if !self.keys.is_empty() {
+                    if !self.entries.is_empty() {
                         self.detail_open = Some(self.selected);
                     }
                     None
                 }
-                // CRUD shortcuts — Phase 2
-                KeyCode::Char('n') => {
-                    // TODO: Open generate key modal
-                    None
-                }
-                KeyCode::Char('d') => {
-                    // TODO: Open delete confirm modal
-                    None
-                }
+                // Phase 2 shortcuts
                 KeyCode::Char('r') => {
-                    // TODO: Open rename modal
+                    // TODO: Run diagnostic checks
                     None
                 }
-                KeyCode::Char('i') => {
-                    // TODO: Open install to remote modal
-                    None
-                }
-                KeyCode::Char('x') => {
-                    // TODO: Fix permissions
+                KeyCode::Char('f') => {
+                    // TODO: Fix all auto-fixable issues
                     None
                 }
                 _ => None,
@@ -206,7 +194,7 @@ impl SshTab for KeysTab {
 
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
@@ -214,8 +202,8 @@ impl SshTab for KeysTab {
 
         // Render detail modal if open
         if let Some(idx) = self.detail_open {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
+            if let Some(entry) = self.entries.get(idx).cloned() {
+                self.render_detail_modal(frame, p, &entry);
             }
         }
     }
@@ -230,15 +218,15 @@ impl SshTab for KeysTab {
     }
 }
 
-// ── Rendering ────────────────────────────────────────────────────────────────
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
-impl KeysTab {
+impl DiagnosticsTab {
     fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_titled_panel(frame, area, p, " SSH KEYS ", p.text, false);
+        let inner = render_titled_panel(frame, area, p, " DIAGNOSTICS ", p.text, false);
         let msg = Line::from(vec![
-            Span::styled("No SSH keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  n", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" generate", Style::new().fg(p.text_muted)),
+            Span::styled("No diagnostic findings", Style::new().fg(p.text_dim)),
+            Span::styled("  r", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" run checks", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
@@ -249,7 +237,7 @@ impl KeysTab {
             frame,
             area,
             p,
-            &format!(" SSH KEYS ({}) ", self.keys.len()),
+            &format!(" DIAGNOSTICS ({}) ", self.entries.len()),
             p.text,
             false,
         );
@@ -259,7 +247,7 @@ impl KeysTab {
         }
 
         let visible = inner.height as usize;
-        let max_scroll = self.keys.len().saturating_sub(visible);
+        let max_scroll = self.entries.len().saturating_sub(visible);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
@@ -272,10 +260,10 @@ impl KeysTab {
 
         for row in 0..visible {
             let idx = self.scroll + row;
-            if idx >= self.keys.len() {
+            if idx >= self.entries.len() {
                 break;
             }
-            let key = &self.keys[idx];
+            let entry = &self.entries[idx];
             let is_selected = idx == self.selected;
             let is_hovered = self.hovered_row == Some(idx);
             let y = inner.y + row as u16;
@@ -295,70 +283,42 @@ impl KeysTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
+            // Severity icon and color
+            let (icon, icon_color) = match entry.severity.as_str() {
+                "ok" => ("✓", p.ok),
+                "info" => ("ℹ", p.info),
+                "warning" => ("⚠", p.warn),
+                "error" => ("✗", p.err),
+                _ => ("·", p.text_dim),
+            };
+
+            // Icon
             spans.push(Span::styled(
-                "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                format!("{icon} "),
+                Style::new().fg(icon_color),
             ));
 
-            // Key name (truncated to fit)
-            let name_w = 18.min(inner.width.saturating_sub(4) as usize);
-            let name = truncate_str(&key.name, name_w);
-            let name_chars = name.chars().count();
-            spans.push(Span::styled(
-                name,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
-            ));
+            // Message (truncated to fit)
+            let msg_w = inner.width.saturating_sub(20) as usize;
+            let msg = truncate_str(&entry.message, msg_w);
+            let msg_style = match entry.severity.as_str() {
+                "warning" | "error" => Style::new().fg(icon_color),
+                _ => Style::new().fg(p.text),
+            };
+            spans.push(Span::styled(&msg, msg_style));
 
-            // Padding
-            let padded = format!("{:width$}", "", width = name_w.saturating_sub(name_chars));
-            spans.push(Span::raw(padded));
-
-            // Key type
-            spans.push(Span::styled(
-                format!(" {} ", key.key_type),
-                Style::new().fg(p.info),
-            ));
-
-            // Fingerprint (truncated)
-            let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
-            let fp = truncate_str(&key.fingerprint, fp_w);
-            spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
-
-            // Encrypted badge
-            if key.encrypted {
-                spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
-            }
-
-            // Permissions
-            spans.push(Span::styled(
-                format!(" {} ", key.permissions),
-                Style::new().fg(if key.permissions == "0600" || key.permissions == "0400" {
-                    p.text_muted
-                } else {
-                    p.err
-                }),
-            ));
-
-            // Public key check
-            if key.has_public {
-                spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
-            }
-
-            // Certificate check
-            if key.has_cert {
-                spans.push(Span::styled("✓cert", Style::new().fg(p.accent2)));
-            }
-
-            // Host count badge
-            if key.host_count > 0 {
+            // Right-align module badge — pad to end of row
+            let module_badge = format!(" {}", entry.module);
+            let used: usize = 2 + msg.len() + module_badge.len(); // icon+space + msg + badge
+            let avail = inner.width as usize;
+            if used < avail {
+                let padding = avail - used;
                 spans.push(Span::styled(
-                    format!(" →{}", key.host_count),
-                    Style::new().fg(p.text_muted),
+                    format!("{:width$}", "", width = padding),
+                    Style::new(),
                 ));
             }
+            spans.push(Span::styled(module_badge, Style::new().fg(p.text_dim)));
 
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), row_area);
@@ -375,73 +335,60 @@ impl KeysTab {
         let hints = Line::from(vec![
             Span::styled(" ↵ ", p.key_style()),
             Span::styled("detail ", p.label_style()),
-            Span::styled(" n ", p.key_style()),
-            Span::styled("new ", p.label_style()),
-            Span::styled(" d ", p.key_style()),
-            Span::styled("del ", p.label_style()),
             Span::styled(" r ", p.key_style()),
-            Span::styled("rename ", p.label_style()),
-            Span::styled(" i ", p.key_style()),
-            Span::styled("install ", p.label_style()),
+            Span::styled("run checks ", p.label_style()),
+            Span::styled(" f ", p.key_style()),
+            Span::styled("fix all ", p.label_style()),
         ]);
 
         frame.render_widget(Paragraph::new(hints), footer_area);
     }
 
-    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
-        let modal = Modal::new("Key Detail").dimensions(54, 12);
+    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &DiagnosticEntry) {
+        let modal = Modal::new("Diagnostic Detail").dimensions(56, 10);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
-                let lines = vec![
+                let (icon, icon_color) = match entry.severity.as_str() {
+                    "ok" => ("✓", p.ok),
+                    "info" => ("ℹ", p.info),
+                    "warning" => ("⚠", p.warn),
+                    "error" => ("✗", p.err),
+                    _ => ("·", p.text_dim),
+                };
+
+                let mut lines = vec![
                     Line::from(vec![
-                        Span::styled("Name:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                        Span::styled("Check:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.id, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Type:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
+                        Span::styled("Status:  ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.encrypted { "encrypted" } else { "unencrypted" },
-                            Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
+                            format!("{icon} {}", entry.severity),
+                            Style::new().fg(icon_color),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("Perms: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.permissions, Style::new().fg(p.text)),
+                        Span::styled("Module:  ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.module, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_public { "✓ present" } else { "✗ missing" },
-                            Style::new().fg(if key.has_public { p.ok } else { p.err }),
-                        ),
+                        Span::styled("Message: ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.message, Style::new().fg(p.text)),
                     ]),
-                    Line::from(vec![
-                        Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_cert { "✓ attached" } else { "— none" },
-                            Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{} referencing", key.host_count),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
-                    ),
                 ];
+
+                if let Some(hint) = &entry.hint {
+                    lines.push(Line::from(vec![
+                        Span::styled("Hint:    ", Style::new().fg(p.text_dim)),
+                        Span::styled(hint, Style::new().fg(p.accent)),
+                    ]));
+                }
+
+                lines.push(Line::raw(""));
+                lines.push(Line::from(
+                    Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+                ));
 
                 for (i, line) in lines.into_iter().enumerate() {
                     let y = content_area.y + i as u16;
@@ -454,56 +401,57 @@ impl KeysTab {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 // (truncate_str is imported from crate::ui::responsive)
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_keys() -> Vec<SshKeyEntry> {
+    fn sample_entries() -> Vec<DiagnosticEntry> {
         vec![
-            SshKeyEntry {
-                name: "id_ed25519".into(),
-                key_type: "Ed25519".into(),
-                fingerprint: "SHA256:abc123def456".into(),
-                encrypted: true,
-                permissions: "0600".into(),
-                has_public: true,
-                has_cert: false,
-                host_count: 2,
+            DiagnosticEntry {
+                id: "ssh_dir_permissions".into(),
+                severity: "ok".into(),
+                module: "local".into(),
+                message: "~/.ssh permissions are correct (0700)".into(),
+                hint: None,
             },
-            SshKeyEntry {
-                name: "id_rsa".into(),
-                key_type: "RSA 4096".into(),
-                fingerprint: "SHA256:xyz789".into(),
-                encrypted: false,
-                permissions: "0644".into(),
-                has_public: true,
-                has_cert: true,
-                host_count: 0,
+            DiagnosticEntry {
+                id: "config_syntax".into(),
+                severity: "warning".into(),
+                module: "config".into(),
+                message: "Duplicate Host pattern in config".into(),
+                hint: Some("Remove duplicate Host block".into()),
+            },
+            DiagnosticEntry {
+                id: "agent_reachable".into(),
+                severity: "error".into(),
+                module: "agent".into(),
+                message: "SSH agent is not running".into(),
+                hint: Some("Start agent with eval $(ssh-agent)".into()),
             },
         ]
     }
 
     #[test]
     fn new_is_empty() {
-        let tab = KeysTab::new();
-        assert!(tab.keys.is_empty());
+        let tab = DiagnosticsTab::new();
+        assert!(tab.entries.is_empty());
         assert!(!tab.has_modal());
     }
 
     #[test]
-    fn set_keys_updates_list() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        assert_eq!(tab.keys.len(), 2);
+    fn set_entries_updates_list() {
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
+        assert_eq!(tab.entries.len(), 3);
     }
 
     #[test]
     fn scroll_up_decrements_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 1;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -511,8 +459,8 @@ mod tests {
 
     #[test]
     fn scroll_down_increments_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -520,8 +468,8 @@ mod tests {
 
     #[test]
     fn scroll_up_at_zero_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -529,17 +477,17 @@ mod tests {
 
     #[test]
     fn scroll_down_at_end_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.selected = 1;
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
+        tab.selected = 2;
         tab.handle_key(KeyCode::Down);
-        assert_eq!(tab.selected, 1);
+        assert_eq!(tab.selected, 2);
     }
 
     #[test]
     fn enter_opens_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         tab.handle_key(KeyCode::Enter);
         assert!(tab.has_modal());
         assert_eq!(tab.detail_open, Some(0));
@@ -547,8 +495,8 @@ mod tests {
 
     #[test]
     fn esc_closes_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         tab.detail_open = Some(0);
         tab.handle_key(KeyCode::Esc);
         assert!(!tab.has_modal());
@@ -559,25 +507,24 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
+        let mut tab = DiagnosticsTab::new();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH keys found"), "empty state: {output}");
+        assert!(output.contains("No diagnostic findings"), "empty state: {output}");
     }
 
     #[test]
-    fn render_with_keys() {
+    fn render_with_entries() {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("id_ed25519"), "key name: {output}");
-        assert!(output.contains("Ed25519"), "key type: {output}");
+        assert!(output.contains("permissions"), "entry message: {output}");
     }
 
     #[test]
@@ -585,14 +532,14 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.detail_open = Some(0);
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
+        tab.detail_open = Some(1); // warning entry with hint
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Key Detail"), "modal title: {output}");
-        assert!(output.contains("encrypted"), "encryption status: {output}");
+        assert!(output.contains("Diagnostic Detail"), "modal title: {output}");
+        assert!(output.contains("Duplicate"), "message in modal: {output}");
     }
 
     #[test]
@@ -607,7 +554,6 @@ mod tests {
 
     #[test]
     fn truncate_str_long() {
-        // responsive::truncate_str reserves 2 chars for ".." suffix
         assert_eq!(truncate_str("abcdefgh", 5), "abc..");
     }
 
@@ -617,10 +563,10 @@ mod tests {
     }
 
     #[test]
-    fn set_keys_clamps_selected() {
-        let mut tab = KeysTab::new();
-        tab.selected = 5;
-        tab.set_keys(sample_keys()); // 2 items
-        assert!(tab.selected < 2);
+    fn set_entries_clamps_selected() {
+        let mut tab = DiagnosticsTab::new();
+        tab.selected = 10;
+        tab.set_entries(sample_entries()); // 3 items
+        assert!(tab.selected < 3);
     }
 }

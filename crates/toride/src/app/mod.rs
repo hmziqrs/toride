@@ -186,9 +186,9 @@ impl App {
                     self.needs_redraw = true;
                 }
 
-                // Receive collected SSH key data
-                Some(keys) = self.ssh_collector.poll(), if self.ssh_collector.is_pending() => {
-                    self.dashboard.set_ssh_keys(keys);
+                // Receive collected SSH data
+                Some(bundle) = self.ssh_collector.poll(), if self.ssh_collector.is_pending() => {
+                    self.dashboard.set_ssh_data(bundle);
                     self.needs_redraw = true;
                 }
 
