@@ -1,7 +1,8 @@
 //! Quit confirmation modal.
 //!
 //! A self-contained modal that asks the user to confirm before quitting.
-//! Owns its own interactive buttons, focus state, rendering, and input handling.
+//! Composes [`InteractiveModal`] for visibility, rect tracking, click-outside,
+//! and button routing. Domain-specific shortcut keys (y/n) are handled here.
 
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::{
@@ -13,84 +14,85 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::Modal;
+use crate::ui::widgets::{InteractiveModal, ModalEvent};
 
 /// Horizontal gap between the two buttons.
 const BTN_GAP: u16 = 4;
 
 /// Self-contained quit confirmation modal.
 ///
-/// Owns interactive Yes/No buttons with focus cycling and mouse support.
-/// Delegates rendering to the shared [`Modal`] widget.
+/// Owns an [`InteractiveModal`] internally and adds domain-specific shortcut
+/// key handling (y/n). Delegates focus cycling, button activation, mouse
+/// hover/click, and click-outside to the composed modal.
 pub struct QuitModal {
-    buttons: ButtonRow<Action>,
+    modal: InteractiveModal<Action>,
 }
 
 impl QuitModal {
     #[must_use]
     pub fn new() -> Self {
-        let buttons = vec![
-            InteractiveButton::new("yes", "y", Action::Quit),
-            InteractiveButton::new("no", "n", Action::DismissQuit),
-        ];
-
+        let buttons = ButtonRow::new(
+            vec![
+                InteractiveButton::new("yes", "y", Action::Quit),
+                InteractiveButton::new("no", "n", Action::DismissQuit),
+            ],
+            vec![BTN_GAP, 0],
+        );
         Self {
-            buttons: ButtonRow::new(buttons, vec![BTN_GAP, 0]),
+            modal: InteractiveModal::with_buttons("Quit?", buttons)
+                .dimensions(36, 7)
+                .close_on_click_outside(false),
         }
     }
 
     /// Handle a key press while the quit modal is open.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        // Domain-specific shortcuts first
         match code {
-            // Direct shortcuts
-            KeyCode::Char('y') => Some(Action::Quit),
-            KeyCode::Char('n') | KeyCode::Esc => Some(Action::DismissQuit),
-            // Enter activates the focused button
-            KeyCode::Enter => {
-                Some(self.buttons.activate_focused().unwrap_or(Action::Quit))
-            }
-            // Focus cycling
-            KeyCode::Tab | KeyCode::Right => {
-                self.buttons.cycle_focus_next();
-                None
-            }
-            KeyCode::BackTab | KeyCode::Left => {
-                self.buttons.cycle_focus_prev();
-                None
-            }
-            _ => None,
+            KeyCode::Char('y') => return Some(Action::Quit),
+            KeyCode::Char('n') | KeyCode::Esc => return Some(Action::DismissQuit),
+            _ => {}
+        }
+        // Delegate focus cycling, Enter, etc. to InteractiveModal
+        match self.modal.handle_key(code) {
+            ModalEvent::Button(action) => Some(action),
+            ModalEvent::Closed => Some(Action::DismissQuit),
+            ModalEvent::Consumed => None,
         }
     }
 
     /// Handle a mouse event while the quit modal is open.
     pub fn handle_mouse(&mut self, mouse: &MouseEvent) -> Option<Action> {
-        self.buttons.handle_mouse(mouse)
+        match self.modal.handle_mouse(mouse) {
+            ModalEvent::Button(action) => Some(action),
+            ModalEvent::Closed => Some(Action::DismissQuit),
+            ModalEvent::Consumed => None,
+        }
     }
 
     /// Render the quit modal overlay.
     pub fn render(&mut self, frame: &mut ratatui::Frame, p: Palette) {
-        let viewport = Viewport::from_area(frame.area());
+        self.modal.render_with_extracted_buttons(frame, p, |frame, area, buttons| {
+            let [_, msg_area, _, keys_area, _] = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(area);
 
-        Modal::new("Quit?")
-            .dimensions(36, 7)
-            .render(frame, p, |frame, content_area| {
-                let [_, msg_area, _, keys_area, _] = Layout::vertical([
-                    Constraint::Fill(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                    Constraint::Fill(1),
-                ])
-                .areas(content_area);
+            frame.render_widget(
+                Paragraph::new("Are you sure you want to quit?").centered(),
+                msg_area,
+            );
 
-                frame.render_widget(
-                    Paragraph::new("Are you sure you want to quit?").centered(),
-                    msg_area,
-                );
-
+            if let Some(btns) = buttons {
+                let viewport = Viewport::from_area(frame.area());
                 let buf = frame.buffer_mut();
-                self.buttons.render(buf, keys_area, p, viewport);
-            });
+                btns.render(buf, keys_area, p, viewport);
+            }
+        });
     }
 }
 
@@ -98,7 +100,7 @@ impl QuitModal {
 mod tests {
     use crossterm::event::KeyCode;
 
-    use super::QuitModal;
+    use super::*;
     use crate::action::Action;
 
     #[test]

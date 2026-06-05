@@ -188,6 +188,10 @@ pub enum SshSection {
     Forwarding,
     /// SSH health diagnostics.
     Diagnostics,
+    /// `authorized_keys` management (who can SSH into this machine).
+    AuthorizedKeys,
+    /// SSH certificate inspection and revocation.
+    Certificates,
 }
 
 impl SshSection {
@@ -201,6 +205,8 @@ impl SshSection {
             SshSection::Agent => "Agent",
             SshSection::Forwarding => "Fwd",
             SshSection::Diagnostics => "Diag",
+            SshSection::AuthorizedKeys => "Auth",
+            SshSection::Certificates => "Certs",
         }
     }
 
@@ -214,6 +220,8 @@ impl SshSection {
             SshSection::Agent,
             SshSection::Forwarding,
             SshSection::Diagnostics,
+            SshSection::AuthorizedKeys,
+            SshSection::Certificates,
         ]
     }
 

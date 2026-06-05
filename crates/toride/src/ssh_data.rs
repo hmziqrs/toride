@@ -8,8 +8,8 @@
 use tokio::sync::oneshot;
 
 use crate::ui::screens::ssh::{
-    AgentKeyEntry, AgentStatus, ConfigHostEntry, DiagnosticEntry, ForwardEntry,
-    ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
+    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
+    DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
 };
 
 /// Aggregated SSH data for all tabs.
@@ -28,6 +28,10 @@ pub struct SshDataBundle {
     pub forwarding: Vec<ForwardSessionEntry>,
     /// Diagnostic check results.
     pub diagnostics: Vec<DiagnosticEntry>,
+    /// Authorized keys entries.
+    pub authorized_keys: Vec<AuthorizedKeyEntry>,
+    /// SSH certificate entries.
+    pub certificates: Vec<CertificateEntry>,
 }
 
 /// Manages periodic async collection of SSH data.
@@ -96,6 +100,8 @@ fn collect_mock_data() -> SshDataBundle {
         agent_keys: collect_mock_agent_keys(),
         forwarding: collect_mock_forwarding(),
         diagnostics: collect_mock_diagnostics(),
+        authorized_keys: collect_mock_authorized_keys(),
+        certificates: collect_mock_certificates(),
     }
 }
 
@@ -371,6 +377,84 @@ fn collect_mock_diagnostics() -> Vec<DiagnosticEntry> {
     ]
 }
 
+fn collect_mock_authorized_keys() -> Vec<AuthorizedKeyEntry> {
+    vec![
+        AuthorizedKeyEntry {
+            key_type: "ssh-ed25519".into(),
+            public_key: "AAAAC3NzaC1lZDI1NTE5AAAAIKxJ3G2F7mT5mQaV8eN4pL2zH8gR6kW".into(),
+            comment: Some("alice@workstation".into()),
+            fingerprint: "SHA256:xKj8mN2pL5vR7tQ9wE3yU4oI6aS8dF".into(),
+            options: None,
+            line: 1,
+        },
+        AuthorizedKeyEntry {
+            key_type: "ssh-rsa".into(),
+            public_key: "AAAAB3NzaC1yc2EAAAADAQABAAACAQCr7L3hFS2jW9eJ5kE8mN".into(),
+            comment: Some("deploy@ci-runner".into()),
+            fingerprint: "SHA256:mQ9wE3yU4oI6aS8dFxKj8mN2pL5vR7t".into(),
+            options: Some("command=\"/usr/bin/restricted-shell\",no-port-forwarding".into()),
+            line: 4,
+        },
+        AuthorizedKeyEntry {
+            key_type: "ssh-ed25519".into(),
+            public_key: "AAAAC3NzaC1lZDI1NTE5AAAAIP9fG4eJ8kL3mN6oQ2rS5tU7vW".into(),
+            comment: Some("bob@laptop".into()),
+            fingerprint: "SHA256:R7tQ9wE3yU4oI6aS8dFxKj8mN2pL5v".into(),
+            options: None,
+            line: 7,
+        },
+        AuthorizedKeyEntry {
+            key_type: "ecdsa-sha2-nistp256".into(),
+            public_key: "AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTY".into(),
+            comment: None,
+            fingerprint: "SHA256:U4oI6aS8dFxKj8mN2pL5vR7tQ9wE3y".into(),
+            options: Some("no-pty".into()),
+            line: 9,
+        },
+    ]
+}
+
+fn collect_mock_certificates() -> Vec<CertificateEntry> {
+    vec![
+        CertificateEntry {
+            name: "id_ed25519-cert.pub".into(),
+            cert_type: "User".into(),
+            key_type: "ssh-ed25519-cert-v01@openssh.com".into(),
+            serial: 12345,
+            valid_from: "2025-01-15 00:00:00".into(),
+            valid_to: "2026-01-15 00:00:00".into(),
+            is_valid: true,
+            ca_fingerprint: "SHA256:CA1fP2gH3iJ4kL5mN6oQ7rS8tU".into(),
+            key_id: "alice@corp-2025".into(),
+            principals: vec!["alice".into(), "admin".into()],
+        },
+        CertificateEntry {
+            name: "deploy-cert.pub".into(),
+            cert_type: "User".into(),
+            key_type: "ssh-ed25519-cert-v01@openssh.com".into(),
+            serial: 67890,
+            valid_from: "2024-06-01 00:00:00".into(),
+            valid_to: "2025-06-01 00:00:00".into(),
+            is_valid: false,
+            ca_fingerprint: "SHA256:CA9qR8sT7uV6wX5yZ4aB3cD2eF".into(),
+            key_id: "deploy@ci-2024".into(),
+            principals: vec!["deploy".into()],
+        },
+        CertificateEntry {
+            name: "bastion-host-cert.pub".into(),
+            cert_type: "Host".into(),
+            key_type: "ssh-rsa-cert-v01@openssh.com".into(),
+            serial: 42,
+            valid_from: "2025-03-01 00:00:00".into(),
+            valid_to: "2026-03-01 00:00:00".into(),
+            is_valid: true,
+            ca_fingerprint: "SHA256:CA2gH3iJ4kL5mN6oP7qR8sT9uV".into(),
+            key_id: "bastion.example.com".into(),
+            principals: vec!["bastion.example.com".into()],
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,6 +503,8 @@ mod tests {
         assert_eq!(bundle.agent_keys.len(), 3);
         assert_eq!(bundle.forwarding.len(), 2);
         assert_eq!(bundle.diagnostics.len(), 6);
+        assert_eq!(bundle.authorized_keys.len(), 4);
+        assert_eq!(bundle.certificates.len(), 3);
     }
 
     #[tokio::test]
@@ -446,6 +532,8 @@ mod tests {
         assert!(!bundle.agent_keys.is_empty());
         assert!(!bundle.forwarding.is_empty());
         assert!(!bundle.diagnostics.is_empty());
+        assert!(!bundle.authorized_keys.is_empty());
+        assert!(!bundle.certificates.is_empty());
         assert!(bundle.agent_status.reachable);
     }
 }

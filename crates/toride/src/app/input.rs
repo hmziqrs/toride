@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
 use crate::action::Action;
 use crate::navigation::Screen;
 use crate::ui::screens::help::HelpScreen;
+use crate::ui::widgets::ModalEvent;
 
 use super::App;
 
@@ -20,9 +21,20 @@ impl App {
             return self.quit_modal.handle_key(key.code);
         }
 
-        // Help modal intercepts all input when visible
-        if self.help_visible {
-            return HelpScreen::handle_key(key.code);
+        // Help modal intercepts all input when visible.
+        // Domain-specific keys (q, b, ?) handled first, then InteractiveModal.
+        if self.help_modal.is_visible() {
+            match key.code {
+                KeyCode::Char('q') => return Some(Action::Quit),
+                KeyCode::Char('b') | KeyCode::Char('?') | KeyCode::Esc => {
+                    self.help_modal.close();
+                    return Some(Action::CloseHelp);
+                }
+                other => {
+                    self.help_modal.handle_key(other);
+                    return None;
+                }
+            }
         }
 
         if self.transition.is_some() {
@@ -59,20 +71,15 @@ impl App {
             return self.quit_modal.handle_mouse(&mouse);
         }
 
-        // Help modal: close on click outside, swallow everything else.
-        if self.help_visible {
-            if let Some(mr) = self.help_modal_rect {
-                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.help_visible = false;
-                        self.help_modal_rect = None;
-                        self.needs_redraw = true;
-                    }
+        // Help modal: InteractiveModal handles click-outside.
+        if self.help_modal.is_visible() {
+            return match self.help_modal.handle_mouse(&mouse) {
+                ModalEvent::Closed => {
+                    self.needs_redraw = true;
+                    Some(Action::CloseHelp)
                 }
-            }
-            return None;
+                _ => None,
+            };
         }
 
         if self.transition.is_some() {

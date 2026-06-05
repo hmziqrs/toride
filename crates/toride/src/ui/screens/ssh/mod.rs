@@ -2,8 +2,7 @@
 //!
 //! Renders inside the dashboard's content region when [`Section::Ssh`](crate::data::Section)
 //! is the active sidebar section. Provides a horizontal sub-tab bar for each SSH
-//! subsystem (Keys, Known Hosts, Config, Agent, Forwarding, Diagnostics) and
-//! delegates rendering and input handling to the active tab.
+//! subsystem and delegates rendering and input handling to the active tab.
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -20,6 +19,8 @@ use crate::ui::theme::Palette;
 use crate::ui::widgets::render_panel;
 
 use self::agent_tab::AgentTab;
+use self::authorized_keys_tab::AuthorizedKeysTab;
+use self::certificates_tab::CertificatesTab;
 use self::config_tab::ConfigTab;
 use self::diagnostics_tab::DiagnosticsTab;
 use self::forwarding_tab::ForwardingTab;
@@ -27,6 +28,8 @@ use self::keys_tab::KeysTab;
 use self::known_hosts_tab::KnownHostsTab;
 
 pub mod agent_tab;
+pub mod authorized_keys_tab;
+pub mod certificates_tab;
 pub mod config_tab;
 pub mod diagnostics_tab;
 pub mod forwarding_tab;
@@ -66,6 +69,10 @@ pub struct SshContent {
     forwarding: ForwardingTab,
     /// Diagnostics sub-tab state.
     diagnostics: DiagnosticsTab,
+    /// Authorized keys sub-tab state.
+    authorized_keys: AuthorizedKeysTab,
+    /// Certificates sub-tab state.
+    certificates: CertificatesTab,
     /// Hitbox rects for tab bar labels (rebuilt each frame).
     tab_hitboxes: Vec<Rect>,
     /// Which tab is hovered by the mouse.
@@ -85,6 +92,8 @@ impl SshContent {
             agent: AgentTab::new(),
             forwarding: ForwardingTab::new(),
             diagnostics: DiagnosticsTab::new(),
+            authorized_keys: AuthorizedKeysTab::new(),
+            certificates: CertificatesTab::new(),
             tab_hitboxes: Vec::new(),
             hovered_tab: None,
         }
@@ -132,6 +141,16 @@ impl SshContent {
     /// Provide diagnostic entries.
     pub fn set_diagnostics(&mut self, entries: Vec<DiagnosticEntry>) {
         self.diagnostics.set_entries(entries);
+    }
+
+    /// Provide authorized keys data.
+    pub fn set_authorized_keys(&mut self, entries: Vec<AuthorizedKeyEntry>) {
+        self.authorized_keys.set_entries(entries);
+    }
+
+    /// Provide certificate data.
+    pub fn set_certificates(&mut self, entries: Vec<CertificateEntry>) {
+        self.certificates.set_entries(entries);
     }
 
     // ── Input handling ──────────────────────────────────────────────────────
@@ -236,6 +255,8 @@ impl SshContent {
             SshSection::Agent => &self.agent,
             SshSection::Forwarding => &self.forwarding,
             SshSection::Diagnostics => &self.diagnostics,
+            SshSection::AuthorizedKeys => &self.authorized_keys,
+            SshSection::Certificates => &self.certificates,
         }
     }
 
@@ -247,6 +268,8 @@ impl SshContent {
             SshSection::Agent => &mut self.agent,
             SshSection::Forwarding => &mut self.forwarding,
             SshSection::Diagnostics => &mut self.diagnostics,
+            SshSection::AuthorizedKeys => &mut self.authorized_keys,
+            SshSection::Certificates => &mut self.certificates,
         }
     }
 
@@ -474,6 +497,48 @@ pub struct DiagnosticEntry {
     pub message: String,
     /// Suggested fix, if applicable.
     pub hint: Option<String>,
+}
+
+/// Presentation model for an `authorized_keys` entry.
+#[derive(Clone, Debug)]
+pub struct AuthorizedKeyEntry {
+    /// Key type (e.g. "ssh-ed25519", "ssh-rsa").
+    pub key_type: String,
+    /// Public key data (truncated for display).
+    pub public_key: String,
+    /// Associated comment / identifier.
+    pub comment: Option<String>,
+    /// SHA-256 fingerprint.
+    pub fingerprint: String,
+    /// Parsed options string (e.g. 'command="...",no-port-forwarding').
+    pub options: Option<String>,
+    /// Line number in the authorized_keys file.
+    pub line: usize,
+}
+
+/// Presentation model for an SSH certificate.
+#[derive(Clone, Debug)]
+pub struct CertificateEntry {
+    /// Associated key file name (e.g. "id_ed25519-cert.pub").
+    pub name: String,
+    /// Certificate type ("User" or "Host").
+    pub cert_type: String,
+    /// Key type (e.g. "ssh-ed25519-cert-v01@openssh.com").
+    pub key_type: String,
+    /// Certificate serial number.
+    pub serial: u64,
+    /// Valid from (ISO 8601-ish).
+    pub valid_from: String,
+    /// Valid to (ISO 8601-ish).
+    pub valid_to: String,
+    /// Whether the certificate is currently valid.
+    pub is_valid: bool,
+    /// CA fingerprint that signed this cert.
+    pub ca_fingerprint: String,
+    /// Key ID string embedded in the certificate.
+    pub key_id: String,
+    /// Principals allowed by this certificate.
+    pub principals: Vec<String>,
 }
 
 #[cfg(test)]

@@ -19,6 +19,7 @@ use ratatui::{
 use crate::action::Action;
 use crate::data::{ActivityEntry, DashboardData, Module, ModuleUpdate, Section};
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::widgets::{InteractiveModal, ModalEvent};
 use crate::status::TorideStatus;
 use crate::ui::helpers::{format_bytes, format_duration, percent_color};
 use crate::ui::responsive::{Viewport, truncate_str};
@@ -96,11 +97,10 @@ pub struct DashboardScreen {
     module_scroll: usize,
     updates_scroll: usize,
     activity_scroll: usize,
-    open_module: Option<usize>,
-    /// Rendered rect of the module detail modal (for click-outside detection).
-    module_modal_rect: Option<Rect>,
-    /// Interactive buttons inside the module detail modal.
-    module_modal_buttons: ButtonRow<Action>,
+    /// Which module index is shown in the detail modal (if open).
+    open_module_idx: Option<usize>,
+    /// Interactive module detail modal (manages visibility + rect + buttons + click-outside).
+    module_modal: InteractiveModal<Action>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
     /// Hitbox rects for module cards (rebuilt each frame).
@@ -147,15 +147,18 @@ impl DashboardScreen {
             module_scroll: 0,
             updates_scroll: 0,
             activity_scroll: 0,
-            open_module: None,
-            module_modal_rect: None,
-            module_modal_buttons: ButtonRow::new(
-                vec![
-                    InteractiveButton::new("open", "↵", Action::Continue),
-                    InteractiveButton::new("close", "esc", Action::Back),
-                ],
-                vec![4, 0],
-            ),
+            open_module_idx: None,
+            module_modal: InteractiveModal::with_buttons(
+                "module",
+                ButtonRow::new(
+                    vec![
+                        InteractiveButton::new("open", "↵", Action::Continue),
+                        InteractiveButton::new("close", "esc", Action::Back),
+                    ],
+                    vec![4, 0],
+                ),
+            )
+            .dimensions(54, 10),
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
             module_hitboxes: Vec::new(),
@@ -213,6 +216,8 @@ impl DashboardScreen {
         self.ssh_content.set_agent_data(bundle.agent_status, bundle.agent_keys);
         self.ssh_content.set_forwarding(bundle.forwarding);
         self.ssh_content.set_diagnostics(bundle.diagnostics);
+        self.ssh_content.set_authorized_keys(bundle.authorized_keys);
+        self.ssh_content.set_certificates(bundle.certificates);
     }
 
     /// The currently active section.
@@ -366,18 +371,12 @@ impl DashboardScreen {
         }
 
         // ── Module detail modal ───────────────────────────────────────────────
-        if let Some(idx) = self.open_module
+        if let Some(idx) = self.open_module_idx
             && let Some(m) = self.data.modules.get(idx).cloned()
         {
-            let modal = Modal::new("module").dimensions(54, 10);
-            self.module_modal_rect = Some(modal.rect(frame.area()));
-            let viewport = Viewport::from_area(frame.area());
-            let buttons = &mut self.module_modal_buttons;
-            modal.render(frame, p, |frame, area| {
-                render_module_modal_content(frame, area, p, &m, buttons, viewport);
+            self.module_modal.render_with_extracted_buttons(frame, p, |frame, area, buttons| {
+                render_module_modal_content(frame, area, p, &m, buttons);
             });
-        } else {
-            self.module_modal_rect = None;
         }
 
         // ── Header gauge tooltip overlay ────────────────────────────────────
@@ -662,10 +661,14 @@ impl DashboardScreen {
 
 impl AppScreen for DashboardScreen {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // Modal intercepts input while open.
-        if self.open_module.is_some() {
-            if matches!(code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('o')) {
-                self.open_module = None;
+        // Module detail modal intercepts input while open.
+        if self.module_modal.is_visible() {
+            match self.module_modal.handle_key(code) {
+                ModalEvent::Closed | ModalEvent::Button(_) => {
+                    self.module_modal.close();
+                    self.open_module_idx = None;
+                }
+                ModalEvent::Consumed => {}
             }
             return None;
         }
@@ -729,7 +732,10 @@ impl AppScreen for DashboardScreen {
                 KeyCode::Up | KeyCode::Char('k') => self.module_up(),
                 KeyCode::Right | KeyCode::Char('l') => self.module_right(),
                 KeyCode::Left | KeyCode::Char('h') => self.module_left(),
-                KeyCode::Enter => self.open_module = Some(self.module_sel),
+                KeyCode::Enter => {
+                    self.open_module_idx = Some(self.module_sel);
+                    self.module_modal.open();
+                }
                 _ => {}
             },
             Focus::Updates => match code {
@@ -755,24 +761,13 @@ impl AppScreen for DashboardScreen {
         }
 
         // Module detail modal open: block all background interaction.
-        if self.open_module.is_some() {
-            // Route mouse events to modal buttons (hover, press, click).
-            let btn_result = self.module_modal_buttons.handle_mouse(&mouse);
-            if btn_result.is_some() {
-                self.open_module = None;
-                self.module_modal_rect = None;
-                return None;
-            }
-            // Click outside modal rect also closes it.
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                if let Some(mr) = self.module_modal_rect {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.open_module = None;
-                        self.module_modal_rect = None;
-                    }
+        if self.module_modal.is_visible() {
+            match self.module_modal.handle_mouse(&mouse) {
+                ModalEvent::Closed | ModalEvent::Button(_) => {
+                    self.module_modal.close();
+                    self.open_module_idx = None;
                 }
+                ModalEvent::Consumed => {}
             }
             return None;
         }
@@ -798,7 +793,8 @@ impl AppScreen for DashboardScreen {
                     if let Some(idx) = self.module_at(mouse.column, mouse.row) {
                         self.module_sel = idx;
                         self.focus = Focus::Modules;
-                        self.open_module = Some(idx);
+                        self.open_module_idx = Some(idx);
+                        self.module_modal.open();
                     }
                 } else if self.active_section() == Section::Ssh {
                     return self.ssh_content.handle_mouse(mouse);
@@ -947,8 +943,7 @@ fn render_module_modal_content(
     area: Rect,
     p: Palette,
     m: &Module,
-    buttons: &mut ButtonRow<Action>,
-    viewport: Viewport,
+    buttons: Option<&mut ButtonRow<Action>>,
 ) {
     let [_, text_area, _, btn_area, _] = Layout::vertical([
         Constraint::Fill(1),
@@ -975,8 +970,11 @@ fn render_module_modal_content(
     ];
     frame.render_widget(Paragraph::new(lines), text_area);
 
-    let buf = frame.buffer_mut();
-    buttons.render(buf, btn_area, p, viewport);
+    if let Some(btns) = buttons {
+        let viewport = Viewport::from_area(frame.area());
+        let buf = frame.buffer_mut();
+        btns.render(buf, btn_area, p, viewport);
+    }
 }
 
 // ── Header gauge tooltip ─────────────────────────────────────────────────────
@@ -1213,12 +1211,13 @@ mod tests {
     fn enter_on_module_opens_modal() {
         let mut s = DashboardScreen::new();
         s.handle_key(KeyCode::Tab); // -> Modules
-        assert!(s.open_module.is_none());
+        assert!(!s.module_modal.is_visible());
         s.handle_key(KeyCode::Enter);
-        assert_eq!(s.open_module, Some(0));
+        assert!(s.module_modal.is_visible());
+        assert_eq!(s.open_module_idx, Some(0));
         // Esc closes it.
         s.handle_key(KeyCode::Esc);
-        assert!(s.open_module.is_none());
+        assert!(!s.module_modal.is_visible());
     }
 
     #[test]

@@ -10,7 +10,6 @@ use tachyonfx::Interpolation;
 use crate::navigation::Screen;
 use crate::ui::responsive::Viewport;
 use crate::ui::screens::help::HelpScreen;
-use crate::ui::widgets::Modal;
 
 use super::App;
 
@@ -84,15 +83,11 @@ impl App {
         }
 
         // Help modal overlay — rendered on top of whatever is behind it
-        if self.help_visible {
+        if self.help_modal.is_visible() {
             let viewport = Viewport::from_area(frame.area());
-            let modal = Modal::new("Help");
-            self.help_modal_rect = Some(modal.rect(frame.area()));
-            modal.render(frame, *p, |frame, content_area| {
+            self.help_modal.render(frame, *p, |frame, content_area| {
                 HelpScreen::render(frame, content_area, *p, viewport);
             });
-        } else {
-            self.help_modal_rect = None;
         }
 
         // Quit confirmation modal

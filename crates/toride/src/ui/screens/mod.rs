@@ -10,8 +10,8 @@ pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
 pub use quit::QuitModal;
 pub use ssh::{
-    AgentKeyEntry, AgentStatus, ConfigHostEntry, DiagnosticEntry, ForwardEntry,
-    ForwardSessionEntry, KnownHostEntry, SshContent, SshKeyEntry,
+    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
+    DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshContent, SshKeyEntry,
 };
 pub use welcome::WelcomeScreen;
 

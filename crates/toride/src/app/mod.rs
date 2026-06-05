@@ -24,6 +24,7 @@ use crate::ui::screens::dashboard::DashboardScreen;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
 use crate::ui::transition::{TransitionCache, TransitionState};
+use crate::ui::widgets::InteractiveModal;
 
 /// Top-level application orchestrator.
 ///
@@ -34,9 +35,8 @@ pub struct App {
     welcome: WelcomeScreen,
     dashboard: DashboardScreen,
     help: HelpScreen,
-    help_visible: bool,
-    /// Rendered rect of the help modal (for click-outside detection).
-    help_modal_rect: Option<ratatui::layout::Rect>,
+    /// Interactive help modal (manages visibility + rect + click-outside).
+    help_modal: InteractiveModal<Action>,
     quit_visible: bool,
     quit_modal: QuitModal,
     active_theme: Theme,
@@ -63,8 +63,7 @@ impl App {
             welcome: WelcomeScreen::new(),
             dashboard: DashboardScreen::new(),
             help: HelpScreen::new(),
-            help_visible: false,
-            help_modal_rect: None,
+            help_modal: InteractiveModal::display("Help").dimensions(52, 16),
             quit_visible: false,
             quit_modal: QuitModal::new(),
             active_theme: Theme::default(),
@@ -106,11 +105,15 @@ impl App {
             }
             Action::Continue => self.start_forward(Screen::Dashboard),
             Action::Help => {
-                self.help_visible = !self.help_visible;
+                if self.help_modal.is_visible() {
+                    self.help_modal.close();
+                } else {
+                    self.help_modal.open();
+                }
                 self.needs_redraw = true;
             }
             Action::CloseHelp => {
-                self.help_visible = false;
+                self.help_modal.close();
                 self.needs_redraw = true;
             }
             Action::Back => self.go_back(),
@@ -263,19 +266,19 @@ mod tests {
     #[test]
     fn update_help_toggles_modal() {
         let mut app = App::new();
-        assert!(!app.help_visible);
+        assert!(!app.help_modal.is_visible());
         app.update(Action::Help);
-        assert!(app.help_visible);
+        assert!(app.help_modal.is_visible());
         app.update(Action::Help);
-        assert!(!app.help_visible);
+        assert!(!app.help_modal.is_visible());
     }
 
     #[test]
     fn update_close_help_hides_modal() {
         let mut app = App::new();
-        app.help_visible = true;
+        app.help_modal.open();
         app.update(Action::CloseHelp);
-        assert!(!app.help_visible);
+        assert!(!app.help_modal.is_visible());
     }
 
     #[test]

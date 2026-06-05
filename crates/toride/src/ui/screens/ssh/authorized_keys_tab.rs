@@ -1,8 +1,8 @@
-//! Keys sub-tab for the SSH management screen.
+//! Authorized Keys sub-tab for the SSH management screen.
 //!
-//! Displays all SSH keys found in `~/.ssh/` as a scrollable list with type,
-//! fingerprint, encryption status, permissions, and badge indicators. Supports
-//! keyboard navigation, selection, and a detail modal.
+//! Displays entries from `~/.ssh/authorized_keys` as a scrollable list with key
+//! type, fingerprint, comment, options badge, and line number. Supports keyboard
+//! navigation, selection, and a detail modal.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -18,20 +18,20 @@ use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
 
-use super::{SshKeyEntry, SshTab};
+use super::{AuthorizedKeyEntry, SshTab};
 
-// ── KeysTab ──────────────────────────────────────────────────────────────────
+// ── AuthorizedKeysTab ─────────────────────────────────────────────────────────
 
-/// State for the Keys sub-tab.
-pub struct KeysTab {
+/// State for the Authorized Keys sub-tab.
+pub struct AuthorizedKeysTab {
     /// Key entries to display.
-    keys: Vec<SshKeyEntry>,
-    /// Index of the currently selected key.
+    entries: Vec<AuthorizedKeyEntry>,
+    /// Index of the currently selected entry.
     selected: usize,
     /// Vertical scroll offset.
     scroll: usize,
-    /// Which key index is shown in the detail modal (if open).
-    detail_key_idx: Option<usize>,
+    /// Which entry index is shown in the detail modal (if open).
+    detail_entry_idx: Option<usize>,
     /// Interactive detail modal (manages visibility + rect + click-outside).
     detail_modal: InteractiveModal<Action>,
     /// Hitbox rects for list rows (rebuilt each frame).
@@ -40,26 +40,26 @@ pub struct KeysTab {
     hovered_row: Option<usize>,
 }
 
-impl KeysTab {
-    /// Create a new empty keys tab.
+impl AuthorizedKeysTab {
+    /// Create a new empty authorized keys tab.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            keys: Vec::new(),
+            entries: Vec::new(),
             selected: 0,
             scroll: 0,
-            detail_key_idx: None,
-            detail_modal: InteractiveModal::display("Key Detail").dimensions(54, 12),
+            detail_entry_idx: None,
+            detail_modal: InteractiveModal::display("Authorized Key Detail").dimensions(54, 12),
             row_hitboxes: Vec::new(),
             hovered_row: None,
         }
     }
 
-    /// Replace the key list with new data.
-    pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
-        self.keys = keys;
-        if self.selected >= self.keys.len() && !self.keys.is_empty() {
-            self.selected = self.keys.len() - 1;
+    /// Replace the entry list with new data.
+    pub fn set_entries(&mut self, entries: Vec<AuthorizedKeyEntry>) {
+        self.entries = entries;
+        if self.selected >= self.entries.len() && !self.entries.is_empty() {
+            self.selected = self.entries.len() - 1;
         }
         self.clamp_scroll();
     }
@@ -72,22 +72,22 @@ impl KeysTab {
 
     /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.scroll = 0;
             return;
         }
         // Ensure selected is within bounds
-        if self.selected >= self.keys.len() {
-            self.selected = self.keys.len() - 1;
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len() - 1;
         }
     }
 
-    /// Handle a mouse event for the key list.
+    /// Handle a mouse event for the authorized keys list.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
-                self.detail_key_idx = None;
+                self.detail_entry_idx = None;
             }
             return None;
         }
@@ -99,12 +99,12 @@ impl KeysTab {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 if let Some(idx) = self.row_at(mouse.column, mouse.row) {
                     self.selected = idx;
-                    self.detail_key_idx = Some(idx);
+                    self.detail_entry_idx = Some(idx);
                     self.detail_modal.open();
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.selected < self.keys.len().saturating_sub(1) {
+                if self.selected < self.entries.len().saturating_sub(1) {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
@@ -128,18 +128,18 @@ impl KeysTab {
     }
 }
 
-impl Default for KeysTab {
+impl Default for AuthorizedKeysTab {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SshTab for KeysTab {
+impl SshTab for AuthorizedKeysTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, delegate to InteractiveModal.
         if self.detail_modal.is_visible() {
             match self.detail_modal.handle_key(code) {
-                ModalEvent::Closed => self.detail_key_idx = None,
+                ModalEvent::Closed => self.detail_entry_idx = None,
                 ModalEvent::Consumed | ModalEvent::Button(_) => {}
             }
             return None;
@@ -154,38 +154,26 @@ impl SshTab for KeysTab {
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.keys.is_empty() && self.selected < self.keys.len() - 1 {
+                if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
                 None
             }
             KeyCode::Enter => {
-                if !self.keys.is_empty() {
-                    self.detail_key_idx = Some(self.selected);
+                if !self.entries.is_empty() {
+                    self.detail_entry_idx = Some(self.selected);
                     self.detail_modal.open();
                 }
                 None
             }
             // CRUD shortcuts — Phase 2
-            KeyCode::Char('n') => {
-                // TODO: Open generate key modal
+            KeyCode::Char('a') => {
+                // TODO: Open add authorized key modal
                 None
             }
             KeyCode::Char('d') => {
-                // TODO: Open delete confirm modal
-                None
-            }
-            KeyCode::Char('r') => {
-                // TODO: Open rename modal
-                None
-            }
-            KeyCode::Char('i') => {
-                // TODO: Open install to remote modal
-                None
-            }
-            KeyCode::Char('x') => {
-                // TODO: Fix permissions
+                // TODO: Open remove authorized key confirm modal
                 None
             }
             _ => None,
@@ -194,16 +182,16 @@ impl SshTab for KeysTab {
 
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_key_idx {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
+        if let Some(idx) = self.detail_entry_idx {
+            if let Some(entry) = self.entries.get(idx).cloned() {
+                self.render_detail_modal(frame, p, &entry);
             }
         }
     }
@@ -214,19 +202,19 @@ impl SshTab for KeysTab {
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
-        self.detail_key_idx = None;
+        self.detail_entry_idx = None;
     }
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-impl KeysTab {
+impl AuthorizedKeysTab {
     fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_titled_panel(frame, area, p, " SSH KEYS ", p.text, false);
+        let inner = render_titled_panel(frame, area, p, " AUTHORIZED KEYS ", p.text, false);
         let msg = Line::from(vec![
-            Span::styled("No SSH keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  n", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" generate", Style::new().fg(p.text_muted)),
+            Span::styled("No authorized keys found", Style::new().fg(p.text_dim)),
+            Span::styled("  a", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" add", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
@@ -237,7 +225,7 @@ impl KeysTab {
             frame,
             area,
             p,
-            &format!(" SSH KEYS ({}) ", self.keys.len()),
+            &format!(" AUTHORIZED KEYS ({}) ", self.entries.len()),
             p.text,
             false,
         );
@@ -247,7 +235,7 @@ impl KeysTab {
         }
 
         let visible = inner.height as usize;
-        let max_scroll = self.keys.len().saturating_sub(visible);
+        let max_scroll = self.entries.len().saturating_sub(visible);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
@@ -260,10 +248,10 @@ impl KeysTab {
 
         for row in 0..visible {
             let idx = self.scroll + row;
-            if idx >= self.keys.len() {
+            if idx >= self.entries.len() {
                 break;
             }
-            let key = &self.keys[idx];
+            let entry = &self.entries[idx];
             let is_selected = idx == self.selected;
             let is_hovered = self.hovered_row == Some(idx);
             let y = inner.y + row as u16;
@@ -289,70 +277,52 @@ impl KeysTab {
                 Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
             ));
 
-            // Key name (truncated to fit)
-            let name_w = 18.min(inner.width.saturating_sub(4) as usize);
-            let name = truncate_str(&key.name, name_w);
-            let name_chars = name.chars().count();
+            // Comment or truncated public key (20 chars bold)
+            let label_text = entry
+                .comment
+                .as_deref()
+                .unwrap_or(&entry.public_key);
+            let label_w = 20.min(inner.width.saturating_sub(4) as usize);
+            let label = truncate_str(label_text, label_w);
+            let label_chars = label.chars().count();
             spans.push(Span::styled(
-                name,
+                label,
                 Style::new()
                     .fg(p.text)
                     .add_modifier(Modifier::BOLD),
             ));
 
             // Padding
-            let padded = format!("{:width$}", "", width = name_w.saturating_sub(name_chars));
+            let padded = format!("{:width$}", "", width = label_w.saturating_sub(label_chars));
             spans.push(Span::raw(padded));
 
             // Key type
             spans.push(Span::styled(
-                format!(" {} ", key.key_type),
+                format!(" {} ", entry.key_type),
                 Style::new().fg(p.info),
             ));
 
-            // Fingerprint (truncated)
+            // Fingerprint (truncated to 16 chars)
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
-            let fp = truncate_str(&key.fingerprint, fp_w);
+            let fp = truncate_str(&entry.fingerprint, fp_w);
             spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
 
-            // Encrypted badge
-            if key.encrypted {
-                spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
+            // Options badge
+            if entry.options.is_some() {
+                spans.push(Span::styled(" 🔒opts", Style::new().fg(p.warn)));
             }
 
-            // Permissions
+            // Line number badge
             spans.push(Span::styled(
-                format!(" {} ", key.permissions),
-                Style::new().fg(if key.permissions == "0600" || key.permissions == "0400" {
-                    p.text_muted
-                } else {
-                    p.err
-                }),
+                format!(" L:{}", entry.line),
+                Style::new().fg(p.text_muted),
             ));
-
-            // Public key check
-            if key.has_public {
-                spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
-            }
-
-            // Certificate check
-            if key.has_cert {
-                spans.push(Span::styled("✓cert", Style::new().fg(p.accent2)));
-            }
-
-            // Host count badge
-            if key.host_count > 0 {
-                spans.push(Span::styled(
-                    format!(" →{}", key.host_count),
-                    Style::new().fg(p.text_muted),
-                ));
-            }
 
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), row_area);
         }
 
-        // Footer with key count and action hints
+        // Footer with action hints
         self.render_footer(frame, area, p);
     }
 
@@ -363,65 +333,59 @@ impl KeysTab {
         let hints = Line::from(vec![
             Span::styled(" ↵ ", p.key_style()),
             Span::styled("detail ", p.label_style()),
-            Span::styled(" n ", p.key_style()),
-            Span::styled("new ", p.label_style()),
+            Span::styled(" a ", p.key_style()),
+            Span::styled("add ", p.label_style()),
             Span::styled(" d ", p.key_style()),
-            Span::styled("del ", p.label_style()),
-            Span::styled(" r ", p.key_style()),
-            Span::styled("rename ", p.label_style()),
-            Span::styled(" i ", p.key_style()),
-            Span::styled("install ", p.label_style()),
+            Span::styled("remove ", p.label_style()),
         ]);
 
         frame.render_widget(Paragraph::new(hints), footer_area);
     }
 
-    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
+    fn render_detail_modal(
+        &mut self,
+        frame: &mut Frame,
+        p: Palette,
+        entry: &AuthorizedKeyEntry,
+    ) {
         self.detail_modal.render(frame, p, |frame, content_area| {
+                let key_display = truncate_str(
+                    &entry.public_key,
+                    content_area.width.saturating_sub(6) as usize,
+                );
                 let lines = vec![
                     Line::from(vec![
-                        Span::styled("Name:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                        Span::styled("Type:    ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.key_type, Style::new().fg(p.info)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Type:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
+                        Span::styled("Comment: ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.encrypted { "encrypted" } else { "unencrypted" },
-                            Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Perms: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.permissions, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_public { "✓ present" } else { "✗ missing" },
-                            Style::new().fg(if key.has_public { p.ok } else { p.err }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_cert { "✓ attached" } else { "— none" },
-                            Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{} referencing", key.host_count),
+                            entry.comment.as_deref().unwrap_or("—"),
                             Style::new().fg(p.text),
                         ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("FP:      ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.fingerprint, Style::new().fg(p.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Options: ", Style::new().fg(p.text_dim)),
+                        Span::styled(
+                            entry.options.as_deref().unwrap_or("none"),
+                            Style::new().fg(if entry.options.is_some() { p.warn } else { p.text_muted }),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Line:    ", Style::new().fg(p.text_dim)),
+                        Span::styled(
+                            format!("{}", entry.line),
+                            Style::new().fg(p.text),
+                        ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Key:     ", Style::new().fg(p.text_dim)),
+                        Span::styled(key_display, Style::new().fg(p.text_dim)),
                     ]),
                     Line::raw(""),
                     Line::from(
@@ -447,49 +411,45 @@ impl KeysTab {
 mod tests {
     use super::*;
 
-    fn sample_keys() -> Vec<SshKeyEntry> {
+    fn sample_entries() -> Vec<AuthorizedKeyEntry> {
         vec![
-            SshKeyEntry {
-                name: "id_ed25519".into(),
-                key_type: "Ed25519".into(),
+            AuthorizedKeyEntry {
+                key_type: "ssh-ed25519".into(),
+                public_key: "AAAAC3NzaC1lZDI1NTE5AAAAI1234567890abcdef".into(),
+                comment: Some("user@host".into()),
                 fingerprint: "SHA256:abc123def456".into(),
-                encrypted: true,
-                permissions: "0600".into(),
-                has_public: true,
-                has_cert: false,
-                host_count: 2,
+                options: Some("command=\"sync\",no-port-forwarding".into()),
+                line: 1,
             },
-            SshKeyEntry {
-                name: "id_rsa".into(),
-                key_type: "RSA 4096".into(),
+            AuthorizedKeyEntry {
+                key_type: "ssh-rsa".into(),
+                public_key: "AAAAB3NzaC1yc2EAAAADAQABAAABgQC...longkey".into(),
+                comment: None,
                 fingerprint: "SHA256:xyz789".into(),
-                encrypted: false,
-                permissions: "0644".into(),
-                has_public: true,
-                has_cert: true,
-                host_count: 0,
+                options: None,
+                line: 5,
             },
         ]
     }
 
     #[test]
     fn new_is_empty() {
-        let tab = KeysTab::new();
-        assert!(tab.keys.is_empty());
+        let tab = AuthorizedKeysTab::new();
+        assert!(tab.entries.is_empty());
         assert!(!tab.has_modal());
     }
 
     #[test]
-    fn set_keys_updates_list() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        assert_eq!(tab.keys.len(), 2);
+    fn set_entries_updates_list() {
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+        assert_eq!(tab.entries.len(), 2);
     }
 
     #[test]
     fn scroll_up_decrements_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 1;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -497,8 +457,8 @@ mod tests {
 
     #[test]
     fn scroll_down_increments_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -506,8 +466,8 @@ mod tests {
 
     #[test]
     fn scroll_up_at_zero_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -515,8 +475,8 @@ mod tests {
 
     #[test]
     fn scroll_down_at_end_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 1;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -524,18 +484,18 @@ mod tests {
 
     #[test]
     fn enter_opens_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         tab.handle_key(KeyCode::Enter);
         assert!(tab.has_modal());
-        assert_eq!(tab.detail_key_idx, Some(0));
+        assert_eq!(tab.detail_entry_idx, Some(0));
     }
 
     #[test]
     fn esc_closes_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.detail_key_idx = Some(0);
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+        tab.detail_entry_idx = Some(0);
         tab.detail_modal.open();
         tab.handle_key(KeyCode::Esc);
         assert!(!tab.has_modal());
@@ -546,25 +506,28 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
+        let mut tab = AuthorizedKeysTab::new();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH keys found"), "empty state: {output}");
+        assert!(
+            output.contains("No authorized keys found"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
-    fn render_with_keys() {
+    fn render_with_entries() {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("id_ed25519"), "key name: {output}");
-        assert!(output.contains("Ed25519"), "key type: {output}");
+        assert!(output.contains("user@host"), "comment: {output}");
+        assert!(output.contains("ssh-ed25519"), "key type: {output}");
     }
 
     #[test]
@@ -572,15 +535,18 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.detail_key_idx = Some(0);
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+        tab.detail_entry_idx = Some(0);
         tab.detail_modal.open();
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Key Detail"), "modal title: {output}");
-        assert!(output.contains("encrypted"), "encryption status: {output}");
+        assert!(
+            output.contains("Authorized Key Detail"),
+            "modal title: {output}"
+        );
+        assert!(output.contains("ssh-ed25519"), "key type in modal: {output}");
     }
 
     #[test]
@@ -605,10 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn set_keys_clamps_selected() {
-        let mut tab = KeysTab::new();
+    fn set_entries_clamps_selected() {
+        let mut tab = AuthorizedKeysTab::new();
         tab.selected = 5;
-        tab.set_keys(sample_keys()); // 2 items
+        tab.set_entries(sample_entries()); // 2 items
         assert!(tab.selected < 2);
     }
 }

@@ -1,8 +1,8 @@
-//! Keys sub-tab for the SSH management screen.
+//! Certificates sub-tab for the SSH management screen.
 //!
-//! Displays all SSH keys found in `~/.ssh/` as a scrollable list with type,
-//! fingerprint, encryption status, permissions, and badge indicators. Supports
-//! keyboard navigation, selection, and a detail modal.
+//! Displays all SSH certificates as a scrollable list with type,
+//! key ID, validity status, and principal badges. Supports keyboard
+//! navigation, selection, and a detail modal.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -18,20 +18,20 @@ use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
 
-use super::{SshKeyEntry, SshTab};
+use super::{CertificateEntry, SshTab};
 
-// ── KeysTab ──────────────────────────────────────────────────────────────────
+// ── CertificatesTab ───────────────────────────────────────────────────────────
 
-/// State for the Keys sub-tab.
-pub struct KeysTab {
-    /// Key entries to display.
-    keys: Vec<SshKeyEntry>,
-    /// Index of the currently selected key.
+/// State for the Certificates sub-tab.
+pub struct CertificatesTab {
+    /// Certificate entries to display.
+    entries: Vec<CertificateEntry>,
+    /// Index of the currently selected certificate.
     selected: usize,
     /// Vertical scroll offset.
     scroll: usize,
-    /// Which key index is shown in the detail modal (if open).
-    detail_key_idx: Option<usize>,
+    /// Which certificate index is shown in the detail modal (if open).
+    detail_entry_idx: Option<usize>,
     /// Interactive detail modal (manages visibility + rect + click-outside).
     detail_modal: InteractiveModal<Action>,
     /// Hitbox rects for list rows (rebuilt each frame).
@@ -40,54 +40,48 @@ pub struct KeysTab {
     hovered_row: Option<usize>,
 }
 
-impl KeysTab {
-    /// Create a new empty keys tab.
+impl CertificatesTab {
+    /// Create a new empty certificates tab.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            keys: Vec::new(),
+            entries: Vec::new(),
             selected: 0,
             scroll: 0,
-            detail_key_idx: None,
-            detail_modal: InteractiveModal::display("Key Detail").dimensions(54, 12),
+            detail_entry_idx: None,
+            detail_modal: InteractiveModal::display("Certificate Detail").dimensions(58, 16),
             row_hitboxes: Vec::new(),
             hovered_row: None,
         }
     }
 
-    /// Replace the key list with new data.
-    pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
-        self.keys = keys;
-        if self.selected >= self.keys.len() && !self.keys.is_empty() {
-            self.selected = self.keys.len() - 1;
+    /// Replace the certificate list with new data.
+    pub fn set_entries(&mut self, entries: Vec<CertificateEntry>) {
+        self.entries = entries;
+        if self.selected >= self.entries.len() && !self.entries.is_empty() {
+            self.selected = self.entries.len() - 1;
         }
         self.clamp_scroll();
     }
 
-    /// Whether a modal is currently open.
-    #[must_use]
-    pub fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
-    }
-
     /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.scroll = 0;
             return;
         }
         // Ensure selected is within bounds
-        if self.selected >= self.keys.len() {
-            self.selected = self.keys.len() - 1;
+        if self.selected >= self.entries.len() {
+            self.selected = self.entries.len() - 1;
         }
     }
 
-    /// Handle a mouse event for the key list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    /// Handle a mouse event for the certificate list (inherent method).
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
-                self.detail_key_idx = None;
+                self.detail_entry_idx = None;
             }
             return None;
         }
@@ -99,12 +93,12 @@ impl KeysTab {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                 if let Some(idx) = self.row_at(mouse.column, mouse.row) {
                     self.selected = idx;
-                    self.detail_key_idx = Some(idx);
+                    self.detail_entry_idx = Some(idx);
                     self.detail_modal.open();
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.selected < self.keys.len().saturating_sub(1) {
+                if self.selected < self.entries.len().saturating_sub(1) {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
@@ -128,18 +122,18 @@ impl KeysTab {
     }
 }
 
-impl Default for KeysTab {
+impl Default for CertificatesTab {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SshTab for KeysTab {
+impl SshTab for CertificatesTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, delegate to InteractiveModal.
         if self.detail_modal.is_visible() {
             match self.detail_modal.handle_key(code) {
-                ModalEvent::Closed => self.detail_key_idx = None,
+                ModalEvent::Closed => self.detail_entry_idx = None,
                 ModalEvent::Consumed | ModalEvent::Button(_) => {}
             }
             return None;
@@ -154,56 +148,48 @@ impl SshTab for KeysTab {
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.keys.is_empty() && self.selected < self.keys.len() - 1 {
+                if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
                     self.selected += 1;
                     self.clamp_scroll();
                 }
                 None
             }
             KeyCode::Enter => {
-                if !self.keys.is_empty() {
-                    self.detail_key_idx = Some(self.selected);
+                if !self.entries.is_empty() {
+                    self.detail_entry_idx = Some(self.selected);
                     self.detail_modal.open();
                 }
                 None
             }
-            // CRUD shortcuts — Phase 2
-            KeyCode::Char('n') => {
-                // TODO: Open generate key modal
-                None
-            }
-            KeyCode::Char('d') => {
-                // TODO: Open delete confirm modal
+            // Phase 2 shortcut stubs
+            KeyCode::Char('i') => {
+                // TODO: Inspect certificate details (Phase 2)
                 None
             }
             KeyCode::Char('r') => {
-                // TODO: Open rename modal
-                None
-            }
-            KeyCode::Char('i') => {
-                // TODO: Open install to remote modal
-                None
-            }
-            KeyCode::Char('x') => {
-                // TODO: Fix permissions
+                // TODO: Revoke certificate (Phase 2)
                 None
             }
             _ => None,
         }
     }
 
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
+    }
+
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
-        if self.keys.is_empty() {
+        if self.entries.is_empty() {
             self.render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_key_idx {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
+        if let Some(idx) = self.detail_entry_idx {
+            if let Some(entry) = self.entries.get(idx).cloned() {
+                self.render_detail_modal(frame, p, &entry);
             }
         }
     }
@@ -214,19 +200,19 @@ impl SshTab for KeysTab {
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
-        self.detail_key_idx = None;
+        self.detail_entry_idx = None;
     }
 }
 
 // ── Rendering ────────────────────────────────────────────────────────────────
 
-impl KeysTab {
+impl CertificatesTab {
     fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_titled_panel(frame, area, p, " SSH KEYS ", p.text, false);
+        let inner = render_titled_panel(frame, area, p, " CERTIFICATES ", p.text, false);
         let msg = Line::from(vec![
-            Span::styled("No SSH keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  n", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" generate", Style::new().fg(p.text_muted)),
+            Span::styled("No SSH certificates found", Style::new().fg(p.text_dim)),
+            Span::styled("  i", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(" inspect", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
@@ -237,7 +223,7 @@ impl KeysTab {
             frame,
             area,
             p,
-            &format!(" SSH KEYS ({}) ", self.keys.len()),
+            &format!(" CERTIFICATES ({}) ", self.entries.len()),
             p.text,
             false,
         );
@@ -247,7 +233,7 @@ impl KeysTab {
         }
 
         let visible = inner.height as usize;
-        let max_scroll = self.keys.len().saturating_sub(visible);
+        let max_scroll = self.entries.len().saturating_sub(visible);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
@@ -260,10 +246,10 @@ impl KeysTab {
 
         for row in 0..visible {
             let idx = self.scroll + row;
-            if idx >= self.keys.len() {
+            if idx >= self.entries.len() {
                 break;
             }
-            let key = &self.keys[idx];
+            let entry = &self.entries[idx];
             let is_selected = idx == self.selected;
             let is_hovered = self.hovered_row == Some(idx);
             let y = inner.y + row as u16;
@@ -289,70 +275,54 @@ impl KeysTab {
                 Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
             ));
 
-            // Key name (truncated to fit)
+            // Certificate name (truncated to 18 chars, bold)
             let name_w = 18.min(inner.width.saturating_sub(4) as usize);
-            let name = truncate_str(&key.name, name_w);
+            let name = truncate_str(&entry.name, name_w);
             let name_chars = name.chars().count();
             spans.push(Span::styled(
                 name,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
             // Padding
             let padded = format!("{:width$}", "", width = name_w.saturating_sub(name_chars));
             spans.push(Span::raw(padded));
 
-            // Key type
+            // Cert type badge: "User" in p.info, "Host" in p.accent3
+            let cert_type_color = if entry.cert_type == "User" {
+                p.info
+            } else {
+                p.accent3
+            };
             spans.push(Span::styled(
-                format!(" {} ", key.key_type),
-                Style::new().fg(p.info),
+                format!(" {} ", entry.cert_type),
+                Style::new().fg(cert_type_color),
             ));
 
-            // Fingerprint (truncated)
-            let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
-            let fp = truncate_str(&key.fingerprint, fp_w);
-            spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
+            // Key ID (truncated to 16 chars, dim)
+            let kid_w = 16.min(inner.width.saturating_sub(42) as usize);
+            let key_id = truncate_str(&entry.key_id, kid_w);
+            spans.push(Span::styled(key_id, Style::new().fg(p.text_dim)));
 
-            // Encrypted badge
-            if key.encrypted {
-                spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
+            // Validity badge
+            if entry.is_valid {
+                spans.push(Span::styled(" ✓valid", Style::new().fg(p.ok)));
+            } else {
+                spans.push(Span::styled(" ✗expired", Style::new().fg(p.err)));
             }
 
-            // Permissions
-            spans.push(Span::styled(
-                format!(" {} ", key.permissions),
-                Style::new().fg(if key.permissions == "0600" || key.permissions == "0400" {
-                    p.text_muted
-                } else {
-                    p.err
-                }),
-            ));
-
-            // Public key check
-            if key.has_public {
-                spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
-            }
-
-            // Certificate check
-            if key.has_cert {
-                spans.push(Span::styled("✓cert", Style::new().fg(p.accent2)));
-            }
-
-            // Host count badge
-            if key.host_count > 0 {
-                spans.push(Span::styled(
-                    format!(" →{}", key.host_count),
-                    Style::new().fg(p.text_muted),
-                ));
+            // First principal (truncated, muted) if non-empty
+            if let Some(principal) = entry.principals.first() {
+                let prin_w = 12.min(inner.width.saturating_sub(60) as usize);
+                let prin = truncate_str(principal, prin_w);
+                spans.push(Span::styled(format!(" {}", prin), Style::new().fg(p.text_muted)));
             }
 
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), row_area);
         }
 
-        // Footer with key count and action hints
+        // Footer with action hints
         self.render_footer(frame, area, p);
     }
 
@@ -363,65 +333,69 @@ impl KeysTab {
         let hints = Line::from(vec![
             Span::styled(" ↵ ", p.key_style()),
             Span::styled("detail ", p.label_style()),
-            Span::styled(" n ", p.key_style()),
-            Span::styled("new ", p.label_style()),
-            Span::styled(" d ", p.key_style()),
-            Span::styled("del ", p.label_style()),
-            Span::styled(" r ", p.key_style()),
-            Span::styled("rename ", p.label_style()),
             Span::styled(" i ", p.key_style()),
-            Span::styled("install ", p.label_style()),
+            Span::styled("inspect ", p.label_style()),
+            Span::styled(" r ", p.key_style()),
+            Span::styled("revoke ", p.label_style()),
         ]);
 
         frame.render_widget(Paragraph::new(hints), footer_area);
     }
 
-    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
+    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &CertificateEntry) {
         self.detail_modal.render(frame, p, |frame, content_area| {
+                let principals_str = if entry.principals.is_empty() {
+                    "—".to_string()
+                } else {
+                    entry.principals.join(", ")
+                };
+
+                let key_type_display = truncate_str(&entry.key_type, 36);
+                let ca_display = truncate_str(&entry.ca_fingerprint, 36);
+
                 let lines = vec![
                     Line::from(vec![
-                        Span::styled("Name:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                        Span::styled("Name:       ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.name, Style::new().fg(p.text).bold()),
                     ]),
                     Line::from(vec![
-                        Span::styled("Type:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
+                        Span::styled("Type:       ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.cert_type, Style::new().fg(p.info)),
                     ]),
                     Line::from(vec![
-                        Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
+                        Span::styled("Key Type:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(key_type_display, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
+                        Span::styled("Serial:     ", Style::new().fg(p.text_dim)),
+                        Span::styled(entry.serial.to_string(), Style::new().fg(p.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Valid From: ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.valid_from, Style::new().fg(p.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Valid To:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.valid_to, Style::new().fg(p.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Status:     ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.encrypted { "encrypted" } else { "unencrypted" },
-                            Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
+                            if entry.is_valid { "✓ valid" } else { "✗ expired" },
+                            Style::new().fg(if entry.is_valid { p.ok } else { p.err }),
                         ),
                     ]),
                     Line::from(vec![
-                        Span::styled("Perms: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.permissions, Style::new().fg(p.text)),
+                        Span::styled("CA:         ", Style::new().fg(p.text_dim)),
+                        Span::styled(ca_display, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_public { "✓ present" } else { "✗ missing" },
-                            Style::new().fg(if key.has_public { p.ok } else { p.err }),
-                        ),
+                        Span::styled("Key ID:     ", Style::new().fg(p.text_dim)),
+                        Span::styled(&entry.key_id, Style::new().fg(p.text)),
                     ]),
                     Line::from(vec![
-                        Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_cert { "✓ attached" } else { "— none" },
-                            Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{} referencing", key.host_count),
-                            Style::new().fg(p.text),
-                        ),
+                        Span::styled("Principals: ", Style::new().fg(p.text_dim)),
+                        Span::styled(principals_str, Style::new().fg(p.text)),
                     ]),
                     Line::raw(""),
                     Line::from(
@@ -447,49 +421,53 @@ impl KeysTab {
 mod tests {
     use super::*;
 
-    fn sample_keys() -> Vec<SshKeyEntry> {
+    fn sample_entries() -> Vec<CertificateEntry> {
         vec![
-            SshKeyEntry {
-                name: "id_ed25519".into(),
-                key_type: "Ed25519".into(),
-                fingerprint: "SHA256:abc123def456".into(),
-                encrypted: true,
-                permissions: "0600".into(),
-                has_public: true,
-                has_cert: false,
-                host_count: 2,
+            CertificateEntry {
+                name: "id_ed25519-cert.pub".into(),
+                cert_type: "User".into(),
+                key_type: "ssh-ed25519-cert-v01@openssh.com".into(),
+                serial: 42,
+                valid_from: "2025-01-01T00:00:00".into(),
+                valid_to: "2026-01-01T00:00:00".into(),
+                is_valid: true,
+                ca_fingerprint: "SHA256:abc123def456".into(),
+                key_id: "user_host_key".into(),
+                principals: vec!["root".into(), "admin".into()],
             },
-            SshKeyEntry {
-                name: "id_rsa".into(),
-                key_type: "RSA 4096".into(),
-                fingerprint: "SHA256:xyz789".into(),
-                encrypted: false,
-                permissions: "0644".into(),
-                has_public: true,
-                has_cert: true,
-                host_count: 0,
+            CertificateEntry {
+                name: "host-cert.pub".into(),
+                cert_type: "Host".into(),
+                key_type: "ssh-rsa-cert-v01@openssh.com".into(),
+                serial: 99,
+                valid_from: "2024-06-01T00:00:00".into(),
+                valid_to: "2025-06-01T00:00:00".into(),
+                is_valid: false,
+                ca_fingerprint: "SHA256:xyz789abc".into(),
+                key_id: "host_server".into(),
+                principals: vec!["web.example.com".into()],
             },
         ]
     }
 
     #[test]
     fn new_is_empty() {
-        let tab = KeysTab::new();
-        assert!(tab.keys.is_empty());
+        let tab = CertificatesTab::new();
+        assert!(tab.entries.is_empty());
         assert!(!tab.has_modal());
     }
 
     #[test]
-    fn set_keys_updates_list() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        assert_eq!(tab.keys.len(), 2);
+    fn set_entries_updates_list() {
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
+        assert_eq!(tab.entries.len(), 2);
     }
 
     #[test]
     fn scroll_up_decrements_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 1;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -497,8 +475,8 @@ mod tests {
 
     #[test]
     fn scroll_down_increments_selected() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -506,8 +484,8 @@ mod tests {
 
     #[test]
     fn scroll_up_at_zero_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 0;
         tab.handle_key(KeyCode::Up);
         assert_eq!(tab.selected, 0);
@@ -515,8 +493,8 @@ mod tests {
 
     #[test]
     fn scroll_down_at_end_stays() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         tab.selected = 1;
         tab.handle_key(KeyCode::Down);
         assert_eq!(tab.selected, 1);
@@ -524,18 +502,18 @@ mod tests {
 
     #[test]
     fn enter_opens_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         tab.handle_key(KeyCode::Enter);
         assert!(tab.has_modal());
-        assert_eq!(tab.detail_key_idx, Some(0));
+        assert_eq!(tab.detail_entry_idx, Some(0));
     }
 
     #[test]
     fn esc_closes_detail_modal() {
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.detail_key_idx = Some(0);
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
+        tab.detail_entry_idx = Some(0);
         tab.detail_modal.open();
         tab.handle_key(KeyCode::Esc);
         assert!(!tab.has_modal());
@@ -546,25 +524,25 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
+        let mut tab = CertificatesTab::new();
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH keys found"), "empty state: {output}");
+        assert!(output.contains("No SSH certificates found"), "empty state: {output}");
     }
 
     #[test]
-    fn render_with_keys() {
+    fn render_with_entries() {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("id_ed25519"), "key name: {output}");
-        assert!(output.contains("Ed25519"), "key type: {output}");
+        assert!(output.contains("id_ed25519"), "cert name: {output}");
+        assert!(output.contains("User"), "cert type: {output}");
     }
 
     #[test]
@@ -572,15 +550,16 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys());
-        tab.detail_key_idx = Some(0);
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
+        tab.detail_entry_idx = Some(0);
         tab.detail_modal.open();
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Key Detail"), "modal title: {output}");
-        assert!(output.contains("encrypted"), "encryption status: {output}");
+        assert!(output.contains("Certificate Detail"), "modal title: {output}");
+        assert!(output.contains("User"), "cert type in modal: {output}");
+        assert!(output.contains("42"), "serial in modal: {output}");
     }
 
     #[test]
@@ -605,10 +584,10 @@ mod tests {
     }
 
     #[test]
-    fn set_keys_clamps_selected() {
-        let mut tab = KeysTab::new();
+    fn set_entries_clamps_selected() {
+        let mut tab = CertificatesTab::new();
         tab.selected = 5;
-        tab.set_keys(sample_keys()); // 2 items
+        tab.set_entries(sample_entries()); // 2 items
         assert!(tab.selected < 2);
     }
 }
