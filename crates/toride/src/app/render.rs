@@ -86,9 +86,13 @@ impl App {
         // Help modal overlay — rendered on top of whatever is behind it
         if self.help_visible {
             let viewport = Viewport::from_area(frame.area());
-            Modal::new("Help").render(frame, *p, |frame, content_area| {
+            let modal = Modal::new("Help");
+            self.help_modal_rect = Some(modal.rect(frame.area()));
+            modal.render(frame, *p, |frame, content_area| {
                 HelpScreen::render(frame, content_area, *p, viewport);
             });
+        } else {
+            self.help_modal_rect = None;
         }
 
         // Quit confirmation modal

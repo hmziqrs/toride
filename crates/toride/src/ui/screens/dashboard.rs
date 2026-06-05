@@ -18,9 +18,10 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::data::{ActivityEntry, DashboardData, Module, ModuleUpdate, Section};
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::status::TorideStatus;
 use crate::ui::helpers::{format_bytes, format_duration, percent_color};
-use crate::ui::responsive::truncate_str;
+use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::ssh::SshContent;
 use crate::ui::shell::{
@@ -98,6 +99,8 @@ pub struct DashboardScreen {
     open_module: Option<usize>,
     /// Rendered rect of the module detail modal (for click-outside detection).
     module_modal_rect: Option<Rect>,
+    /// Interactive buttons inside the module detail modal.
+    module_modal_buttons: ButtonRow<Action>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
     /// Hitbox rects for module cards (rebuilt each frame).
@@ -146,6 +149,13 @@ impl DashboardScreen {
             activity_scroll: 0,
             open_module: None,
             module_modal_rect: None,
+            module_modal_buttons: ButtonRow::new(
+                vec![
+                    InteractiveButton::new("open", "↵", Action::Continue),
+                    InteractiveButton::new("close", "esc", Action::Back),
+                ],
+                vec![4, 0],
+            ),
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
             module_hitboxes: Vec::new(),
@@ -352,12 +362,14 @@ impl DashboardScreen {
 
         // ── Module detail modal ───────────────────────────────────────────────
         if let Some(idx) = self.open_module
-            && let Some(m) = self.data.modules.get(idx)
+            && let Some(m) = self.data.modules.get(idx).cloned()
         {
             let modal = Modal::new("module").dimensions(54, 10);
             self.module_modal_rect = Some(modal.rect(frame.area()));
+            let viewport = Viewport::from_area(frame.area());
+            let buttons = &mut self.module_modal_buttons;
             modal.render(frame, p, |frame, area| {
-                render_module_modal_content(frame, area, p, m);
+                render_module_modal_content(frame, area, p, &m, buttons, viewport);
             });
         } else {
             self.module_modal_rect = None;
@@ -739,8 +751,15 @@ impl AppScreen for DashboardScreen {
 
         // Module detail modal open: block all background interaction.
         if self.open_module.is_some() {
+            // Route mouse events to modal buttons (hover, press, click).
+            let btn_result = self.module_modal_buttons.handle_mouse(&mouse);
+            if btn_result.is_some() {
+                self.open_module = None;
+                self.module_modal_rect = None;
+                return None;
+            }
+            // Click outside modal rect also closes it.
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                // Only close if click is outside the modal rect.
                 if let Some(mr) = self.module_modal_rect {
                     let col = mouse.column;
                     let row = mouse.row;
@@ -918,7 +937,23 @@ fn render_placeholder(frame: &mut Frame, area: Rect, p: Palette, section: Sectio
     frame.render_widget(Paragraph::new(msg).centered(), centered);
 }
 
-fn render_module_modal_content(frame: &mut Frame, area: Rect, p: Palette, m: &Module) {
+fn render_module_modal_content(
+    frame: &mut Frame,
+    area: Rect,
+    p: Palette,
+    m: &Module,
+    buttons: &mut ButtonRow<Action>,
+    viewport: Viewport,
+) {
+    let [_, text_area, _, btn_area, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(4),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+
     let lines = vec![
         Line::from(vec![
             Span::styled(format!("{} ", m.icon), Style::new().fg(p.accent2)),
@@ -932,14 +967,11 @@ fn render_module_modal_content(frame: &mut Frame, area: Rect, p: Palette, m: &Mo
         Line::raw(""),
         Line::from(Span::styled(m.summary.clone(), Style::new().fg(p.text_dim))),
         Line::from(Span::styled(m.detail.clone(), Style::new().fg(p.text_muted))),
-        Line::raw(""),
-        Line::from(vec![
-            accent_badge("↵ open", p),
-            Span::raw("   "),
-            neutral_badge("esc close", p),
-        ]),
     ];
-    frame.render_widget(Paragraph::new(lines), area);
+    frame.render_widget(Paragraph::new(lines), text_area);
+
+    let buf = frame.buffer_mut();
+    buttons.render(buf, btn_area, p, viewport);
 }
 
 // ── Header gauge tooltip ─────────────────────────────────────────────────────

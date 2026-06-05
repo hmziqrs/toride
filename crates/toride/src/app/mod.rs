@@ -35,6 +35,8 @@ pub struct App {
     dashboard: DashboardScreen,
     help: HelpScreen,
     help_visible: bool,
+    /// Rendered rect of the help modal (for click-outside detection).
+    help_modal_rect: Option<ratatui::layout::Rect>,
     quit_visible: bool,
     quit_modal: QuitModal,
     active_theme: Theme,
@@ -62,6 +64,7 @@ impl App {
             dashboard: DashboardScreen::new(),
             help: HelpScreen::new(),
             help_visible: false,
+            help_modal_rect: None,
             quit_visible: false,
             quit_modal: QuitModal::new(),
             active_theme: Theme::default(),

@@ -59,8 +59,19 @@ impl App {
             return self.quit_modal.handle_mouse(&mouse);
         }
 
-        // Swallow all mouse events while help modal is open
+        // Help modal: close on click outside, swallow everything else.
         if self.help_visible {
+            if let Some(mr) = self.help_modal_rect {
+                if let crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left) = mouse.kind {
+                    let col = mouse.column;
+                    let row = mouse.row;
+                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                        self.help_visible = false;
+                        self.help_modal_rect = None;
+                        self.needs_redraw = true;
+                    }
+                }
+            }
             return None;
         }
 

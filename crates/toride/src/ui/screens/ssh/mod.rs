@@ -138,11 +138,10 @@ impl SshContent {
 
     /// Handle a mouse event for the SSH content area.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // If the active tab has a modal open, intercept all mouse events.
+        // If the active tab has a modal open, delegate to it for
+        // click-outside detection (KeysTab handles this internally).
         if self.keys.has_modal() {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.keys.close_modal();
-            }
+            self.keys.handle_mouse(mouse);
             return None;
         }
 
