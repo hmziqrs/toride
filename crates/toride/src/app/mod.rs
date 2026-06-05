@@ -15,6 +15,7 @@ use tokio::select;
 
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
+use crate::ssh_data::SshDataCollector;
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
@@ -42,6 +43,7 @@ pub struct App {
     transition: Option<TransitionState>,
     transition_cache: TransitionCache,
     collector: StatusCollector,
+    ssh_collector: SshDataCollector,
 }
 
 impl Default for App {
@@ -68,6 +70,7 @@ impl App {
             transition: None,
             transition_cache: TransitionCache::new(),
             collector: StatusCollector::new(),
+            ssh_collector: SshDataCollector::new(),
         }
     }
 
@@ -180,11 +183,18 @@ impl App {
                     self.needs_redraw = true;
                 }
 
+                // Receive collected SSH key data
+                Some(keys) = self.ssh_collector.poll(), if self.ssh_collector.is_pending() => {
+                    self.dashboard.set_ssh_keys(keys);
+                    self.needs_redraw = true;
+                }
+
                 // Periodic status refresh
                 _ = refresh_interval.tick() => {
                     if matches!(self.nav.current(), Screen::Dashboard) {
                         self.dashboard.tick_clock();
                         self.collector.start();
+                        self.ssh_collector.start();
                         self.needs_redraw = true;
                     }
                 }

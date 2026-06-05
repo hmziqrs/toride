@@ -2,12 +2,14 @@ pub mod base;
 pub mod dashboard;
 pub mod help;
 pub mod quit;
+pub mod ssh;
 pub mod welcome;
 
 pub use base::ScreenBase;
 pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
 pub use quit::QuitModal;
+pub use ssh::{SshContent, SshKeyEntry};
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};

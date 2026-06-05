@@ -22,6 +22,7 @@ use crate::status::TorideStatus;
 use crate::ui::helpers::{format_bytes, format_duration, percent_color};
 use crate::ui::responsive::truncate_str;
 use crate::ui::screens::AppScreen;
+use crate::ui::screens::ssh::SshContent;
 use crate::ui::shell::{
     SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar, gauge_hitboxes, render_footer, render_header,
     shell_layout, header::HeaderData,
@@ -114,6 +115,8 @@ pub struct DashboardScreen {
     prev_gauge_hover: Option<GaugeKind>,
     /// Timestamp of the last render call (for frame deltas).
     last_frame: Instant,
+    /// SSH management content (rendered when Section::Ssh is active).
+    ssh_content: SshContent,
 }
 
 impl Default for DashboardScreen {
@@ -153,6 +156,7 @@ impl DashboardScreen {
             tooltip_fx: EffectManager::default(),
             prev_gauge_hover: None,
             last_frame: Instant::now(),
+            ssh_content: SshContent::new(),
         }
     }
 
@@ -186,6 +190,11 @@ impl DashboardScreen {
     /// Refresh the wall-clock label (called from the app refresh tick).
     pub fn tick_clock(&mut self) {
         self.clock = current_clock();
+    }
+
+    /// Provide live SSH key data (called from the SSH data collector).
+    pub fn set_ssh_keys(&mut self, keys: Vec<crate::ui::screens::ssh::SshKeyEntry>) {
+        self.ssh_content.set_keys(keys);
     }
 
     /// The currently active section.
@@ -332,6 +341,8 @@ impl DashboardScreen {
         let content = shell.content;
         if self.active_section() == Section::Dashboard {
             self.render_dashboard_content(frame, content, p);
+        } else if self.active_section() == Section::Ssh {
+            self.ssh_content.view(frame, content, p);
         } else {
             render_placeholder(frame, content, p, self.active_section());
         }
@@ -666,6 +677,12 @@ impl AppScreen for DashboardScreen {
                 return None;
             }
             _ => {}
+        }
+
+        // Route input to SSH content when that section is active and focus
+        // is not on the sidebar. Sidebar navigation still works normally.
+        if self.active_section() == Section::Ssh && self.focus != Focus::Sidebar {
+            return self.ssh_content.handle_key(code);
         }
 
         match self.focus {

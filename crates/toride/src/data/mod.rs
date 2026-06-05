@@ -171,6 +171,69 @@ impl Section {
     }
 }
 
+// ── SshSection ───────────────────────────────────────────────────────────────
+
+/// Sub-tabs within the SSH management content area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshSection {
+    /// SSH key management (list, generate, delete, rename, etc.).
+    Keys,
+    /// Trusted hosts from `known_hosts`.
+    KnownHosts,
+    /// SSH config host blocks.
+    Config,
+    /// SSH agent status and loaded keys.
+    Agent,
+    /// Active port forwarding sessions.
+    Forwarding,
+    /// SSH health diagnostics.
+    Diagnostics,
+}
+
+impl SshSection {
+    /// Human label shown in the sub-tab bar.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            SshSection::Keys => "Keys",
+            SshSection::KnownHosts => "Hosts",
+            SshSection::Config => "Config",
+            SshSection::Agent => "Agent",
+            SshSection::Forwarding => "Fwd",
+            SshSection::Diagnostics => "Diag",
+        }
+    }
+
+    /// All sub-tabs in display order.
+    #[must_use]
+    pub fn all() -> &'static [SshSection] {
+        &[
+            SshSection::Keys,
+            SshSection::KnownHosts,
+            SshSection::Config,
+            SshSection::Agent,
+            SshSection::Forwarding,
+            SshSection::Diagnostics,
+        ]
+    }
+
+    /// Next sub-tab in order (wraps).
+    #[must_use]
+    pub fn next(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|&s| s == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    /// Previous sub-tab in order (wraps).
+    #[must_use]
+    pub fn prev(self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|&s| s == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
+    }
+}
+
 /// A single entry in the sidebar nav list.
 #[derive(Clone, Debug)]
 pub struct SidebarItem {
