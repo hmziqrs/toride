@@ -104,9 +104,8 @@ impl Default for SshDataCollector {
 
 /// Collect SSH data by reading real files and calling real services.
 ///
-/// File-based subsystems (known_hosts, authorized_keys, keys, config) are
-/// collected in parallel. CLI-based subsystems (agent, forwarding, certificates)
-/// use mock data for now — they'll be wired in a follow-up.
+/// All subsystems run in parallel via `tokio::join!`. Individual failures are
+/// logged and produce empty data — the app never crashes from a bad subsystem.
 async fn collect_real_data() -> SshDataBundle {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
@@ -116,14 +115,18 @@ async fn collect_real_data() -> SshDataBundle {
         }
     };
 
-    // File-based: run in parallel
-    let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r) = tokio::join!(
-        collect_keys(&mgr),
-        collect_known_hosts(&mgr),
-        collect_authorized_keys(&mgr),
-        collect_config_hosts(&mgr),
-        collect_diagnostics(&mgr),
-    );
+    // All subsystems in parallel
+    let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) =
+        tokio::join!(
+            collect_keys(&mgr),
+            collect_known_hosts(&mgr),
+            collect_authorized_keys(&mgr),
+            collect_config_hosts(&mgr),
+            collect_diagnostics(&mgr),
+            collect_agent(&mgr),
+            collect_forwarding(&mgr),
+            collect_certificates(&mgr),
+        );
 
     let keys = keys_r.unwrap_or_default();
     let known_hosts = known_hosts_r.unwrap_or_default();
@@ -131,11 +134,18 @@ async fn collect_real_data() -> SshDataBundle {
     let config_hosts = config_r.unwrap_or_default();
     let diagnostics = diag_r.unwrap_or_default();
 
-    // CLI-based: still stubs (Phase B/C — will wire to real CLI tools later)
-    let agent_status = stub::agent_status();
-    let agent_keys = stub::agent_keys();
-    let forwarding = stub::forwarding();
-    let certificates = stub::certificates();
+    let (agent_status, agent_keys) = agent_r.unwrap_or_else(|_| {
+        (
+            AgentStatus {
+                reachable: false,
+                socket_path: None,
+                key_count: 0,
+            },
+            Vec::new(),
+        )
+    });
+    let forwarding = forward_r.unwrap_or_default();
+    let certificates = cert_r.unwrap_or_default();
 
     let security =
         build_security_data(&known_hosts, &authorized_keys, &diagnostics);
@@ -246,6 +256,103 @@ async fn collect_diagnostics(
             Err(())
         }
     }
+}
+
+async fn collect_agent(
+    mgr: &toride_ssh::SshManager,
+) -> Result<(AgentStatus, Vec<AgentKeyEntry>), ()> {
+    let svc = mgr.agent();
+    let socket_path = std::env::var("SSH_AUTH_SOCK").ok();
+
+    let reachable = match svc.status().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("agent status: {e}");
+            false
+        }
+    };
+
+    if !reachable {
+        return Ok((
+            AgentStatus {
+                reachable: false,
+                socket_path,
+                key_count: 0,
+            },
+            Vec::new(),
+        ));
+    }
+
+    match svc.list_keys().await {
+        Ok(keys) => Ok(ssh_convert::convert_agent_keys(keys, true, socket_path)),
+        Err(e) => {
+            tracing::warn!("agent keys: {e}");
+            Ok((
+                AgentStatus {
+                    reachable: true,
+                    socket_path,
+                    key_count: 0,
+                },
+                Vec::new(),
+            ))
+        }
+    }
+}
+
+async fn collect_forwarding(
+    mgr: &toride_ssh::SshManager,
+) -> Result<Vec<ForwardSessionEntry>, ()> {
+    let svc = mgr.forward();
+    match svc.list().await {
+        Ok(sessions) => Ok(ssh_convert::convert_forwarding(sessions)),
+        Err(e) => {
+            tracing::debug!("forwarding: {e}");
+            Err(())
+        }
+    }
+}
+
+async fn collect_certificates(
+    mgr: &toride_ssh::SshManager,
+) -> Result<Vec<CertificateEntry>, ()> {
+    let ssh_dir = match toride_ssh::SshPaths::new() {
+        Ok(p) => p.ssh_dir().to_path_buf(),
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    let cert_files: Vec<std::path::PathBuf> = match std::fs::read_dir(&ssh_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with("-cert.pub"))
+            })
+            .collect(),
+        Err(_) => return Ok(Vec::new()),
+    };
+
+    if cert_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let cert_svc = mgr.certificate();
+    let mut raw = Vec::new();
+
+    for path in cert_files {
+        match cert_svc.inspect(&path).await {
+            Ok(info) => raw.push((path, info)),
+            Err(e) => {
+                tracing::debug!(
+                    "certificate {}: {e}",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+            }
+        }
+    }
+
+    Ok(ssh_convert::convert_certificates(raw))
 }
 
 /// Build security overview data from already-collected real data.
@@ -516,36 +623,6 @@ fn parse_sshd_config() -> HashMap<String, String> {
         }
     }
     config
-}
-
-// ── Stub Data (CLI-based subsystems, not yet wired) ──────────────────────────
-
-/// Placeholder data for subsystems that require CLI tools not yet integrated.
-///
-/// These return hardcoded data until agent, forwarding, and certificate services
-/// are wired up in a follow-up.
-mod stub {
-    use super::*;
-
-    pub fn agent_status() -> AgentStatus {
-        AgentStatus {
-            reachable: false,
-            socket_path: None,
-            key_count: 0,
-        }
-    }
-
-    pub fn agent_keys() -> Vec<AgentKeyEntry> {
-        Vec::new()
-    }
-
-    pub fn forwarding() -> Vec<ForwardSessionEntry> {
-        Vec::new()
-    }
-
-    pub fn certificates() -> Vec<CertificateEntry> {
-        Vec::new()
-    }
 }
 
 // ── Mock Data (test only) ───────────────────────────────────────────────────

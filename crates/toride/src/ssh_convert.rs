@@ -5,12 +5,13 @@
 //! — individual entries that fail conversion are skipped with a warning log.
 
 use std::ffi::OsStr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use toride_ssh::KeyType;
 
 use crate::ui::screens::ssh::{
-    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, ConfigHostEntry, DiagnosticEntry,
-    ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
+    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
+    DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
 };
 
 // ── Known Hosts ─────────────────────────────────────────────────────────────
@@ -258,6 +259,125 @@ pub fn convert_config_ast(ast: &toride_ssh::config::ast::ConfigAst) -> Vec<Confi
     entries
 }
 
+// ── Agent ────────────────────────────────────────────────────────────────────
+
+/// Convert agent keys and status into UI types.
+///
+/// `reachable` and `socket_path` come from the collector (not from `SshKey`).
+/// `is_locked` and `has_constraints` default to `false` — the current agent
+/// protocol does not expose these fields.
+pub fn convert_agent_keys(
+    keys: Vec<toride_ssh::SshKey>,
+    reachable: bool,
+    socket_path: Option<String>,
+) -> (AgentStatus, Vec<AgentKeyEntry>) {
+    let entries: Vec<AgentKeyEntry> = keys
+        .into_iter()
+        .map(|k| AgentKeyEntry {
+            name: k
+                .comment
+                .clone()
+                .unwrap_or_else(|| {
+                    k.path
+                        .file_name()
+                        .unwrap_or_else(|| OsStr::new("(unknown)"))
+                        .to_string_lossy()
+                        .into_owned()
+                }),
+            key_type: format_key_type(&k.key_type),
+            fingerprint: k
+                .fingerprint
+                .as_ref()
+                .map(|fp| format!("{fp}"))
+                .unwrap_or_default(),
+            is_locked: false,
+            has_constraints: false,
+        })
+        .collect();
+
+    let status = AgentStatus {
+        reachable,
+        socket_path,
+        key_count: entries.len(),
+    };
+
+    (status, entries)
+}
+
+// ── Forwarding ───────────────────────────────────────────────────────────────
+
+/// Convert forwarding sessions and their port forwards to UI types.
+pub fn convert_forwarding(
+    sessions: Vec<(
+        toride_ssh::forward::ControlSession,
+        Vec<toride_ssh::forward::PortForward>,
+    )>,
+) -> Vec<ForwardSessionEntry> {
+    sessions
+        .into_iter()
+        .map(|(session, forwards)| {
+            let converted_forwards: Vec<ForwardEntry> = forwards
+                .into_iter()
+                .map(|pf| ForwardEntry {
+                    forward_type: pf.forward_type.to_string(),
+                    local_addr: pf.local_addr,
+                    local_port: pf.local_port,
+                    remote_addr: pf.remote_addr,
+                    remote_port: pf.remote_port,
+                })
+                .collect();
+            let forward_count = converted_forwards.len();
+            ForwardSessionEntry {
+                host: session.host,
+                control_path: session.control_path.display().to_string(),
+                pid: session.pid,
+                established_ago: format_duration_since(session.established),
+                forwards: converted_forwards,
+                forward_count,
+            }
+        })
+        .collect()
+}
+
+// ── Certificates ─────────────────────────────────────────────────────────────
+
+/// Convert certificate file paths and their parsed info into UI types.
+pub fn convert_certificates(
+    certs: Vec<(std::path::PathBuf, toride_ssh::certificate::CertificateInfo)>,
+) -> Vec<CertificateEntry> {
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    certs
+        .into_iter()
+        .map(|(path, info)| {
+            let is_valid = info.valid_after <= now_secs && now_secs < info.valid_before;
+            CertificateEntry {
+                name: path
+                    .file_name()
+                    .unwrap_or_else(|| OsStr::new("(unknown)"))
+                    .to_string_lossy()
+                    .into_owned(),
+                cert_type: if info.is_host {
+                    "Host".into()
+                } else {
+                    "User".into()
+                },
+                key_type: info.key_type,
+                serial: info.serial,
+                valid_from: format_unix_timestamp(info.valid_after),
+                valid_to: format_unix_timestamp(info.valid_before),
+                is_valid,
+                ca_fingerprint: info.ca_fingerprint.unwrap_or_default(),
+                key_id: info.key_id,
+                principals: info.valid_principals,
+            }
+        })
+        .collect()
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Truncate a base64 public key for display, keeping the beginning and end.
@@ -267,4 +387,45 @@ fn truncate_key(key: &str, max_len: usize) -> String {
     }
     let half = max_len / 2 - 1;
     format!("{}..{}", &key[..half], &key[key.len() - half..])
+}
+
+/// Format the duration since a `SystemTime` as a human-readable string.
+///
+/// Returns `"Xd Xh Xm"` with zero units omitted. Returns an empty string
+/// if the time is `None` or the clock would go backwards.
+fn format_duration_since(t: Option<SystemTime>) -> String {
+    let established = match t {
+        Some(t) => t,
+        None => return String::new(),
+    };
+    match SystemTime::now().duration_since(established) {
+        Ok(dur) => {
+            let total_secs = dur.as_secs();
+            let days = total_secs / 86400;
+            let hours = (total_secs % 86400) / 3600;
+            let mins = (total_secs % 3600) / 60;
+            let mut parts = Vec::new();
+            if days > 0 {
+                parts.push(format!("{days}d"));
+            }
+            if hours > 0 {
+                parts.push(format!("{hours}h"));
+            }
+            parts.push(format!("{mins}m"));
+            parts.join(" ")
+        }
+        Err(_) => String::new(),
+    }
+}
+
+/// Format a Unix timestamp (seconds) as a human-readable datetime string.
+///
+/// Returns `"forever"` for `u64::MAX`, or `"(invalid)"` if out of range.
+fn format_unix_timestamp(secs: u64) -> String {
+    if secs == u64::MAX {
+        return "forever".into();
+    }
+    chrono::DateTime::from_timestamp(secs as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "(invalid)".into())
 }
