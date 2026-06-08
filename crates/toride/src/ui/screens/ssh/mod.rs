@@ -289,15 +289,13 @@ impl SshContent {
 
     /// Render the full SSH content area.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_panel(frame, area, None, p.text, p.border, p.bg);
-
         // Split into tab bar + content area
         let [tab_bar_area, _, content_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
         ])
-        .areas(inner);
+        .areas(area);
 
         self.render_tab_bar(frame, tab_bar_area, p);
         self.active_tab_mut().view(frame, content_area, p);
