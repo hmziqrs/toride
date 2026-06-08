@@ -35,6 +35,7 @@ use crate::ui::widgets::{
     render_panel, render_titled_panel, tag_badge, title_line, title_line_with_detail,
 };
 use crate::ui::screens::base::ScreenBase;
+use ratatui_interact::state::FocusManager;
 use tachyonfx::{EffectManager, Interpolation, fx};
 
 /// Below this frame width the sidebar auto-collapses to an icon rail.
@@ -57,51 +58,37 @@ enum GaugeKind {
     Net,
 }
 
-/// Which region currently has keyboard focus.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Focus {
+/// Top-level focus regions. This never grows — it is always exactly
+/// `Sidebar ↔ Content`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum ShellFocus {
     Sidebar,
+    Content,
+}
+
+/// Internal focus within the Dashboard content area (modules grid, updates
+/// list, activity log). Each section owns its own internal focus model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DashboardFocus {
     Modules,
     Updates,
     Activity,
-    /// SSH management content (only valid when Section::Ssh is active).
-    Ssh,
 }
 
-impl Focus {
-    /// Cycle focus forward, respecting which section is active so that
-    /// unimplemented or inactive regions are never reachable.
-    fn next(self, section: Section) -> Self {
-        match section {
-            Section::Dashboard => match self {
-                Focus::Sidebar => Focus::Modules,
-                Focus::Modules => Focus::Updates,
-                Focus::Updates => Focus::Activity,
-                Focus::Activity | Focus::Ssh => Focus::Sidebar,
-            },
-            Section::Ssh => match self {
-                Focus::Sidebar => Focus::Ssh,
-                Focus::Ssh | Focus::Modules | Focus::Updates | Focus::Activity => Focus::Sidebar,
-            },
-            // Unimplemented sections have no focusable content — stay on sidebar.
-            _ => Focus::Sidebar,
+impl DashboardFocus {
+    fn next(self) -> Self {
+        match self {
+            Self::Modules => Self::Updates,
+            Self::Updates => Self::Activity,
+            Self::Activity => Self::Modules,
         }
     }
 
-    /// Cycle focus backward (reverse of [`next`]).
-    fn prev(self, section: Section) -> Self {
-        match section {
-            Section::Dashboard => match self {
-                Focus::Sidebar | Focus::Ssh => Focus::Activity,
-                Focus::Modules => Focus::Sidebar,
-                Focus::Updates => Focus::Modules,
-                Focus::Activity => Focus::Updates,
-            },
-            Section::Ssh => match self {
-                Focus::Sidebar | Focus::Modules | Focus::Updates | Focus::Activity => Focus::Ssh,
-                Focus::Ssh => Focus::Sidebar,
-            },
-            _ => Focus::Sidebar,
+    fn prev(self) -> Self {
+        match self {
+            Self::Modules => Self::Activity,
+            Self::Updates => Self::Modules,
+            Self::Activity => Self::Updates,
         }
     }
 }
@@ -112,7 +99,9 @@ pub struct DashboardScreen {
     status: Option<TorideStatus>,
     sidebar: Sidebar,
     active: usize,
-    focus: Focus,
+    focus: FocusManager<ShellFocus>,
+    /// Internal panel focus for the Dashboard section only.
+    dashboard_focus: DashboardFocus,
     module_sel: usize,
     module_scroll: usize,
     updates_scroll: usize,
@@ -162,7 +151,13 @@ impl DashboardScreen {
             status: None,
             sidebar,
             active: 0,
-            focus: Focus::Sidebar,
+            focus: {
+                let mut fm = FocusManager::new();
+                fm.register(ShellFocus::Sidebar);
+                fm.register(ShellFocus::Content);
+                fm
+            },
+            dashboard_focus: DashboardFocus::Modules,
             module_sel: 0,
             module_scroll: 0,
             updates_scroll: 0,
@@ -272,33 +267,37 @@ impl DashboardScreen {
 
     /// Scroll/move within the currently focused region (used by the mouse wheel).
     fn scroll_focused(&mut self, down: bool) {
-        match self.focus {
-            Focus::Updates => {
-                self.updates_scroll = if down {
-                    self.updates_scroll + 1
-                } else {
-                    self.updates_scroll.saturating_sub(1)
-                };
-            }
-            Focus::Activity => {
-                self.activity_scroll = if down {
-                    self.activity_scroll + 1
-                } else {
-                    self.activity_scroll.saturating_sub(1)
-                };
-            }
-            Focus::Modules => {
-                if down {
-                    self.module_down();
-                } else {
-                    self.module_up();
+        if self.focus.is_focused(&ShellFocus::Sidebar) {
+            self.sidebar.scroll(if down { 1 } else { -1 });
+            return;
+        }
+        // Content-focused: delegate to the active section.
+        match self.active_section() {
+            Section::Dashboard => match self.dashboard_focus {
+                DashboardFocus::Updates => {
+                    self.updates_scroll = if down {
+                        self.updates_scroll + 1
+                    } else {
+                        self.updates_scroll.saturating_sub(1)
+                    };
                 }
-            }
-            Focus::Sidebar => {
-                self.sidebar.scroll(if down { 1 } else { -1 });
-            }
-            // SSH scroll is handled by ssh_content directly via mouse delegation.
-            Focus::Ssh => {}
+                DashboardFocus::Activity => {
+                    self.activity_scroll = if down {
+                        self.activity_scroll + 1
+                    } else {
+                        self.activity_scroll.saturating_sub(1)
+                    };
+                }
+                DashboardFocus::Modules => {
+                    if down {
+                        self.module_down();
+                    } else {
+                        self.module_up();
+                    }
+                }
+            },
+            // SSH and other sections handle their own scrolling via mouse delegation.
+            _ => {}
         }
     }
 
@@ -365,7 +364,7 @@ impl DashboardScreen {
             p,
             &self.data.sidebar,
             self.active,
-            self.focus == Focus::Sidebar,
+            self.focus.is_focused(&ShellFocus::Sidebar),
             collapsed,
             &self.data.ssh_target,
         );
@@ -606,7 +605,9 @@ impl DashboardScreen {
     }
 
     fn render_modules_panel(&mut self, frame: &mut Frame, area: Rect, p: Palette, cols: u16) {
-        let focused = self.focus == Focus::Modules;
+        let focused = self.focus.is_focused(&ShellFocus::Content)
+            && self.active_section() == Section::Dashboard
+            && self.dashboard_focus == DashboardFocus::Modules;
         let inner = render_titled_panel(frame, area, p, " MODULES ", p.accent, focused);
         if inner.height == 0 {
             return;
@@ -665,7 +666,9 @@ impl DashboardScreen {
     }
 
     fn render_updates_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let focused = self.focus == Focus::Updates;
+        let focused = self.focus.is_focused(&ShellFocus::Content)
+            && self.active_section() == Section::Dashboard
+            && self.dashboard_focus == DashboardFocus::Updates;
         let title = format!(" UPDATES AVAILABLE · {} ", self.data.updates_count());
         let inner = render_titled_panel(frame, area, p, &title, p.warn, focused);
         for (i, row) in list_rows(inner, self.updates_scroll, self.data.updates.len()) {
@@ -674,11 +677,61 @@ impl DashboardScreen {
     }
 
     fn render_activity_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        let focused = self.focus == Focus::Activity;
+        let focused = self.focus.is_focused(&ShellFocus::Content)
+            && self.active_section() == Section::Dashboard
+            && self.dashboard_focus == DashboardFocus::Activity;
         let inner = render_titled_panel(frame, area, p, " RECENTLY INSTALLED ", p.accent3, focused);
         for (i, row) in list_rows(inner, self.activity_scroll, self.data.activity.len()) {
             render_activity_row(frame, row, p, &self.data.activity[i]);
         }
+    }
+
+    /// Handle a key press while the Dashboard section's content is focused.
+    fn handle_dashboard_content_key(&mut self, code: KeyCode) -> Option<Action> {
+        // Tab/BackTab cycle between internal panels.
+        match code {
+            KeyCode::Tab => {
+                self.dashboard_focus = self.dashboard_focus.next();
+                return None;
+            }
+            KeyCode::BackTab => {
+                self.dashboard_focus = self.dashboard_focus.prev();
+                return None;
+            }
+            _ => {}
+        }
+        match self.dashboard_focus {
+            DashboardFocus::Modules => match code {
+                KeyCode::Down | KeyCode::Char('j') => self.module_down(),
+                KeyCode::Up | KeyCode::Char('k') => self.module_up(),
+                KeyCode::Right | KeyCode::Char('l') => self.module_right(),
+                KeyCode::Left | KeyCode::Char('h') => self.module_left(),
+                KeyCode::Enter => {
+                    self.open_module_idx = Some(self.module_sel);
+                    self.module_modal.open();
+                }
+                _ => {}
+            },
+            DashboardFocus::Updates => match code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.updates_scroll = self.updates_scroll.saturating_add(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.updates_scroll = self.updates_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+            DashboardFocus::Activity => match code {
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.activity_scroll = self.activity_scroll.saturating_add(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.activity_scroll = self.activity_scroll.saturating_sub(1);
+                }
+                _ => {}
+            },
+        }
+        None
     }
 }
 
@@ -698,12 +751,28 @@ impl AppScreen for DashboardScreen {
 
         match code {
             KeyCode::Char('q') => return Some(Action::Quit),
+            // Tab/BackTab on Sidebar: cycle shell focus. On Content: forward to section.
             KeyCode::Tab => {
-                self.focus = self.focus.next(self.active_section());
+                if self.focus.is_focused(&ShellFocus::Content) {
+                    return match self.active_section() {
+                        Section::Dashboard => self.handle_dashboard_content_key(code),
+                        Section::Ssh => self.ssh_content.handle_key(code),
+                        // Placeholder: Tab is a no-op.
+                        _ => None,
+                    };
+                }
+                self.focus.next();
                 return None;
             }
             KeyCode::BackTab => {
-                self.focus = self.focus.prev(self.active_section());
+                if self.focus.is_focused(&ShellFocus::Content) {
+                    return match self.active_section() {
+                        Section::Dashboard => self.handle_dashboard_content_key(code),
+                        Section::Ssh => self.ssh_content.handle_key(code),
+                        _ => None,
+                    };
+                }
+                self.focus.prev();
                 return None;
             }
             KeyCode::Char('\\') => {
@@ -719,10 +788,10 @@ impl AppScreen for DashboardScreen {
                 {
                     return self.ssh_content.handle_key(code);
                 }
-                if self.focus == Focus::Sidebar {
+                if self.focus.is_focused(&ShellFocus::Sidebar) {
                     return Some(Action::Back);
                 }
-                self.focus = Focus::Sidebar;
+                self.focus.set(ShellFocus::Sidebar);
                 return None;
             }
             KeyCode::Char(d @ '1'..='9') => {
@@ -730,49 +799,29 @@ impl AppScreen for DashboardScreen {
                 if idx < self.data.sidebar.len() {
                     self.sidebar.select_to(idx);
                     self.active = idx;
-                    self.focus = Focus::Sidebar;
+                    self.focus.set(ShellFocus::Sidebar);
                 }
                 return None;
             }
             _ => {}
         }
 
-        // Route input to SSH content when that section is active and focus
-        // is on the Ssh region (Tab cycles Sidebar → Ssh for SSH section).
-        if self.active_section() == Section::Ssh && self.focus == Focus::Ssh {
-            return self.ssh_content.handle_key(code);
+        // ── Content-focused: delegate to active section ────────────────
+        if self.focus.is_focused(&ShellFocus::Content) {
+            return match self.active_section() {
+                Section::Dashboard => self.handle_dashboard_content_key(code),
+                Section::Ssh => self.ssh_content.handle_key(code),
+                // Placeholder sections have no focusable content.
+                _ => None,
+            };
         }
 
-        match self.focus {
-            Focus::Sidebar => match code {
-                KeyCode::Down | KeyCode::Char('j') => self.sidebar.select_next(),
-                KeyCode::Up | KeyCode::Char('k') => self.sidebar.select_prev(),
-                KeyCode::Enter => self.active = self.sidebar.selected(),
-                _ => {}
-            },
-            Focus::Modules => match code {
-                KeyCode::Down | KeyCode::Char('j') => self.module_down(),
-                KeyCode::Up | KeyCode::Char('k') => self.module_up(),
-                KeyCode::Right | KeyCode::Char('l') => self.module_right(),
-                KeyCode::Left | KeyCode::Char('h') => self.module_left(),
-                KeyCode::Enter => {
-                    self.open_module_idx = Some(self.module_sel);
-                    self.module_modal.open();
-                }
-                _ => {}
-            },
-            Focus::Updates => match code {
-                KeyCode::Down | KeyCode::Char('j') => self.updates_scroll = self.updates_scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => self.updates_scroll = self.updates_scroll.saturating_sub(1),
-                _ => {}
-            },
-            Focus::Activity => match code {
-                KeyCode::Down | KeyCode::Char('j') => self.activity_scroll = self.activity_scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => self.activity_scroll = self.activity_scroll.saturating_sub(1),
-                _ => {}
-            },
-            // SSH keys are routed above — this arm is unreachable but required by the compiler.
-            Focus::Ssh => {}
+        // ── Sidebar-focused ─────────────────────────────────────────────
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => self.sidebar.select_next(),
+            KeyCode::Up | KeyCode::Char('k') => self.sidebar.select_prev(),
+            KeyCode::Enter => self.active = self.sidebar.selected(),
+            _ => {}
         }
         None
     }
@@ -812,22 +861,25 @@ impl AppScreen for DashboardScreen {
                 if let Some(idx) = self.sidebar.item_at(mouse.column, mouse.row) {
                     self.sidebar.select_to(idx);
                     self.active = idx;
-                    self.focus = Focus::Sidebar;
+                    self.focus.set(ShellFocus::Sidebar);
                 } else if self.active_section() == Section::Dashboard {
                     // Module clicks only work in the Dashboard section.
                     if let Some(idx) = self.module_at(mouse.column, mouse.row) {
                         self.module_sel = idx;
-                        self.focus = Focus::Modules;
+                        self.focus.set(ShellFocus::Content);
                         self.open_module_idx = Some(idx);
                         self.module_modal.open();
                     }
                 } else if self.active_section() == Section::Ssh {
+                    self.focus.set(ShellFocus::Content);
                     return self.ssh_content.handle_mouse(mouse);
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
-                if self.active_section() == Section::Ssh && self.focus == Focus::Ssh {
+                if self.focus.is_focused(&ShellFocus::Content)
+                    && self.active_section() == Section::Ssh
+                {
                     return self.ssh_content.handle_mouse(mouse);
                 }
                 self.scroll_focused(down);
@@ -1218,32 +1270,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn focus_cycles_forward_and_back() {
-        // Dashboard section: Sidebar → Modules → Updates → Activity → Sidebar
-        assert_eq!(Focus::Sidebar.next(Section::Dashboard), Focus::Modules);
-        assert_eq!(Focus::Activity.next(Section::Dashboard), Focus::Sidebar);
-        assert_eq!(Focus::Sidebar.prev(Section::Dashboard), Focus::Activity);
-        // SSH section: Sidebar → Ssh → Sidebar
-        assert_eq!(Focus::Sidebar.next(Section::Ssh), Focus::Ssh);
-        assert_eq!(Focus::Ssh.next(Section::Ssh), Focus::Sidebar);
-        assert_eq!(Focus::Ssh.prev(Section::Ssh), Focus::Sidebar);
-        // Unimplemented sections: stay on Sidebar
-        assert_eq!(Focus::Sidebar.next(Section::Tools), Focus::Sidebar);
-        assert_eq!(Focus::Sidebar.prev(Section::Tools), Focus::Sidebar);
+    fn shell_focus_cycles_sidebar_content() {
+        // Tab from Sidebar → Content. Esc returns to Sidebar.
+        let mut s = DashboardScreen::new();
+        assert!(s.focus.is_focused(&ShellFocus::Sidebar));
+        s.handle_key(KeyCode::Tab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        // Tab on Content is forwarded to the section (not shell-level cycle).
+        // Use Esc to go back to Sidebar.
+        s.handle_key(KeyCode::Esc);
+        assert!(s.focus.is_focused(&ShellFocus::Sidebar));
+        // BackTab from Sidebar goes to Content (wraps around FocusManager ring).
+        s.handle_key(KeyCode::BackTab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
     }
 
     #[test]
-    fn tab_cycles_focus() {
+    fn dashboard_focus_cycles_panels() {
+        // Internal Tab cycles Modules → Updates → Activity → Modules.
         let mut s = DashboardScreen::new();
-        assert_eq!(s.focus, Focus::Sidebar);
+        s.handle_key(KeyCode::Tab); // -> Content (Dashboard section)
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        assert_eq!(s.dashboard_focus, DashboardFocus::Modules);
+        // Tab is forwarded to dashboard content handler which cycles panels.
         s.handle_key(KeyCode::Tab);
-        assert_eq!(s.focus, Focus::Modules);
+        assert_eq!(s.dashboard_focus, DashboardFocus::Updates);
+        s.handle_key(KeyCode::Tab);
+        assert_eq!(s.dashboard_focus, DashboardFocus::Activity);
+        s.handle_key(KeyCode::Tab);
+        assert_eq!(s.dashboard_focus, DashboardFocus::Modules);
     }
 
     #[test]
     fn enter_on_module_opens_modal() {
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // -> Modules
+        s.handle_key(KeyCode::Tab); // -> Content
         assert!(!s.module_modal.is_visible());
         s.handle_key(KeyCode::Enter);
         assert!(s.module_modal.is_visible());
@@ -1254,12 +1315,12 @@ mod tests {
     }
 
     #[test]
-    fn esc_from_non_sidebar_returns_to_sidebar() {
+    fn esc_from_content_returns_to_sidebar() {
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // Modules
+        s.handle_key(KeyCode::Tab); // Content
         let action = s.handle_key(KeyCode::Esc);
         assert!(action.is_none());
-        assert_eq!(s.focus, Focus::Sidebar);
+        assert!(s.focus.is_focused(&ShellFocus::Sidebar));
     }
 
     #[test]
@@ -1279,7 +1340,7 @@ mod tests {
     #[test]
     fn module_grid_navigation() {
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // Modules
+        s.handle_key(KeyCode::Tab); // Content → Modules
         s.handle_key(KeyCode::Right);
         assert_eq!(s.module_sel, 1);
         s.handle_key(KeyCode::Down);
@@ -1292,5 +1353,32 @@ mod tests {
     fn q_quits() {
         let mut s = DashboardScreen::new();
         assert_eq!(s.handle_key(KeyCode::Char('q')), Some(Action::Quit));
+    }
+
+    #[test]
+    fn ssh_section_receives_keys_when_content_focused() {
+        let mut s = DashboardScreen::new();
+        // Jump to SSH section (index 3 in sidebar = '4' key).
+        s.handle_key(KeyCode::Char('4'));
+        assert_eq!(s.active_section(), Section::Ssh);
+        // Focus content.
+        s.handle_key(KeyCode::Tab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        // Keys are now routed to ssh_content (Tab cycles SSH internal focus).
+        // This shouldn't crash — just confirms the dispatch path works.
+        s.handle_key(KeyCode::Tab); // SSH consumes Tab for TabBar/List cycling.
+    }
+
+    #[test]
+    fn placeholder_sections_stay_on_sidebar_with_tab() {
+        let mut s = DashboardScreen::new();
+        // Jump to Tools (unimplemented).
+        s.handle_key(KeyCode::Char('2'));
+        assert_eq!(s.active_section(), Section::Tools);
+        // Tab still cycles shell-level focus.
+        s.handle_key(KeyCode::Tab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        // But keys go nowhere (placeholder section returns None).
+        assert!(s.handle_key(KeyCode::Down).is_none());
     }
 }
