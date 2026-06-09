@@ -26,6 +26,8 @@ pub enum FormResult {
     Submitted,
     /// User cancelled the form (Escape).
     Cancelled,
+    /// Key consumed but form still active (typing, cursor movement, field cycling).
+    Pending,
 }
 
 /// A single field in a form.
@@ -140,15 +142,18 @@ impl FormModal {
 
         match action {
             InputAction::Cancel => FormResult::Cancelled,
-            InputAction::NextField | InputAction::Submit => {
-                // If it's a Submit (Enter) on the last field, submit the form.
-                // Otherwise, move to next field.
-                if action == InputAction::Submit && self.focus == self.fields.len() - 1 {
+            InputAction::Submit => {
+                // Enter on last field submits; otherwise moves to next field.
+                if self.focus == self.fields.len() - 1 {
                     FormResult::Submitted
                 } else {
                     self.focus = (self.focus + 1) % self.fields.len();
-                    FormResult::Submitted // return value ignored when not last field
+                    FormResult::Pending
                 }
+            }
+            InputAction::NextField => {
+                self.focus = (self.focus + 1) % self.fields.len();
+                FormResult::Pending
             }
             InputAction::PrevField => {
                 if self.focus == 0 {
@@ -156,9 +161,9 @@ impl FormModal {
                 } else {
                     self.focus -= 1;
                 }
-                FormResult::Submitted
+                FormResult::Pending
             }
-            InputAction::None => FormResult::Submitted,
+            InputAction::None => FormResult::Pending,
         }
     }
 
@@ -397,6 +402,7 @@ mod tests {
         form.focus = 0;
         let result = form.handle_key(KeyCode::Enter);
         assert_eq!(form.focus(), 1);
+        assert_eq!(result, FormResult::Pending);
     }
 
     #[test]
@@ -409,8 +415,8 @@ mod tests {
     #[test]
     fn typing_in_text_field() {
         let mut form = FormModal::new(40).text_field(TextInput::new("Name", 30));
-        form.handle_key(KeyCode::Char('a'));
-        form.handle_key(KeyCode::Char('b'));
+        assert_eq!(form.handle_key(KeyCode::Char('a')), FormResult::Pending);
+        assert_eq!(form.handle_key(KeyCode::Char('b')), FormResult::Pending);
         assert_eq!(form.text_value(0), Some("ab"));
     }
 

@@ -245,6 +245,7 @@ impl SshTab for ConfigTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
                 ActionModal::Remove => {
@@ -288,6 +289,7 @@ impl SshTab for ConfigTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
             }

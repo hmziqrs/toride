@@ -244,6 +244,9 @@ impl SshContent {
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 self.active_tab_mut().handle_mouse(mouse);
             }
+            MouseEventKind::Up(_) => {
+                self.active_tab_mut().handle_mouse(mouse);
+            }
             _ => {}
         }
         None

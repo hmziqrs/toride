@@ -213,6 +213,7 @@ impl SshTab for DiagnosticsTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
                 ActionModal::FixAll => {

@@ -240,6 +240,7 @@ impl SshTab for AgentTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
                 ActionModal::Remove => {

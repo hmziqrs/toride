@@ -233,6 +233,7 @@ impl SshTab for KnownHostsTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
                 ActionModal::Remove => {

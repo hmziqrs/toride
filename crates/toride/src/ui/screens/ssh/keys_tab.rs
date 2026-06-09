@@ -231,6 +231,7 @@ impl SshTab for KeysTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
                 ActionModal::Delete => {
@@ -261,6 +262,7 @@ impl SshTab for KeysTab {
                         FormResult::Cancelled => {
                             self.action_modal = None;
                         }
+                        FormResult::Pending => {}
                     }
                 }
             }

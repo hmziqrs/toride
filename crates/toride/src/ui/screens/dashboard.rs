@@ -882,6 +882,11 @@ impl AppScreen for DashboardScreen {
                 }
                 self.scroll_focused(down);
             }
+            MouseEventKind::Up(_) => {
+                if self.active_section() == Section::Ssh {
+                    return self.ssh_content.handle_mouse(mouse);
+                }
+            }
             _ => {}
         }
         None
