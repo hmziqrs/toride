@@ -18,9 +18,22 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Modal, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, Modal, render_titled_panel,
+};
 
 use super::{ForwardSessionEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ────────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Cancel selected forward confirmation.
+    Cancel,
+    /// Exit SSH session confirmation.
+    Exit,
+}
 
 // ── ForwardingTab ─────────────────────────────────────────────────────────────
 
@@ -42,6 +55,10 @@ pub struct ForwardingTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Confirm modal for cancel/exit operations.
+    confirm: ConfirmModal,
 }
 
 impl ForwardingTab {
@@ -65,6 +82,8 @@ impl ForwardingTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -80,7 +99,7 @@ impl ForwardingTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected session is visible.
@@ -139,6 +158,11 @@ impl ForwardingTab {
 
     /// Handle a mouse event for the forwarding list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -213,6 +237,36 @@ impl SshTab for ForwardingTab {
                 }
                 _ => None,
             }
+        } else if let Some(action) = self.action_modal {
+            // Action modal is open: delegate to it.
+            match action {
+                ActionModal::Cancel => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.sessions.is_empty() {
+                            let session = &mut self.sessions[self.selected];
+                            session.forwards.clear();
+                            session.forward_count = 0;
+                            if self.sessions.len() > 1 || !self.sessions.is_empty() {
+                                // Keep the session but clear its forwards
+                            }
+                        }
+                        self.action_modal = None;
+                    }
+                }
+                ActionModal::Exit => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.sessions.is_empty() {
+                            self.sessions.remove(self.selected);
+                            if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
+                                self.selected = self.sessions.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+            }
+            None
         } else {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -235,13 +289,25 @@ impl SshTab for ForwardingTab {
                     }
                     None
                 }
-                // Shortcut keys — Phase 2
+                // CRUD shortcuts
                 KeyCode::Char('x') => {
-                    // TODO: Cancel selected forward
+                    if !self.sessions.is_empty() {
+                        let host = self.sessions[self.selected].host.clone();
+                        self.confirm = ConfirmModal::new(
+                            format!("Cancel all forwards on \"{}\"?", host),
+                        );
+                        self.action_modal = Some(ActionModal::Cancel);
+                    }
                     None
                 }
                 KeyCode::Char('X') => {
-                    // TODO: Exit SSH session
+                    if !self.sessions.is_empty() {
+                        let host = self.sessions[self.selected].host.clone();
+                        self.confirm = ConfirmModal::new(
+                            format!("Exit SSH session \"{}\"?", host),
+                        );
+                        self.action_modal = Some(ActionModal::Exit);
+                    }
                     None
                 }
                 _ => None,
@@ -263,6 +329,17 @@ impl SshTab for ForwardingTab {
                 self.render_detail_modal(frame, p, &session);
             }
         }
+
+        // Render action modal on top
+        match self.action_modal {
+            Some(ActionModal::Cancel) => {
+                self.confirm.render(frame, p, "Cancel Forwards");
+            }
+            Some(ActionModal::Exit) => {
+                self.confirm.render(frame, p, "Exit Session");
+            }
+            None => {}
+        }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
@@ -270,12 +347,13 @@ impl SshTab for ForwardingTab {
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_open = None;
         self.detail_modal_rect = None;
+        self.action_modal = None;
     }
 }
 

@@ -17,9 +17,23 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Modal, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, TextInput, Dropdown,
+    render_titled_panel,
+};
 
 use super::{DiagnosticEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ───────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Run diagnostic checks form.
+    Run,
+    /// Fix all auto-fixable issues confirmation.
+    FixAll,
+}
 
 // ── DiagnosticsTab ────────────────────────────────────────────────────────────
 
@@ -41,6 +55,12 @@ pub struct DiagnosticsTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Form modal for run checks operation.
+    form: FormModal,
+    /// Confirm modal for fix all operation.
+    confirm: ConfirmModal,
 }
 
 impl DiagnosticsTab {
@@ -64,6 +84,9 @@ impl DiagnosticsTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            form: FormModal::new(40),
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -79,7 +102,7 @@ impl DiagnosticsTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -101,6 +124,11 @@ impl DiagnosticsTab {
 
     /// Handle a mouse event for the diagnostic entry list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -173,6 +201,28 @@ impl SshTab for DiagnosticsTab {
                 }
                 _ => None,
             }
+        } else if let Some(action) = self.action_modal {
+            // Action modal is open: delegate to it.
+            match action {
+                ActionModal::Run => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            // Run diagnostics with selected scope
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+                ActionModal::FixAll => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        // Fix all auto-fixable issues
+                        self.action_modal = None;
+                    }
+                }
+            }
+            None
         } else {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -195,13 +245,21 @@ impl SshTab for DiagnosticsTab {
                     }
                     None
                 }
-                // Phase 2 shortcuts
+                // CRUD shortcuts
                 KeyCode::Char('r') => {
-                    // TODO: Run diagnostic checks
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Filter", 30).placeholder("check id or module"))
+                        .select_field(Dropdown::new("Scope", vec!["All", "Local", "Config", "Agent", "Known Hosts"], 16));
+                    self.action_modal = Some(ActionModal::Run);
                     None
                 }
                 KeyCode::Char('f') => {
-                    // TODO: Fix all auto-fixable issues
+                    let fixable_count = self.entries.iter().filter(|e| e.hint.is_some()).count();
+                    self.confirm = ConfirmModal::new(format!(
+                        "Fix {} auto-fixable issue(s)?",
+                        fixable_count
+                    ));
+                    self.action_modal = Some(ActionModal::FixAll);
                     None
                 }
                 _ => None,
@@ -223,6 +281,20 @@ impl SshTab for DiagnosticsTab {
                 self.render_detail_modal(frame, p, &entry);
             }
         }
+
+        // Render action modal on top
+        match self.action_modal {
+            Some(ActionModal::Run) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Run Diagnostics", 52, 11,
+                    "Tab to cycle fields, Enter to run, Esc to cancel",
+                );
+            }
+            Some(ActionModal::FixAll) => {
+                self.confirm.render(frame, p, "Fix All Issues");
+            }
+            None => {}
+        }
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
@@ -230,12 +302,13 @@ impl SshTab for DiagnosticsTab {
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_open = None;
         self.detail_modal_rect = None;
+        self.action_modal = None;
     }
 }
 

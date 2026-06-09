@@ -17,9 +17,20 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, InteractiveModal, ModalEvent, render_titled_panel,
+};
 
 use super::{CertificateEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ───────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Revoke certificate confirmation.
+    Revoke,
+}
 
 // ── CertificatesTab ───────────────────────────────────────────────────────────
 
@@ -41,6 +52,10 @@ pub struct CertificatesTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Confirm modal for revoke operations.
+    confirm: ConfirmModal,
 }
 
 impl CertificatesTab {
@@ -64,6 +79,8 @@ impl CertificatesTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -90,6 +107,11 @@ impl CertificatesTab {
 
     /// Handle a mouse event for the certificate list (inherent method).
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
@@ -156,6 +178,25 @@ impl SshTab for CertificatesTab {
             return None;
         }
 
+        // If an action modal is open, delegate to it.
+        if let Some(action) = self.action_modal {
+            match action {
+                ActionModal::Revoke => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.entries.is_empty() {
+                            self.entries.remove(self.selected);
+                            if self.selected >= self.entries.len() && !self.entries.is_empty() {
+                                self.selected = self.entries.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+            }
+            return None;
+        }
+
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected > 0 {
@@ -178,13 +219,21 @@ impl SshTab for CertificatesTab {
                 }
                 None
             }
-            // Phase 2 shortcut stubs
+            // Inspect shortcut: opens detail modal (same as Enter)
             KeyCode::Char('i') => {
-                // TODO: Inspect certificate details (Phase 2)
+                if !self.entries.is_empty() {
+                    self.detail_entry_idx = Some(self.selected);
+                    self.detail_modal.open();
+                }
                 None
             }
+            // Revoke certificate
             KeyCode::Char('r') => {
-                // TODO: Revoke certificate (Phase 2)
+                if !self.entries.is_empty() {
+                    let name = self.entries[self.selected].name.clone();
+                    self.confirm = ConfirmModal::new(format!("Revoke certificate \"{}\"?", name));
+                    self.action_modal = Some(ActionModal::Revoke);
+                }
                 None
             }
             _ => None,
@@ -209,15 +258,24 @@ impl SshTab for CertificatesTab {
                 self.render_detail_modal(frame, p, &entry);
             }
         }
+
+        // Render action modal on top of everything
+        match self.action_modal {
+            Some(ActionModal::Revoke) => {
+                self.confirm.render(frame, p, "Revoke Certificate");
+            }
+            None => {}
+        }
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
+        self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
         self.detail_entry_idx = None;
+        self.action_modal = None;
     }
 }
 
