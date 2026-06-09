@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -63,6 +64,8 @@ pub struct ConfigTab {
     form: FormModal,
     /// Confirm modal for remove operations.
     confirm: ConfirmModal,
+    /// Pending write operations to be forwarded to SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl ConfigTab {
@@ -90,6 +93,7 @@ impl ConfigTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -225,8 +229,16 @@ impl SshTab for ConfigTab {
                             let display_name = if name.is_empty() {
                                 "new-host".to_string()
                             } else {
-                                name
+                                name.clone()
                             };
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::ConfigAddHost {
+                                name,
+                                host_name: host_name.clone(),
+                                user: user.clone(),
+                                port,
+                            });
+                            // Optimistic in-memory update
                             self.hosts.push(ConfigHostEntry {
                                 name: display_name.clone(),
                                 patterns: vec![display_name],
@@ -251,6 +263,10 @@ impl SshTab for ConfigTab {
                 ActionModal::Remove => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.hosts.is_empty() {
+                            let name = self.hosts[self.selected].name.clone();
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::ConfigRemoveHost { name });
+                            // Optimistic in-memory update
                             self.hosts.remove(self.selected);
                             if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
                                 self.selected = self.hosts.len() - 1;
@@ -264,6 +280,7 @@ impl SshTab for ConfigTab {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
                             if let Some(host) = self.hosts.get_mut(self.selected) {
+                                let old_name = host.name.clone();
                                 let name = self.form.text_value(0)
                                     .map(|s| s.to_string())
                                     .unwrap_or_default();
@@ -276,10 +293,22 @@ impl SshTab for ConfigTab {
                                 let port_str = self.form.text_value(3)
                                     .unwrap_or("");
                                 let port = port_str.parse::<u16>().ok();
-                                if !name.is_empty() {
-                                    host.name = name.clone();
-                                    host.patterns = vec![name];
-                                }
+                                let new_name = if name.is_empty() {
+                                    old_name.clone()
+                                } else {
+                                    name.clone()
+                                };
+                                // Persist to disk
+                                self.pending_ops.push(SshOp::ConfigEditHost {
+                                    old_name,
+                                    new_name: new_name.clone(),
+                                    host_name: host_name.clone(),
+                                    user: user.clone(),
+                                    port,
+                                });
+                                // Optimistic in-memory update
+                                host.name = new_name.clone();
+                                host.patterns = vec![new_name];
                                 host.host_name = host_name;
                                 host.user = user;
                                 host.port = port;
@@ -405,6 +434,10 @@ impl SshTab for ConfigTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

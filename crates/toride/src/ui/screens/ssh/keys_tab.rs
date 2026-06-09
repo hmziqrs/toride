@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -63,6 +64,8 @@ pub struct KeysTab {
     form: FormModal,
     /// Confirm modal for delete operations.
     confirm: ConfirmModal,
+    /// Pending write operations to be forwarded to SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl KeysTab {
@@ -91,6 +94,7 @@ impl KeysTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -205,14 +209,21 @@ impl SshTab for KeysTab {
                                 .unwrap_or_default();
                             let key_type = self.form.select_value(1)
                                 .unwrap_or("Ed25519");
-                            let _comment = self.form.text_value(2)
+                            let comment = self.form.text_value(2)
                                 .map(|s| s.to_string())
                                 .unwrap_or_default();
                             let display_name = if name.is_empty() {
                                 "id_new".to_string()
                             } else {
-                                name
+                                name.clone()
                             };
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::KeyCreate {
+                                name: display_name.clone(),
+                                key_type: key_type.to_string(),
+                                comment,
+                            });
+                            // Optimistic in-memory update
                             self.keys.push(SshKeyEntry {
                                 name: display_name,
                                 key_type: key_type.to_string(),
@@ -237,6 +248,10 @@ impl SshTab for KeysTab {
                 ActionModal::Delete => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.keys.is_empty() {
+                            let name = self.keys[self.selected].name.clone();
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::KeyDelete { name });
+                            // Optimistic in-memory update
                             self.keys.remove(self.selected);
                             if self.selected >= self.keys.len() && !self.keys.is_empty() {
                                 self.selected = self.keys.len() - 1;
@@ -250,10 +265,17 @@ impl SshTab for KeysTab {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
                             if let Some(key) = self.keys.get_mut(self.selected) {
+                                let old_name = key.name.clone();
                                 let new_name = self.form.text_value(0)
                                     .map(|s| s.to_string())
                                     .unwrap_or_default();
-                                if !new_name.is_empty() {
+                                if !new_name.is_empty() && new_name != old_name {
+                                    // Persist to disk
+                                    self.pending_ops.push(SshOp::KeyRename {
+                                        old_name,
+                                        new_name: new_name.clone(),
+                                    });
+                                    // Optimistic in-memory update
                                     key.name = new_name;
                                 }
                             }
@@ -377,6 +399,10 @@ impl SshTab for KeysTab {
         self.detail_modal.close();
         self.detail_key_idx = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

@@ -15,6 +15,7 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::data::SshSection;
+use crate::ssh_data::SshOp;
 use crate::ui::theme::Palette;
 
 use self::agent_tab::AgentTab;
@@ -80,6 +81,8 @@ pub struct SshContent {
     tab_hitboxes: Vec<Rect>,
     /// Which tab is hovered by the mouse.
     hovered_tab: Option<usize>,
+    /// Pending write operations to be executed by the app's event loop.
+    pending_ops: Vec<SshOp>,
 }
 
 impl SshContent {
@@ -100,6 +103,7 @@ impl SshContent {
             certificates: CertificatesTab::new(),
             tab_hitboxes: Vec::new(),
             hovered_tab: None,
+            pending_ops: Vec::new(),
         }
     }
 
@@ -113,6 +117,22 @@ impl SshContent {
     #[must_use]
     pub fn has_modal(&self) -> bool {
         self.active_tab().has_modal()
+    }
+
+    /// Push a pending write operation to be executed by the app's event loop.
+    pub fn push_op(&mut self, op: SshOp) {
+        self.pending_ops.push(op);
+    }
+
+    /// Drain all pending write operations, transferring them to the caller.
+    pub fn drain_pending_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
+    }
+
+    /// Drain ops from the active tab and forward them to our pending_ops.
+    fn collect_ops(&mut self) {
+        let ops = self.active_tab_mut().drain_ops();
+        self.pending_ops.extend(ops);
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -168,13 +188,17 @@ impl SshContent {
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If the active tab has a modal open, route input there first.
         if self.active_tab().has_modal() {
-            return self.active_tab_mut().handle_key(code);
+            let action = self.active_tab_mut().handle_key(code);
+            self.collect_ops();
+            return action;
         }
 
-        match self.focus {
+        let action = match self.focus {
             Focus::TabBar => self.handle_tab_bar_key(code),
             Focus::List => self.handle_list_key(code),
-        }
+        };
+        self.collect_ops();
+        action
     }
 
     fn handle_tab_bar_key(&mut self, code: KeyCode) -> Option<Action> {
@@ -373,6 +397,10 @@ trait SshTab {
     }
     /// Close any open modal on this tab.
     fn close_modal(&mut self) {}
+    /// Drain pending write operations queued by this tab.
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        Vec::new()
+    }
 }
 
 // ── Data entry structs ───────────────────────────────────────────────────────

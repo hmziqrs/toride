@@ -102,6 +102,149 @@ impl Default for SshDataCollector {
 
 // ── Real Data Collection ────────────────────────────────────────────────────
 
+/// A pending write operation to be executed asynchronously via `SshManager`.
+#[derive(Debug)]
+pub enum SshOp {
+    /// Add a host block to `~/.ssh/config`.
+    ConfigAddHost {
+        name: String,
+        host_name: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+    },
+    /// Remove a host block from `~/.ssh/config`.
+    ConfigRemoveHost {
+        name: String,
+    },
+    /// Edit (replace) a host block in `~/.ssh/config`.
+    ConfigEditHost {
+        old_name: String,
+        new_name: String,
+        host_name: Option<String>,
+        user: Option<String>,
+        port: Option<u16>,
+    },
+    /// Generate a new SSH key pair.
+    KeyCreate {
+        name: String,
+        key_type: String,
+        comment: String,
+    },
+    /// Delete an SSH key pair.
+    KeyDelete {
+        name: String,
+    },
+    /// Rename an SSH key pair.
+    KeyRename {
+        old_name: String,
+        new_name: String,
+    },
+}
+
+/// Execute a pending write operation using the given `SshManager`.
+pub async fn execute_op(op: SshOp) {
+    let mgr = match toride_ssh::SshManager::new() {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("SshManager::new() failed for write op: {e}");
+            return;
+        }
+    };
+
+    match op {
+        SshOp::ConfigAddHost { name, host_name, user, port } => {
+            let svc = mgr.config();
+            let mut directives = Vec::new();
+            if let Some(hn) = &host_name {
+                directives.push(("HostName".to_string(), hn.clone()));
+            }
+            if let Some(u) = &user {
+                directives.push(("User".to_string(), u.clone()));
+            }
+            if let Some(p) = port {
+                directives.push(("Port".to_string(), p.to_string()));
+            }
+            match svc.edit(|ast| {
+                toride_ssh::config::ConfigService::add_host(ast, &name, directives)
+            }).await {
+                Ok(()) => tracing::info!("config: added host '{name}'"),
+                Err(e) => tracing::error!("config: failed to add host '{name}': {e}"),
+            }
+        }
+        SshOp::ConfigRemoveHost { name } => {
+            let svc = mgr.config();
+            match svc.edit(|ast| {
+                toride_ssh::config::ConfigService::remove_host(ast, &name)
+            }).await {
+                Ok(()) => tracing::info!("config: removed host '{name}'"),
+                Err(e) => tracing::error!("config: failed to remove host '{name}': {e}"),
+            }
+        }
+        SshOp::ConfigEditHost { old_name, new_name, host_name, user, port } => {
+            let svc = mgr.config();
+            match svc.edit(|ast| {
+                // Remove old block, add new one
+                let _ = toride_ssh::config::ConfigService::remove_host(ast, &old_name);
+                let mut directives = Vec::new();
+                if let Some(hn) = &host_name {
+                    directives.push(("HostName".to_string(), hn.clone()));
+                }
+                if let Some(u) = &user {
+                    directives.push(("User".to_string(), u.clone()));
+                }
+                if let Some(p) = port {
+                    directives.push(("Port".to_string(), p.to_string()));
+                }
+                toride_ssh::config::ConfigService::add_host(ast, &new_name, directives)
+            }).await {
+                Ok(()) => tracing::info!("config: edited host '{old_name}' → '{new_name}'"),
+                Err(e) => tracing::error!("config: failed to edit host '{old_name}': {e}"),
+            }
+        }
+        SshOp::KeyCreate { name, key_type, comment } => {
+            let svc = mgr.keys();
+            let mut params = match key_type.as_str() {
+                "RSA 4096" => toride_ssh::KeyCreateParams::rsa_4096(name.clone()),
+                "ECDSA P-256" => {
+                    let mut p = toride_ssh::KeyCreateParams::ed25519(name.clone());
+                    p.key_type = toride_ssh::KeyType::EcdsaP256;
+                    p
+                }
+                _ => toride_ssh::KeyCreateParams::ed25519(name.clone()),
+            };
+            if !comment.is_empty() {
+                params.comment = Some(comment.clone());
+            }
+            match svc.create(params).await {
+                Ok(_) => tracing::info!("keys: created '{name}'"),
+                Err(e) => tracing::error!("keys: failed to create '{name}': {e}"),
+            }
+        }
+        SshOp::KeyDelete { name } => {
+            let svc = mgr.keys();
+            let params = toride_ssh::KeyDeleteParams {
+                name: name.clone(),
+                remove_public: true,
+                remove_certificate: true,
+                remove_from_agent: true,
+                remove_from_config: true,
+                backup: false,
+            };
+            match svc.delete(params).await {
+                Ok(()) => tracing::info!("keys: deleted '{name}'"),
+                Err(e) => tracing::error!("keys: failed to delete '{name}': {e}"),
+            }
+        }
+        SshOp::KeyRename { old_name, new_name } => {
+            let svc = mgr.keys();
+            match svc.rename(&old_name, &new_name).await {
+                Ok(()) => tracing::info!("keys: renamed '{old_name}' → '{new_name}'"),
+                Err(e) => tracing::error!("keys: failed to rename '{old_name}': {e}"),
+            }
+        }
+    }
+}
+
 /// Collect SSH data by reading real files and calling real services.
 ///
 /// All subsystems run in parallel via `tokio::join!`. Individual failures are

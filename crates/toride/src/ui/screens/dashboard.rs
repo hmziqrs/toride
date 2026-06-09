@@ -236,6 +236,11 @@ impl DashboardScreen {
         self.ssh_content.set_security(bundle.security);
     }
 
+    /// Drain pending SSH write operations from the SSH content area.
+    pub fn drain_ssh_ops(&mut self) -> Vec<crate::ssh_data::SshOp> {
+        self.ssh_content.drain_pending_ops()
+    }
+
     /// The currently active section.
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section

@@ -15,7 +15,7 @@ use tokio::select;
 
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
-use crate::ssh_data::SshDataCollector;
+use crate::ssh_data::{SshDataCollector, execute_op};
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
@@ -145,6 +145,16 @@ impl App {
         }
     }
 
+    /// Drain pending SSH write operations and spawn async tasks for each.
+    fn flush_ssh_ops(&mut self) {
+        if !matches!(self.nav.current(), Screen::Dashboard) {
+            return;
+        }
+        for op in self.dashboard.drain_ssh_ops() {
+            tokio::spawn(async move { execute_op(op).await });
+        }
+    }
+
     /// Run the main event loop.
     ///
     /// # Errors
@@ -177,6 +187,7 @@ impl App {
                         }
                         _ => None,
                     };
+                    self.flush_ssh_ops();
                     if let Some(action) = action {
                         self.update(action);
                         self.needs_redraw = true;
