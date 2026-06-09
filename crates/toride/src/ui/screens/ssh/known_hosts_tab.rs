@@ -275,7 +275,7 @@ impl SshTab for KnownHostsTab {
                 // CRUD shortcuts
                 KeyCode::Char('a') => {
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Hostname", 40).placeholder("example.com"));
+                        .text_field(TextInput::new("Hostname", 40).placeholder("example.com").required());
                     self.action_modal = Some(ActionModal::Add);
                     None
                 }
@@ -319,7 +319,7 @@ impl SshTab for KnownHostsTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Known Host", 52, 8,
+                    frame, p, "Add Known Host", 52, 11,
                     "Enter hostname, Esc to cancel",
                 );
             }

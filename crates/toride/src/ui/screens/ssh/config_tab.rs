@@ -19,7 +19,7 @@ use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, TextInput, render_titled_panel,
+    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, Port, TextInput, render_titled_panel,
 };
 
 use super::{ConfigHostEntry, SshTab, char_to_keycode};
@@ -319,10 +319,10 @@ impl SshTab for ConfigTab {
                 // CRUD shortcuts
                 KeyCode::Char('a') => {
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Host", 30).placeholder("myserver"))
-                        .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1"))
+                        .text_field(TextInput::new("Host", 30).placeholder("myserver").required())
+                        .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1").required())
                         .text_field(TextInput::new("User", 30).placeholder("user"))
-                        .text_field(TextInput::new("Port", 30).placeholder("22"));
+                        .text_field_validated(TextInput::new("Port", 30).placeholder("22"), Box::new(Port));
                     self.action_modal = Some(ActionModal::Add);
                     None
                 }
@@ -338,16 +338,16 @@ impl SshTab for ConfigTab {
                     if !self.hosts.is_empty() {
                         let host = &self.hosts[self.selected];
                         self.form = FormModal::new(40)
-                            .text_field(TextInput::new("Host", 30).value(&host.name))
+                            .text_field(TextInput::new("Host", 30).value(&host.name).required())
                             .text_field(TextInput::new("HostName", 30).value(
                                 host.host_name.as_deref().unwrap_or("")
-                            ))
+                            ).required())
                             .text_field(TextInput::new("User", 30).value(
                                 host.user.as_deref().unwrap_or("")
                             ))
-                            .text_field(TextInput::new("Port", 30).value(
+                            .text_field_validated(TextInput::new("Port", 30).value(
                                 host.port.map_or(String::new(), |p| p.to_string())
-                            ));
+                            ), Box::new(Port));
                         self.action_modal = Some(ActionModal::Edit);
                     }
                     None
@@ -376,7 +376,7 @@ impl SshTab for ConfigTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Host", 52, 16,
+                    frame, p, "Add Host", 52, 20,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -385,7 +385,7 @@ impl SshTab for ConfigTab {
             }
             Some(ActionModal::Edit) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Edit Host", 52, 16,
+                    frame, p, "Edit Host", 52, 20,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }

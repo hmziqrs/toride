@@ -2,7 +2,7 @@
 //!
 //! Composes [`TextInput`] and [`Dropdown`] fields into a vertically stacked
 //! form inside a [`Modal`] overlay. Manages field focus cycling (Tab / Shift+Tab),
-//! submit / cancel handling, and themed rendering.
+//! validation on submit, error display, and themed rendering.
 
 use crossterm::event::KeyCode;
 use ratatui::{
@@ -17,39 +17,116 @@ use crate::ui::theme::Palette;
 use super::{
     Dropdown, Modal, TextInput,
     text_input::InputAction,
+    validate::Validator,
 };
 
 /// Result of a form interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormResult {
-    /// User submitted the form (Enter on last field or explicit submit).
+    /// User submitted the form (Enter on last field or explicit submit) and
+    /// all field validations passed.
     Submitted,
     /// User cancelled the form (Escape).
     Cancelled,
-    /// Key consumed but form still active (typing, cursor movement, field cycling).
+    /// Key consumed but form still active (typing, cursor movement, field
+    /// cycling, or validation failed on submit).
     Pending,
 }
 
-/// A single field in a form.
-pub enum FormField {
-    /// A text input field.
+// ── FormField ─────────────────────────────────────────────────────────────────
+
+/// The underlying widget kind for a form field.
+enum FieldKind {
     Text(TextInput),
-    /// A dropdown selector field.
     Select(Dropdown),
 }
 
+/// A single field in a form, with optional validation and error state.
+pub struct FormField {
+    kind: FieldKind,
+    validators: Vec<Box<dyn Validator>>,
+    /// Current validation error message, if any.
+    error: Option<String>,
+}
+
 impl FormField {
+    /// Create a text field wrapping the given [`TextInput`].
+    fn text(input: TextInput) -> Self {
+        let required = input.is_required();
+        let mut field = Self {
+            kind: FieldKind::Text(input),
+            validators: Vec::new(),
+            error: None,
+        };
+        if required {
+            use super::validate::Required;
+            field.validators.push(Box::new(Required));
+        }
+        field
+    }
+
+    /// Create a select field wrapping the given [`Dropdown`].
+    fn select(dropdown: Dropdown) -> Self {
+        let required = dropdown.is_required();
+        let mut field = Self {
+            kind: FieldKind::Select(dropdown),
+            validators: Vec::new(),
+            error: None,
+        };
+        if required {
+            use super::validate::Required;
+            field.validators.push(Box::new(Required));
+        }
+        field
+    }
+
+    /// Add a validator to this field.
+    fn add_validator(&mut self, v: Box<dyn Validator>) {
+        self.validators.push(v);
+    }
+
     /// The label for this field.
     #[must_use]
     pub fn label(&self) -> &'static str {
-        match self {
-            FormField::Text(t) => t.label(),
-            FormField::Select(d) => d.label(),
+        match &self.kind {
+            FieldKind::Text(t) => t.label(),
+            FieldKind::Select(d) => d.label(),
         }
+    }
+
+    /// Run all validators and return the first error message, if any.
+    /// Updates `self.error` with the result.
+    fn validate(&mut self) -> Option<&str> {
+        let value = match &self.kind {
+            FieldKind::Text(t) => t.get_value().to_string(),
+            FieldKind::Select(d) => d.value().to_string(),
+        };
+        for v in &self.validators {
+            if let Some(err) = v.validate(&value) {
+                self.error = Some(err.message.clone());
+                return Some(self.error.as_deref().unwrap_or(""));
+            }
+        }
+        self.error = None;
+        None
+    }
+
+    /// Clear the current error (e.g. when the user starts editing the field).
+    fn clear_error(&mut self) {
+        self.error = None;
+    }
+
+    /// Whether this field currently has a validation error.
+    #[must_use]
+    pub fn has_error(&self) -> bool {
+        self.error.is_some()
     }
 }
 
-/// A form modal containing an ordered list of fields with focus management.
+// ── FormModal ─────────────────────────────────────────────────────────────────
+
+/// A form modal containing an ordered list of fields with focus management,
+/// validation, and error display.
 ///
 /// Construct with [`FormModal::new`], add fields with builder methods, then
 /// call [`render`](Self::render) inside a modal content closure.
@@ -75,14 +152,22 @@ impl FormModal {
     /// Add a text input field.
     #[must_use]
     pub fn text_field(mut self, input: TextInput) -> Self {
-        self.fields.push(FormField::Text(input));
+        self.fields.push(FormField::text(input));
+        self
+    }
+
+    /// Add a text input field with an additional custom validator.
+    pub fn text_field_validated(mut self, input: TextInput, validator: Box<dyn Validator>) -> Self {
+        let mut field = FormField::text(input);
+        field.add_validator(validator);
+        self.fields.push(field);
         self
     }
 
     /// Add a dropdown selector field.
     #[must_use]
     pub fn select_field(mut self, dropdown: Dropdown) -> Self {
-        self.fields.push(FormField::Select(dropdown));
+        self.fields.push(FormField::select(dropdown));
         self
     }
 
@@ -97,8 +182,10 @@ impl FormModal {
     #[must_use]
     pub fn text_value(&self, index: usize) -> Option<&str> {
         match self.fields.get(index)? {
-            FormField::Text(t) => Some(t.get_value()),
-            FormField::Select(_) => None,
+            f => match &f.kind {
+                FieldKind::Text(t) => Some(t.get_value()),
+                FieldKind::Select(_) => None,
+            },
         }
     }
 
@@ -107,8 +194,10 @@ impl FormModal {
     #[must_use]
     pub fn select_value(&self, index: usize) -> Option<&'static str> {
         match self.fields.get(index)? {
-            FormField::Text(_) => None,
-            FormField::Select(d) => Some(d.value()),
+            f => match &f.kind {
+                FieldKind::Text(_) => None,
+                FieldKind::Select(d) => Some(d.value()),
+            },
         }
     }
 
@@ -127,6 +216,10 @@ impl FormModal {
     // ── Key handling ────────────────────────────────────────────────────────
 
     /// Handle a key event, routing it to the currently focused field.
+    ///
+    /// On submit (Enter on last field), runs validation on all fields. If any
+    /// fail, sets error state, focuses the first invalid field, and returns
+    /// `FormResult::Pending`. Otherwise returns `FormResult::Submitted`.
     pub fn handle_key(&mut self, code: KeyCode) -> FormResult {
         if self.fields.is_empty() {
             if matches!(code, KeyCode::Esc) {
@@ -135,17 +228,24 @@ impl FormModal {
             return FormResult::Submitted;
         }
 
-        let action = match &mut self.fields[self.focus] {
-            FormField::Text(t) => t.handle_key(code),
-            FormField::Select(d) => d.handle_key(code),
+        // Clear error on the current field when the user interacts with it.
+        self.fields[self.focus].clear_error();
+
+        let action = match &mut self.fields[self.focus].kind {
+            FieldKind::Text(t) => t.handle_key(code),
+            FieldKind::Select(d) => d.handle_key(code),
         };
 
         match action {
             InputAction::Cancel => FormResult::Cancelled,
             InputAction::Submit => {
-                // Enter on last field submits; otherwise moves to next field.
+                // Enter on last field → validate all; otherwise move to next.
                 if self.focus == self.fields.len() - 1 {
-                    FormResult::Submitted
+                    if self.validate_all() {
+                        FormResult::Submitted
+                    } else {
+                        FormResult::Pending
+                    }
                 } else {
                     self.focus = (self.focus + 1) % self.fields.len();
                     FormResult::Pending
@@ -174,9 +274,9 @@ impl FormModal {
             return false;
         }
 
-        let action = match &mut self.fields[self.focus] {
-            FormField::Text(t) => t.handle_key(code),
-            FormField::Select(d) => d.handle_key(code),
+        let action = match &mut self.fields[self.focus].kind {
+            FieldKind::Text(t) => t.handle_key(code),
+            FieldKind::Select(d) => d.handle_key(code),
         };
 
         match action {
@@ -198,11 +298,34 @@ impl FormModal {
         }
     }
 
+    /// Validate all fields. Returns `true` if all pass.
+    /// On failure, focuses the first invalid field.
+    fn validate_all(&mut self) -> bool {
+        let mut all_valid = true;
+        let mut first_invalid = None;
+
+        for (i, field) in self.fields.iter_mut().enumerate() {
+            if field.validate().is_some() {
+                if first_invalid.is_none() {
+                    first_invalid = Some(i);
+                }
+                all_valid = false;
+            }
+        }
+
+        if let Some(idx) = first_invalid {
+            self.focus = idx;
+        }
+
+        all_valid
+    }
+
     // ── Rendering ───────────────────────────────────────────────────────────
 
     /// Render all form fields vertically within the given area.
     ///
-    /// Each field gets a 3-row-tall slot (border + content + border) with a
+    /// Each field gets a 3-row-tall slot (border + content + border), plus an
+    /// extra 1-row error line if the field has a validation error, with a
     /// 1-row gap between fields.
     pub fn render(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         if self.fields.is_empty() {
@@ -210,13 +333,20 @@ impl FormModal {
         }
 
         let field_h: u16 = 3; // border + content + border
+        let error_h: u16 = 1; // error text below field
         let gap: u16 = 1;
-        let n = self.fields.len();
 
-        let constraints: Vec<Constraint> = (0..n)
+        // Build dynamic constraints: each field is 3 rows, plus 1 if it has
+        // an error, plus 1-row gap between fields.
+        let constraints: Vec<Constraint> = (0..self.fields.len())
             .flat_map(|i| {
-                let mut cs = vec![Constraint::Length(field_h)];
-                if i < n - 1 {
+                let field_rows = if self.fields[i].has_error() {
+                    field_h + error_h
+                } else {
+                    field_h
+                };
+                let mut cs = vec![Constraint::Length(field_rows)];
+                if i < self.fields.len() - 1 {
                     cs.push(Constraint::Length(gap));
                 }
                 cs
@@ -229,13 +359,27 @@ impl FormModal {
         for (i, field) in self.fields.iter_mut().enumerate() {
             let field_area = rects[rect_idx];
             let focused = i == self.focus;
+            let error_msg = field.error.clone();
 
-            match field {
-                FormField::Text(t) => t.render(frame, field_area, p, focused),
-                FormField::Select(d) => d.render(frame, field_area, p, focused),
+            match &field.kind {
+                FieldKind::Text(t) => {
+                    t.render(frame, field_area, p, focused, error_msg.as_deref());
+                }
+                FieldKind::Select(d) => {
+                    d.render(frame, field_area, p, focused, error_msg.as_deref());
+                }
             }
 
-            rect_idx += 2; // skip field + gap
+            // Render error row if present.
+            if let Some(ref err) = error_msg {
+                let error_y = field_area.y + field_h; // below the 3-row box
+                if error_y < field_area.bottom() {
+                    let error_area = Rect::new(field_area.x, error_y, field_area.width, error_h);
+                    TextInput::render_error(frame, error_area, p, err);
+                }
+            }
+
+            rect_idx += 2; // skip field chunk + gap
         }
     }
 
@@ -285,20 +429,35 @@ impl FormModal {
             });
     }
 
-    /// Calculate the total form height needed (fields + gaps).
+    /// Calculate the total form height needed (fields + error rows + gaps).
     #[must_use]
     pub fn total_height(&self) -> u16 {
         if self.fields.is_empty() {
             return 0;
         }
         let field_h: u16 = 3;
+        let error_h: u16 = 1;
         let gap: u16 = 1;
-        (self.fields.len() as u16) * field_h + (self.fields.len().saturating_sub(1) as u16) * gap
+        let n = self.fields.len() as u16;
+        let error_count = self.fields.iter().filter(|f| f.has_error()).count() as u16;
+        n * field_h + error_count * error_h + n.saturating_sub(1) * gap
     }
 
-    /// Reset all field values and focus.
+    /// Calculate the maximum possible form height (all fields with errors).
+    #[must_use]
+    pub fn max_height(&self) -> u16 {
+        if self.fields.is_empty() {
+            return 0;
+        }
+        let field_h: u16 = 3;
+        let error_h: u16 = 1;
+        let gap: u16 = 1;
+        let n = self.fields.len() as u16;
+        n * (field_h + error_h) + n.saturating_sub(1) * gap
+    }
+
+    /// Reset focus to the first field (does NOT reset field values or errors).
     pub fn reset(&mut self) {
-        // Re-create empty fields with same labels and widths
         self.focus = 0;
     }
 }
@@ -306,10 +465,11 @@ impl FormModal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::validate::{Required, MinLength, Port};
 
     fn sample_form() -> FormModal {
         FormModal::new(40)
-            .text_field(TextInput::new("Name", 30))
+            .text_field(TextInput::new("Name", 30).required())
             .select_field(Dropdown::new("Type", vec!["Ed25519", "RSA 4096"], 20))
             .text_field(TextInput::new("Comment", 30).placeholder("user@host"))
     }
@@ -388,12 +548,28 @@ mod tests {
     }
 
     #[test]
-    fn enter_on_last_field_submits() {
-        let mut form = sample_form();
-        // Navigate to last field
-        form.focus = 2;
+    fn enter_on_last_field_validates() {
+        // Use a form where all fields are filled / not required
+        let mut form = FormModal::new(40)
+            .text_field(TextInput::new("Name", 30).required().value("my-key"))
+            .text_field(TextInput::new("Comment", 30).placeholder("optional"));
+        // Focus last field and submit — Name has a value, should pass validation
+        form.focus = 1;
         let result = form.handle_key(KeyCode::Enter);
         assert_eq!(result, FormResult::Submitted);
+    }
+
+    #[test]
+    fn enter_on_last_field_fails_validation_when_required_empty() {
+        let mut form = sample_form();
+        // Name (field 0) is required but empty. Navigate to last field and submit.
+        form.focus = 2;
+        let result = form.handle_key(KeyCode::Enter);
+        // Validation runs on ALL fields. Name is empty → fails.
+        assert_eq!(result, FormResult::Pending);
+        // Focus should jump to the first invalid field (Name = index 0)
+        assert_eq!(form.focus(), 0);
+        assert!(form.fields[0].has_error());
     }
 
     #[test]
@@ -430,7 +606,7 @@ mod tests {
 
     #[test]
     fn total_height_calculation() {
-        let form = sample_form(); // 3 fields
+        let form = sample_form(); // 3 fields, no errors
         // 3 * 3 (field heights) + 2 * 1 (gaps) = 11
         assert_eq!(form.total_height(), 11);
     }
@@ -439,5 +615,47 @@ mod tests {
     fn total_height_empty() {
         let form = FormModal::new(40);
         assert_eq!(form.total_height(), 0);
+    }
+
+    #[test]
+    fn validation_with_custom_validator() {
+        let mut form = FormModal::new(40)
+            .text_field_validated(
+                TextInput::new("Port", 10).required(),
+                Box::new(Port),
+            );
+        // Type an invalid port
+        for ch in "abc".chars() {
+            form.handle_key(KeyCode::Char(ch));
+        }
+        // Navigate to last field and submit
+        form.focus = 0;
+        let result = form.handle_key(KeyCode::Enter);
+        // "abc" is not a valid port → validation should fail
+        assert_eq!(result, FormResult::Pending);
+        assert!(form.fields[0].has_error());
+    }
+
+    #[test]
+    fn validation_passes_with_valid_data() {
+        let mut form = FormModal::new(40)
+            .text_field(TextInput::new("Name", 30).required().value("my-key"));
+        // Submit (only 1 field, so we're on last)
+        let result = form.handle_key(KeyCode::Enter);
+        assert_eq!(result, FormResult::Submitted);
+    }
+
+    #[test]
+    fn error_clears_on_typing() {
+        let mut form = sample_form();
+        // Force an error by submitting with empty Name
+        form.focus = 2;
+        form.handle_key(KeyCode::Enter);
+        assert!(form.fields[0].has_error());
+
+        // Now focus the Name field and type
+        form.focus = 0;
+        form.handle_key(KeyCode::Char('a'));
+        assert!(!form.fields[0].has_error());
     }
 }

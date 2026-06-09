@@ -29,6 +29,8 @@ pub struct Dropdown {
     selected: usize,
     /// Visual width of the dropdown box.
     width: u16,
+    /// If `true`, the field is required and will show a `*` marker.
+    required: bool,
 }
 
 impl Dropdown {
@@ -43,6 +45,7 @@ impl Dropdown {
             options,
             selected: 0,
             width,
+            required: false,
         }
     }
 
@@ -60,6 +63,19 @@ impl Dropdown {
             self.selected = idx;
         }
         self
+    }
+
+    /// Mark this field as required (shows `*` marker in label).
+    #[must_use]
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    /// Whether this field is required.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.required
     }
 
     /// Get the currently selected option string.
@@ -120,8 +136,14 @@ impl Dropdown {
     /// Render the dropdown at the given position.
     ///
     /// `area` should be a 3-row-tall rect (top border + content + bottom border).
-    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool) {
-        let border_color = if focused { p.border_hi } else { p.border };
+    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool, error: Option<&str>) {
+        let border_color = if error.is_some() {
+            p.err
+        } else if focused {
+            p.border_hi
+        } else {
+            p.border
+        };
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -138,14 +160,19 @@ impl Dropdown {
             ""
         };
 
-        let line = Line::from(vec![
+        let mut label_spans = vec![
             Span::styled(
                 format!("{} ", self.label),
                 Style::new().fg(p.text_dim),
             ),
-            Span::styled(current.to_string(), Style::new().fg(p.text)),
-            Span::styled(arrows.to_string(), Style::new().fg(p.text_muted)),
-        ]);
+        ];
+        if self.required {
+            label_spans.push(Span::styled("*", Style::new().fg(p.err)));
+        }
+        label_spans.push(Span::styled(current.to_string(), Style::new().fg(p.text)));
+        label_spans.push(Span::styled(arrows.to_string(), Style::new().fg(p.text_muted)));
+
+        let line = Line::from(label_spans);
 
         frame.render_widget(Paragraph::new(line), inner);
     }
@@ -289,7 +316,7 @@ mod tests {
         let dd = Dropdown::new("Type", key_types(), 16).selected(1);
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| dd.render(f, Rect::new(0, 1, 28, 3), CHARM, true))
+            .draw(|f| dd.render(f, Rect::new(0, 1, 28, 3), CHARM, true, None))
             .unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("RSA 4096"), "selected option visible: {output}");

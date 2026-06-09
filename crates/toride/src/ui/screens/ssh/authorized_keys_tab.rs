@@ -273,7 +273,7 @@ impl SshTab for AuthorizedKeysTab {
             // CRUD shortcuts
             KeyCode::Char('a') => {
                 self.form = FormModal::new(40)
-                    .text_field(TextInput::new("Key", 40).placeholder("ssh-ed25519 AAAA... user@host"));
+                    .text_field(TextInput::new("Key", 40).placeholder("ssh-ed25519 AAAA... user@host").required());
                 self.action_modal = Some(ActionModal::Add);
                 None
             }
@@ -316,7 +316,7 @@ impl SshTab for AuthorizedKeysTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Authorized Key", 56, 8,
+                    frame, p, "Add Authorized Key", 56, 11,
                     "Paste public key string, Esc to cancel",
                 );
             }

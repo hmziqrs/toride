@@ -294,7 +294,7 @@ impl SshTab for KeysTab {
             // CRUD shortcuts
             KeyCode::Char('n') => {
                 self.form = FormModal::new(40)
-                    .text_field(TextInput::new("Name", 30).placeholder("id_ed25519"))
+                    .text_field(TextInput::new("Name", 30).placeholder("id_ed25519").required())
                     .select_field(Dropdown::new("Type", vec!["Ed25519", "RSA 4096", "ECDSA P-256"], 16))
                     .text_field(TextInput::new("Comment", 30).placeholder("user@host"));
                 self.action_modal = Some(ActionModal::New);
@@ -312,7 +312,7 @@ impl SshTab for KeysTab {
                 if !self.keys.is_empty() {
                     let current_name = self.keys[self.selected].name.clone();
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Name", 30).value(&current_name));
+                        .text_field(TextInput::new("Name", 30).value(&current_name).required());
                     self.action_modal = Some(ActionModal::Rename);
                 }
                 None
@@ -348,7 +348,7 @@ impl SshTab for KeysTab {
         match self.action_modal {
             Some(ActionModal::New) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Generate New Key", 52, 11,
+                    frame, p, "Generate New Key", 52, 14,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -357,7 +357,7 @@ impl SshTab for KeysTab {
             }
             Some(ActionModal::Rename) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Rename Key", 52, 8,
+                    frame, p, "Rename Key", 52, 11,
                     "Enter to confirm, Esc to cancel",
                 );
             }

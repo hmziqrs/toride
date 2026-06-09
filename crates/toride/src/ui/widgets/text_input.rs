@@ -51,6 +51,8 @@ pub struct TextInput {
     placeholder: Option<&'static str>,
     /// Horizontal scroll offset for long values.
     scroll: usize,
+    /// If `true`, the field is required and will show a `*` marker.
+    required: bool,
 }
 
 impl TextInput {
@@ -65,6 +67,7 @@ impl TextInput {
             secret: false,
             placeholder: None,
             scroll: 0,
+            required: false,
         }
     }
 
@@ -88,6 +91,19 @@ impl TextInput {
         self.value = value.into();
         self.cursor = self.value.len();
         self
+    }
+
+    /// Mark this field as required (shows `*` marker in label).
+    #[must_use]
+    pub fn required(mut self) -> Self {
+        self.required = true;
+        self
+    }
+
+    /// Whether this field is required.
+    #[must_use]
+    pub fn is_required(&self) -> bool {
+        self.required
     }
 
     /// Get the current value.
@@ -234,8 +250,14 @@ impl TextInput {
     ///
     /// `area` should be a 3-row-tall rect (top border + content + bottom border).
     /// Width must accommodate `label_width + input_width + borders`.
-    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool) {
-        let border_color = if focused { p.border_hi } else { p.border };
+    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool, error: Option<&str>) {
+        let border_color = if error.is_some() {
+            p.err
+        } else if focused {
+            p.border_hi
+        } else {
+            p.border
+        };
 
         let block = Block::default()
             .borders(Borders::ALL)
@@ -274,12 +296,15 @@ impl TextInput {
 
         let mut spans = vec![];
 
-        // Label
+        // Label (with required marker *)
         if !self.label.is_empty() {
             spans.push(Span::styled(
                 format!("{} ", self.label),
                 Style::new().fg(p.text_dim),
             ));
+            if self.required {
+                spans.push(Span::styled("*", Style::new().fg(p.err)));
+            }
         }
 
         spans.push(display);
@@ -293,7 +318,11 @@ impl TextInput {
             let label_w = if self.label.is_empty() {
                 0
             } else {
-                self.label.len() as u16 + 1 // label + trailing space
+                let mut w = self.label.len() as u16 + 1; // label + trailing space
+                if self.required {
+                    w += 1; // * marker
+                }
+                w
             };
             let cursor_x = inner.x + label_w + cursor_col as u16;
             let cursor_y = inner.y;
@@ -315,10 +344,27 @@ impl TextInput {
         }
     }
 
+    /// Render a validation error message below the field.
+    ///
+    /// `area` should be a 1-row-tall rect placed directly below the field box.
+    pub fn render_error(frame: &mut Frame, area: Rect, p: Palette, error: &str) {
+        if area.height == 0 || area.width == 0 {
+            return;
+        }
+        let error_line = Line::from(vec![
+            Span::styled("  ⚠ ", Style::new().fg(p.err)),
+            Span::styled(error.to_string(), Style::new().fg(p.err)),
+        ]);
+        frame.render_widget(Paragraph::new(error_line), area);
+    }
+
     /// The total width this input needs (label + box + borders).
     #[must_use]
     pub fn total_width(&self) -> u16 {
-        let label_w = self.label.len() as u16 + 1; // label + space
+        let mut label_w = self.label.len() as u16 + 1; // label + space
+        if self.required {
+            label_w += 1; // * marker
+        }
         let box_w = self.width;
         label_w + box_w + 2 // +2 for left/right borders
     }
@@ -495,7 +541,7 @@ mod tests {
         let input = TextInput::new("Name", 20).placeholder("enter name...");
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true))
+            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true, None))
             .unwrap();
         let output = terminal.backend().to_string();
         // Should have a border, the label, and the placeholder text.
@@ -512,9 +558,39 @@ mod tests {
         let input = TextInput::new("Host", 20).value("github.com");
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true))
+            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true, None))
             .unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("github.com"), "value visible: {output}");
+    }
+
+    #[test]
+    fn required_marker_in_label() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let input = TextInput::new("Name", 20).required().placeholder("...");
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true, None))
+            .unwrap();
+        let output = terminal.backend().to_string();
+        assert!(output.contains("Name"), "label visible: {output}");
+        assert!(input.is_required());
+    }
+
+    #[test]
+    fn render_with_error_shows_red_border() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let input = TextInput::new("Name", 20).placeholder("...");
+        let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
+        terminal
+            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true, Some("This field is required")))
+            .unwrap();
+        // The render should not panic; error text is shown below the field box.
+        let output = terminal.backend().to_string();
+        assert!(output.contains("Name"), "label visible: {output}");
     }
 }

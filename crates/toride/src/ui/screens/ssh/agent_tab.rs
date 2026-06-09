@@ -282,7 +282,7 @@ impl SshTab for AgentTab {
                 // CRUD shortcuts
                 KeyCode::Char('a') => {
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Key Path", 40).placeholder("~/.ssh/id_ed25519"));
+                        .text_field(TextInput::new("Key Path", 40).placeholder("~/.ssh/id_ed25519").required());
                     self.action_modal = Some(ActionModal::Add);
                     None
                 }
@@ -326,7 +326,7 @@ impl SshTab for AgentTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Key to Agent", 52, 8,
+                    frame, p, "Add Key to Agent", 52, 11,
                     "Enter key path, Esc to cancel",
                 );
             }
