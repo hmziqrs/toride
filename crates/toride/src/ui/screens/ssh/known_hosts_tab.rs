@@ -14,11 +14,12 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::responsive::truncate_str;
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Modal, render_titled_panel};
 
-use super::{KnownHostEntry, SshTab};
+use super::{KnownHostEntry, SshTab, char_to_keycode};
 
 // ── KnownHostsTab ────────────────────────────────────────────────────────────
 
@@ -38,12 +39,24 @@ pub struct KnownHostsTab {
     row_hitboxes: Vec<Rect>,
     /// Which row is hovered by the mouse.
     hovered_row: Option<usize>,
+    /// Interactive footer shortcut buttons.
+    buttons: ButtonRow<char>,
 }
 
 impl KnownHostsTab {
     /// Create a new empty known hosts tab.
     #[must_use]
     pub fn new() -> Self {
+        let buttons = ButtonRow::new(
+            vec![
+                InteractiveButton::new("↵ detail", "↵", '\r'),
+                InteractiveButton::new("a add", "a", 'a'),
+                InteractiveButton::new("d remove", "d", 'd'),
+                InteractiveButton::new("s scan", "s", 's'),
+                InteractiveButton::new("h hash", "h", 'h'),
+            ],
+            vec![1, 1, 1, 1, 1],
+        );
         Self {
             hosts: Vec::new(),
             selected: 0,
@@ -52,6 +65,7 @@ impl KnownHostsTab {
             detail_modal_rect: None,
             row_hitboxes: Vec::new(),
             hovered_row: None,
+            buttons,
         }
     }
 
@@ -102,6 +116,11 @@ impl KnownHostsTab {
                 }
             }
             return None;
+        }
+
+        // Footer buttons (always process for hover tracking).
+        if let Some(c) = self.buttons.handle_mouse(&mouse) {
+            return self.handle_key(char_to_keycode(c));
         }
 
         match mouse.kind {
@@ -360,24 +379,11 @@ impl KnownHostsTab {
         self.render_footer(frame, area, p);
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_footer(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
-
-        let hints = Line::from(vec![
-            Span::styled(" ↵ ", p.key_style()),
-            Span::styled("detail ", p.label_style()),
-            Span::styled(" a ", p.key_style()),
-            Span::styled("add ", p.label_style()),
-            Span::styled(" d ", p.key_style()),
-            Span::styled("remove ", p.label_style()),
-            Span::styled(" s ", p.key_style()),
-            Span::styled("scan ", p.label_style()),
-            Span::styled(" h ", p.key_style()),
-            Span::styled("hash all ", p.label_style()),
-        ]);
-
-        frame.render_widget(Paragraph::new(hints), footer_area);
+        let viewport = Viewport::from_area(area);
+        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, host: &KnownHostEntry) {

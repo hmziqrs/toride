@@ -15,11 +15,12 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::responsive::truncate_str;
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{Modal, render_titled_panel};
 
-use super::{ForwardSessionEntry, SshTab};
+use super::{ForwardSessionEntry, SshTab, char_to_keycode};
 
 // ── ForwardingTab ─────────────────────────────────────────────────────────────
 
@@ -39,12 +40,22 @@ pub struct ForwardingTab {
     row_hitboxes: Vec<Rect>,
     /// Which row is hovered by the mouse (total-row index).
     hovered_row: Option<usize>,
+    /// Interactive footer shortcut buttons.
+    buttons: ButtonRow<char>,
 }
 
 impl ForwardingTab {
     /// Create a new empty forwarding tab.
     #[must_use]
     pub fn new() -> Self {
+        let buttons = ButtonRow::new(
+            vec![
+                InteractiveButton::new("↵ detail", "↵", '\r'),
+                InteractiveButton::new("x cancel", "x", 'x'),
+                InteractiveButton::new("X exit", "X", 'X'),
+            ],
+            vec![1, 1, 1],
+        );
         Self {
             sessions: Vec::new(),
             selected: 0,
@@ -53,6 +64,7 @@ impl ForwardingTab {
             detail_modal_rect: None,
             row_hitboxes: Vec::new(),
             hovered_row: None,
+            buttons,
         }
     }
 
@@ -140,6 +152,11 @@ impl ForwardingTab {
                 }
             }
             return None;
+        }
+
+        // Footer buttons (always process for hover tracking).
+        if let Some(c) = self.buttons.handle_mouse(&mouse) {
+            return self.handle_key(char_to_keycode(c));
         }
 
         match mouse.kind {
@@ -452,20 +469,11 @@ impl ForwardingTab {
         self.render_footer(frame, area, p);
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_footer(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
-
-        let hints = Line::from(vec![
-            Span::styled(" ↵ ", p.key_style()),
-            Span::styled("detail ", p.label_style()),
-            Span::styled(" x ", p.key_style()),
-            Span::styled("cancel ", p.label_style()),
-            Span::styled(" X ", p.key_style()),
-            Span::styled("exit session ", p.label_style()),
-        ]);
-
-        frame.render_widget(Paragraph::new(hints), footer_area);
+        let viewport = Viewport::from_area(area);
+        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
     fn render_detail_modal(

@@ -14,11 +14,12 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::responsive::truncate_str;
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
 
-use super::{CertificateEntry, SshTab};
+use super::{CertificateEntry, SshTab, char_to_keycode};
 
 // ── CertificatesTab ───────────────────────────────────────────────────────────
 
@@ -38,12 +39,22 @@ pub struct CertificatesTab {
     row_hitboxes: Vec<Rect>,
     /// Which row is hovered by the mouse.
     hovered_row: Option<usize>,
+    /// Interactive footer shortcut buttons.
+    buttons: ButtonRow<char>,
 }
 
 impl CertificatesTab {
     /// Create a new empty certificates tab.
     #[must_use]
     pub fn new() -> Self {
+        let buttons = ButtonRow::new(
+            vec![
+                InteractiveButton::new("↵ detail", "↵", '\r'),
+                InteractiveButton::new("i inspect", "i", 'i'),
+                InteractiveButton::new("r revoke", "r", 'r'),
+            ],
+            vec![1, 1, 1],
+        );
         Self {
             entries: Vec::new(),
             selected: 0,
@@ -52,6 +63,7 @@ impl CertificatesTab {
             detail_modal: InteractiveModal::display("Certificate Detail").dimensions(58, 16),
             row_hitboxes: Vec::new(),
             hovered_row: None,
+            buttons,
         }
     }
 
@@ -84,6 +96,11 @@ impl CertificatesTab {
                 self.detail_entry_idx = None;
             }
             return None;
+        }
+
+        // Footer buttons (always process for hover tracking).
+        if let Some(c) = self.buttons.handle_mouse(&mouse) {
+            return self.handle_key(char_to_keycode(c));
         }
 
         match mouse.kind {
@@ -326,20 +343,11 @@ impl CertificatesTab {
         self.render_footer(frame, area, p);
     }
 
-    fn render_footer(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_footer(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
-
-        let hints = Line::from(vec![
-            Span::styled(" ↵ ", p.key_style()),
-            Span::styled("detail ", p.label_style()),
-            Span::styled(" i ", p.key_style()),
-            Span::styled("inspect ", p.label_style()),
-            Span::styled(" r ", p.key_style()),
-            Span::styled("revoke ", p.label_style()),
-        ]);
-
-        frame.render_widget(Paragraph::new(hints), footer_area);
+        let viewport = Viewport::from_area(area);
+        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &CertificateEntry) {

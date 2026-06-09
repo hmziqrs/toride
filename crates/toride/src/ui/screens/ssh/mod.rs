@@ -16,7 +16,6 @@ use ratatui::{
 use crate::action::Action;
 use crate::data::SshSection;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::render_panel;
 
 use self::agent_tab::AgentTab;
 use self::authorized_keys_tab::AuthorizedKeysTab;
@@ -663,5 +662,17 @@ mod tests {
                 .draw(|f| content.view(f, f.area(), CHARM))
                 .unwrap();
         }
+    }
+}
+
+/// Convert a footer-button action char back to the corresponding [`KeyCode`].
+///
+/// Footer buttons use `char` as their action type.  This maps the char to the
+/// `KeyCode` that the tab's `handle_key` already knows how to process.
+pub(crate) fn char_to_keycode(c: char) -> KeyCode {
+    match c {
+        '\r' => KeyCode::Enter,
+        '\x1b' => KeyCode::Esc,
+        c => KeyCode::Char(c),
     }
 }
