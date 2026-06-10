@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -61,6 +62,8 @@ pub struct AuthorizedKeysTab {
     form: FormModal,
     /// Confirm modal for remove operation.
     confirm: ConfirmModal,
+    /// Pending write operations to be forwarded to SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl AuthorizedKeysTab {
@@ -87,6 +90,7 @@ impl AuthorizedKeysTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -202,7 +206,7 @@ impl SshTab for AuthorizedKeysTab {
                             let display_key = if key_string.is_empty() {
                                 String::new()
                             } else {
-                                key_string
+                                key_string.clone()
                             };
                             // Try to extract key type from the key string
                             let key_type = if display_key.starts_with("ssh-ed25519") {
@@ -214,6 +218,15 @@ impl SshTab for AuthorizedKeysTab {
                             } else {
                                 "unknown"
                             };
+                            // Persist to disk
+                            if !key_string.is_empty() {
+                                self.pending_ops.push(SshOp::AuthorizedKeyAdd {
+                                    public_key: key_string,
+                                    comment: None,
+                                    options: None,
+                                });
+                            }
+                            // Optimistic in-memory update
                             self.entries.push(AuthorizedKeyEntry {
                                 key_type: key_type.to_string(),
                                 public_key: display_key,
@@ -235,6 +248,12 @@ impl SshTab for AuthorizedKeysTab {
                 ActionModal::Remove => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.entries.is_empty() {
+                            let fingerprint = self.entries[self.selected].fingerprint.clone();
+                            // Persist to disk
+                            if !fingerprint.is_empty() {
+                                self.pending_ops.push(SshOp::AuthorizedKeyRemove { fingerprint });
+                            }
+                            // Optimistic in-memory update
                             self.entries.remove(self.selected);
                             if self.selected >= self.entries.len() && !self.entries.is_empty() {
                                 self.selected = self.entries.len() - 1;
@@ -339,6 +358,10 @@ impl SshTab for AuthorizedKeysTab {
         self.detail_modal.close();
         self.detail_entry_idx = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

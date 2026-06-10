@@ -139,6 +139,32 @@ pub enum SshOp {
         old_name: String,
         new_name: String,
     },
+    /// Add a host to known_hosts via ssh-keyscan.
+    KnownHostAdd {
+        host: String,
+    },
+    /// Remove a host from known_hosts.
+    KnownHostRemove {
+        host: String,
+    },
+    /// Add a key to the SSH agent.
+    AgentAddKey {
+        path: String,
+    },
+    /// Remove a key from the SSH agent.
+    AgentRemoveKey {
+        path: String,
+    },
+    /// Add a public key to authorized_keys.
+    AuthorizedKeyAdd {
+        public_key: String,
+        comment: Option<String>,
+        options: Option<String>,
+    },
+    /// Remove a public key from authorized_keys by fingerprint.
+    AuthorizedKeyRemove {
+        fingerprint: String,
+    },
 }
 
 /// Execute a pending write operation using the given `SshManager`.
@@ -284,6 +310,96 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to rename '{old_name}': {e}");
                     tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KnownHostAdd { host } => {
+            let svc = mgr.known_hosts();
+            match svc.add(&host).await {
+                Ok(()) => {
+                    tracing::info!("known_hosts: added '{host}'");
+                    Ok(format!("added known host '{host}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to add known host '{host}': {e}");
+                    tracing::error!("known_hosts: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KnownHostRemove { host } => {
+            let svc = mgr.known_hosts();
+            match svc.remove(&host).await {
+                Ok(()) => {
+                    tracing::info!("known_hosts: removed '{host}'");
+                    Ok(format!("removed known host '{host}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove known host '{host}': {e}");
+                    tracing::error!("known_hosts: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::AgentAddKey { path } => {
+            let svc = mgr.agent();
+            let path_ref = std::path::Path::new(&path);
+            match svc.add_key(path_ref).await {
+                Ok(()) => {
+                    tracing::info!("agent: added key '{path}'");
+                    Ok(format!("added key to agent: '{path}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to add key '{path}' to agent: {e}");
+                    tracing::error!("agent: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::AgentRemoveKey { path } => {
+            let svc = mgr.agent();
+            let path_ref = std::path::Path::new(&path);
+            match svc.remove_key(path_ref).await {
+                Ok(()) => {
+                    tracing::info!("agent: removed key '{path}'");
+                    Ok(format!("removed key from agent: '{path}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove key '{path}' from agent: {e}");
+                    tracing::error!("agent: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::AuthorizedKeyAdd { public_key, comment, options } => {
+            let svc = mgr.authorized_keys();
+            match svc.add(
+                &public_key,
+                comment.as_deref(),
+                options.as_deref(),
+            ).await {
+                Ok(()) => {
+                    tracing::info!("authorized_keys: added key");
+                    Ok("added authorized key".to_string())
+                }
+                Err(e) => {
+                    let msg = format!("failed to add authorized key: {e}");
+                    tracing::error!("authorized_keys: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::AuthorizedKeyRemove { fingerprint } => {
+            let svc = mgr.authorized_keys();
+            match svc.remove(&fingerprint).await {
+                Ok(n) => {
+                    tracing::info!("authorized_keys: removed {n} key(s) matching '{fingerprint}'");
+                    Ok(format!("removed {n} authorized key(s)"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove authorized key '{fingerprint}': {e}");
+                    tracing::error!("authorized_keys: {msg}");
                     Err(msg)
                 }
             }

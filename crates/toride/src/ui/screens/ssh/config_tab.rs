@@ -233,7 +233,7 @@ impl SshTab for ConfigTab {
                             };
                             // Persist to disk
                             self.pending_ops.push(SshOp::ConfigAddHost {
-                                name,
+                                name: name.clone(),
                                 host_name: host_name.clone(),
                                 user: user.clone(),
                                 port,

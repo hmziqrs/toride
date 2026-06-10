@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -60,6 +61,8 @@ pub struct KnownHostsTab {
     form: FormModal,
     /// Confirm modal for remove operation.
     confirm: ConfirmModal,
+    /// Pending write operations to be forwarded to SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl KnownHostsTab {
@@ -88,6 +91,7 @@ impl KnownHostsTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -214,8 +218,13 @@ impl SshTab for KnownHostsTab {
                             let display_host = if hostname.is_empty() {
                                 "example.com".to_string()
                             } else {
-                                hostname
+                                hostname.clone()
                             };
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::KnownHostAdd {
+                                host: display_host.clone(),
+                            });
+                            // Optimistic in-memory update
                             self.hosts.push(KnownHostEntry {
                                 hosts: vec![display_host],
                                 key_type: "unknown".into(),
@@ -239,6 +248,10 @@ impl SshTab for KnownHostsTab {
                 ActionModal::Remove => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.hosts.is_empty() {
+                            let host = self.hosts[self.selected].primary_host().to_string();
+                            // Persist to disk
+                            self.pending_ops.push(SshOp::KnownHostRemove { host });
+                            // Optimistic in-memory update
                             self.hosts.remove(self.selected);
                             if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
                                 self.selected = self.hosts.len() - 1;
@@ -342,6 +355,10 @@ impl SshTab for KnownHostsTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

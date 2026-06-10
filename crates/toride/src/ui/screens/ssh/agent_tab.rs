@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -62,6 +63,8 @@ pub struct AgentTab {
     form: FormModal,
     /// Confirm modal for remove key operation.
     confirm: ConfirmModal,
+    /// Pending write operations to be forwarded to SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl AgentTab {
@@ -93,6 +96,7 @@ impl AgentTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -224,8 +228,15 @@ impl SshTab for AgentTab {
                                 std::path::Path::new(&path)
                                     .file_name()
                                     .map(|f| f.to_string_lossy().to_string())
-                                    .unwrap_or(path.clone())
+                                    .unwrap_or_else(|| path.clone())
                             };
+                            // Persist to disk
+                            if !path.is_empty() {
+                                self.pending_ops.push(SshOp::AgentAddKey {
+                                    path: path.clone(),
+                                });
+                            }
+                            // Optimistic in-memory update
                             self.keys.push(AgentKeyEntry {
                                 name: display_name,
                                 key_type: "Unknown".into(),
@@ -246,6 +257,11 @@ impl SshTab for AgentTab {
                 ActionModal::Remove => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.keys.is_empty() {
+                            let name = self.keys[self.selected].name.clone();
+                            // Persist to disk — derive a plausible key path
+                            let path = format!("~/.ssh/{name}");
+                            self.pending_ops.push(SshOp::AgentRemoveKey { path });
+                            // Optimistic in-memory update
                             self.keys.remove(self.selected);
                             if self.selected >= self.keys.len() && !self.keys.is_empty() {
                                 self.selected = self.keys.len() - 1;
@@ -349,6 +365,10 @@ impl SshTab for AgentTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 
