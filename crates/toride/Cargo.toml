@@ -23,6 +23,7 @@ ratatui-interact = "0.5.3"
 
 toride-ssh = { path = "../toride-ssh", features = ["full"] }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 toride-status = { path = "../toride-status" }
 rattles = "0.3.1"

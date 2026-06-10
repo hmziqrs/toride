@@ -8,6 +8,15 @@ use std::io::stdout;
 use toride::app::App;
 
 fn main() -> Result<()> {
+    // Init tracing before color_eyre so SSH write errors are logged to stderr.
+    // The TUI uses the alternate screen buffer, so stderr output is visible
+    // after the app exits (or when redirected: `toride 2>log.txt`).
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_target(false)
+        .with_ansi(false)
+        .init();
+
     color_eyre::install()?;
 
     let original_hook = std::panic::take_hook();

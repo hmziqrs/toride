@@ -142,12 +142,16 @@ pub enum SshOp {
 }
 
 /// Execute a pending write operation using the given `SshManager`.
-pub async fn execute_op(op: SshOp) {
+///
+/// Returns `Ok(label)` on success (e.g. `"added host 'myserver'"`) or
+/// `Err(message)` on failure. Both outcomes are also logged via tracing.
+pub async fn execute_op(op: SshOp) -> Result<String, String> {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
         Err(e) => {
-            tracing::error!("SshManager::new() failed for write op: {e}");
-            return;
+            let msg = format!("SSH init failed: {e}");
+            tracing::error!("{msg}");
+            return Err(msg);
         }
     };
 
@@ -167,8 +171,15 @@ pub async fn execute_op(op: SshOp) {
             match svc.edit(|ast| {
                 toride_ssh::config::ConfigService::add_host(ast, &name, directives)
             }).await {
-                Ok(()) => tracing::info!("config: added host '{name}'"),
-                Err(e) => tracing::error!("config: failed to add host '{name}': {e}"),
+                Ok(()) => {
+                    tracing::info!("config: added host '{name}'");
+                    Ok(format!("added host '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to add host '{name}': {e}");
+                    tracing::error!("config: {msg}");
+                    Err(msg)
+                }
             }
         }
         SshOp::ConfigRemoveHost { name } => {
@@ -176,8 +187,15 @@ pub async fn execute_op(op: SshOp) {
             match svc.edit(|ast| {
                 toride_ssh::config::ConfigService::remove_host(ast, &name)
             }).await {
-                Ok(()) => tracing::info!("config: removed host '{name}'"),
-                Err(e) => tracing::error!("config: failed to remove host '{name}': {e}"),
+                Ok(()) => {
+                    tracing::info!("config: removed host '{name}'");
+                    Ok(format!("removed host '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove host '{name}': {e}");
+                    tracing::error!("config: {msg}");
+                    Err(msg)
+                }
             }
         }
         SshOp::ConfigEditHost { old_name, new_name, host_name, user, port } => {
@@ -197,8 +215,15 @@ pub async fn execute_op(op: SshOp) {
                 }
                 toride_ssh::config::ConfigService::add_host(ast, &new_name, directives)
             }).await {
-                Ok(()) => tracing::info!("config: edited host '{old_name}' → '{new_name}'"),
-                Err(e) => tracing::error!("config: failed to edit host '{old_name}': {e}"),
+                Ok(()) => {
+                    tracing::info!("config: edited host '{old_name}' → '{new_name}'");
+                    Ok(format!("edited host '{old_name}' → '{new_name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to edit host '{old_name}': {e}");
+                    tracing::error!("config: {msg}");
+                    Err(msg)
+                }
             }
         }
         SshOp::KeyCreate { name, key_type, comment } => {
@@ -216,8 +241,15 @@ pub async fn execute_op(op: SshOp) {
                 params.comment = Some(comment.clone());
             }
             match svc.create(params).await {
-                Ok(_) => tracing::info!("keys: created '{name}'"),
-                Err(e) => tracing::error!("keys: failed to create '{name}': {e}"),
+                Ok(_) => {
+                    tracing::info!("keys: created '{name}'");
+                    Ok(format!("created key '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to create key '{name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
             }
         }
         SshOp::KeyDelete { name } => {
@@ -231,15 +263,29 @@ pub async fn execute_op(op: SshOp) {
                 backup: false,
             };
             match svc.delete(params).await {
-                Ok(()) => tracing::info!("keys: deleted '{name}'"),
-                Err(e) => tracing::error!("keys: failed to delete '{name}': {e}"),
+                Ok(()) => {
+                    tracing::info!("keys: deleted '{name}'");
+                    Ok(format!("deleted key '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to delete key '{name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
             }
         }
         SshOp::KeyRename { old_name, new_name } => {
             let svc = mgr.keys();
             match svc.rename(&old_name, &new_name).await {
-                Ok(()) => tracing::info!("keys: renamed '{old_name}' → '{new_name}'"),
-                Err(e) => tracing::error!("keys: failed to rename '{old_name}': {e}"),
+                Ok(()) => {
+                    tracing::info!("keys: renamed '{old_name}' → '{new_name}'");
+                    Ok(format!("renamed '{old_name}' → '{new_name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to rename '{old_name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
             }
         }
     }
@@ -1302,5 +1348,148 @@ mod tests {
             .sshd_config
             .insert("pubkeyauthentication".into(), "no".into());
         assert_eq!(security.grade(), SecurityGrade::F);
+    }
+
+    // ── Write-path integration tests ─────────────────────────────────────────
+    //
+    // These tests override $HOME to a temp dir so SshManager writes there
+    // instead of the real ~/.ssh. They must run serially because env-var
+    // mutation is process-global. The `serial_test` pattern is achieved by
+    // a mutex — we don't need the crate, just a static Mutex<usize>.
+
+    use std::sync::Mutex;
+    static HOME_LOCK: Mutex<usize> = Mutex::new(0);
+
+    /// Temp HOME override for safe write-path tests.
+    struct TempHome {
+        original: Option<std::path::PathBuf>,
+        _dir: tempfile::TempDir,
+    }
+
+    impl TempHome {
+        fn new() -> Self {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let ssh_dir = dir.path().join(".ssh");
+            std::fs::create_dir_all(&ssh_dir).expect("mkdir .ssh");
+            let original = std::env::var_os("HOME").map(std::path::PathBuf::from);
+            // SAFETY: test-only; HOME_LOCK ensures serial execution.
+            unsafe { std::env::set_var("HOME", dir.path()); }
+            Self { original, _dir: dir }
+        }
+    }
+
+    impl Drop for TempHome {
+        fn drop(&mut self) {
+            // SAFETY: test-only; restoring original state.
+            unsafe {
+                if let Some(ref orig) = self.original {
+                    std::env::set_var("HOME", orig);
+                } else {
+                    std::env::remove_var("HOME");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_op_config_add_host_writes_to_disk() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let op = SshOp::ConfigAddHost {
+            name: "test-toride-host".into(),
+            host_name: Some("192.168.1.99".into()),
+            user: Some("testuser".into()),
+            port: Some(2222),
+        };
+        let result = execute_op(op).await;
+        assert!(result.is_ok(), "config add failed: {:?}", result.err());
+        // Verify the file was actually written
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let ast = mgr.config().load().await.expect("load");
+        let content = ast.to_string_lossless();
+        assert!(content.contains("test-toride-host"), "host not in config: {content}");
+        // Clean up: remove the host
+        let op2 = SshOp::ConfigRemoveHost { name: "test-toride-host".into() };
+        let result2 = execute_op(op2).await;
+        assert!(result2.is_ok(), "config remove failed: {:?}", result2.err());
+    }
+
+    #[tokio::test]
+    async fn execute_op_config_add_duplicate_fails() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let op = SshOp::ConfigAddHost {
+            name: "dupe-host".into(),
+            host_name: None,
+            user: None,
+            port: None,
+        };
+        assert!(execute_op(op).await.is_ok());
+        let op2 = SshOp::ConfigAddHost {
+            name: "dupe-host".into(),
+            host_name: None,
+            user: None,
+            port: None,
+        };
+        let result = execute_op(op2).await;
+        assert!(result.is_err(), "duplicate add should fail: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn execute_op_config_remove_nonexistent_fails() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let op = SshOp::ConfigRemoveHost { name: "no-such-host".into() };
+        let result = execute_op(op).await;
+        assert!(result.is_err(), "removing nonexistent host should fail: {:?}", result);
+    }
+
+    #[tokio::test]
+    async fn execute_op_config_edit_host_replaces() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let op = SshOp::ConfigAddHost {
+            name: "edit-me".into(),
+            host_name: Some("old.example.com".into()),
+            user: Some("olduser".into()),
+            port: Some(22),
+        };
+        assert!(execute_op(op).await.is_ok());
+        let op2 = SshOp::ConfigEditHost {
+            old_name: "edit-me".into(),
+            new_name: "edit-me".into(),
+            host_name: Some("new.example.com".into()),
+            user: Some("newuser".into()),
+            port: Some(443),
+        };
+        let result = execute_op(op2).await;
+        assert!(result.is_ok(), "config edit failed: {:?}", result.err());
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let ast = mgr.config().load().await.expect("load");
+        let content = ast.to_string_lossless();
+        assert!(content.contains("new.example.com"), "new hostname in config: {content}");
+        assert!(!content.contains("old.example.com"), "old hostname gone: {content}");
+    }
+
+    #[tokio::test]
+    async fn execute_op_key_create_and_delete() {
+        let _lock = HOME_LOCK.lock().unwrap();
+        let _home = TempHome::new();
+        let op = SshOp::KeyCreate {
+            name: "toride-test-key".into(),
+            key_type: "Ed25519".into(),
+            comment: "test@toride".into(),
+        };
+        let result = execute_op(op).await;
+        assert!(result.is_ok(), "key create failed: {:?}", result.err());
+        // Verify file exists
+        let home = std::env::var("HOME").expect("HOME");
+        let key_path = std::path::Path::new(&home).join(".ssh/toride-test-key");
+        assert!(key_path.exists(), "private key file should exist at {}", key_path.display());
+        // Clean up
+        let op2 = SshOp::KeyDelete { name: "toride-test-key".into() };
+        let result2 = execute_op(op2).await;
+        assert!(result2.is_ok(), "key delete failed: {:?}", result2.err());
+        assert!(!key_path.exists(), "key file should be deleted");
     }
 }

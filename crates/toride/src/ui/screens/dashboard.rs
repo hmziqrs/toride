@@ -241,6 +241,11 @@ impl DashboardScreen {
         self.ssh_content.drain_pending_ops()
     }
 
+    /// Push an SSH write error to be shown as a notification.
+    pub fn push_ssh_error(&mut self, msg: String) {
+        self.ssh_content.push_error(msg);
+    }
+
     /// The currently active section.
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section

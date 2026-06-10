@@ -4,6 +4,8 @@
 //! is the active sidebar section. Provides a horizontal sub-tab bar for each SSH
 //! subsystem and delegates rendering and input handling to the active tab.
 
+use std::time::Instant;
+
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
@@ -83,6 +85,8 @@ pub struct SshContent {
     hovered_tab: Option<usize>,
     /// Pending write operations to be executed by the app's event loop.
     pending_ops: Vec<SshOp>,
+    /// Last write error message + timestamp, shown as a notification bar.
+    last_error: Option<(String, Instant)>,
 }
 
 impl SshContent {
@@ -104,6 +108,7 @@ impl SshContent {
             tab_hitboxes: Vec::new(),
             hovered_tab: None,
             pending_ops: Vec::new(),
+            last_error: None,
         }
     }
 
@@ -133,6 +138,20 @@ impl SshContent {
     fn collect_ops(&mut self) {
         let ops = self.active_tab_mut().drain_ops();
         self.pending_ops.extend(ops);
+    }
+
+    /// Push a write error to be shown as a notification bar.
+    pub fn push_error(&mut self, msg: String) {
+        self.last_error = Some((msg, Instant::now()));
+    }
+
+    /// Clear the error notification if it's been shown for more than 5 seconds.
+    fn clear_expired_error(&mut self) {
+        if let Some((_, ts)) = &self.last_error {
+            if ts.elapsed().as_secs() >= 5 {
+                self.last_error = None;
+            }
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -315,14 +334,44 @@ impl SshContent {
 
     /// Render the full SSH content area.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
-        // Split into tab bar + content area
-        let [tab_bar_area, _, content_area] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .areas(area);
+        self.clear_expired_error();
 
+        let error_h = if self.last_error.is_some() { 1u16 } else { 0u16 };
+
+        // Split into tab bar + optional error bar + content area
+        let mut constraints = vec![
+            Constraint::Length(1), // tab bar
+            Constraint::Length(1), // gap
+        ];
+        if error_h > 0 {
+            constraints.push(Constraint::Length(error_h)); // error bar
+        }
+        constraints.push(Constraint::Min(0)); // content
+
+        let rects = Layout::vertical(constraints).split(area);
+        let mut i = 0;
+
+        let tab_bar_area = rects[i];
+        i += 1;
+        let _gap_area = rects[i];
+        i += 1;
+
+        if error_h > 0 {
+            let error_area = rects[i];
+            i += 1;
+            if let Some((msg, _)) = &self.last_error {
+                let error_line = Line::from(vec![
+                    Span::styled(" ⚠ ", Style::new().fg(p.err).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        truncate_error(msg, error_area.width.saturating_sub(3) as usize),
+                        Style::new().fg(p.err),
+                    ),
+                ]);
+                frame.render_widget(Paragraph::new(error_line), error_area);
+            }
+        }
+
+        let content_area = rects[i];
         self.render_tab_bar(frame, tab_bar_area, p);
         self.active_tab_mut().view(frame, content_area, p);
     }
@@ -705,5 +754,16 @@ pub(crate) fn char_to_keycode(c: char) -> KeyCode {
         '\r' => KeyCode::Enter,
         '\x1b' => KeyCode::Esc,
         c => KeyCode::Char(c),
+    }
+}
+
+/// Truncate an error message to fit within `max_width` characters.
+fn truncate_error(msg: &str, max_width: usize) -> String {
+    if msg.len() <= max_width {
+        msg.to_string()
+    } else if max_width > 2 {
+        format!("{}..", &msg[..max_width.saturating_sub(2)])
+    } else {
+        String::new()
     }
 }

@@ -7,11 +7,14 @@
 mod input;
 mod render;
 
+use std::time::Instant;
+
 use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::select;
+use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
@@ -46,6 +49,13 @@ pub struct App {
     transition_cache: TransitionCache,
     collector: StatusCollector,
     ssh_collector: SshDataCollector,
+    /// Receiver for SSH write operation error messages.
+    ssh_error_rx: mpsc::UnboundedReceiver<String>,
+    /// Sender clone passed to spawned SSH write tasks.
+    ssh_error_tx: mpsc::UnboundedSender<String>,
+    /// Time of the last SSH write op — suppresses data refresh to avoid
+    /// overwriting optimistic in-memory updates before the async write lands.
+    ssh_write_cooldown: Option<Instant>,
 }
 
 impl Default for App {
@@ -58,7 +68,12 @@ impl App {
     /// Create a new application starting at the welcome screen.
     #[must_use]
     pub fn new() -> Self {
+        let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
+        // Store sender in a static-ish place so flush_ssh_ops can use it.
+        // We'll pass it through a field instead.
         Self {
+            ssh_error_tx,
+            ssh_error_rx,
             nav: Navigator::new(),
             welcome: WelcomeScreen::new(),
             dashboard: DashboardScreen::new(),
@@ -73,6 +88,7 @@ impl App {
             transition_cache: TransitionCache::new(),
             collector: StatusCollector::new(),
             ssh_collector: SshDataCollector::new(),
+            ssh_write_cooldown: None,
         }
     }
 
@@ -146,12 +162,29 @@ impl App {
     }
 
     /// Drain pending SSH write operations and spawn async tasks for each.
+    /// Errors are sent back via the error channel and surfaced in the UI.
+    /// Sets a 5-second cooldown on SSH data refresh to prevent the next
+    /// refresh from overwriting optimistic in-memory updates before the
+    /// async write lands on disk.
     fn flush_ssh_ops(&mut self) {
         if !matches!(self.nav.current(), Screen::Dashboard) {
             return;
         }
-        for op in self.dashboard.drain_ssh_ops() {
-            tokio::spawn(async move { execute_op(op).await });
+        let tx = self.ssh_error_tx.clone();
+        let ops = self.dashboard.drain_ssh_ops();
+        if ops.is_empty() {
+            return;
+        }
+        // Set cooldown: skip SSH data refresh for 5 seconds to avoid
+        // clobbering the optimistic in-memory update with stale disk state.
+        self.ssh_write_cooldown = Some(Instant::now());
+        for op in ops {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Err(msg) = execute_op(op).await {
+                    let _ = tx.send(msg);
+                }
+            });
         }
     }
 
@@ -206,12 +239,28 @@ impl App {
                     self.needs_redraw = true;
                 }
 
+                // Receive SSH write errors from spawned tasks
+                Some(msg) = self.ssh_error_rx.recv() => {
+                    if matches!(self.nav.current(), Screen::Dashboard) {
+                        self.dashboard.push_ssh_error(msg);
+                        self.needs_redraw = true;
+                    }
+                }
+
                 // Periodic status refresh
                 _ = refresh_interval.tick() => {
                     if matches!(self.nav.current(), Screen::Dashboard) {
                         self.dashboard.tick_clock();
                         self.collector.start();
-                        self.ssh_collector.start();
+                        // Skip SSH data refresh during write cooldown to prevent
+                        // overwriting optimistic in-memory updates with stale
+                        // disk state. Cooldown expires after 5 seconds.
+                        let skip_ssh = self.ssh_write_cooldown
+                            .is_some_and(|t| t.elapsed().as_secs() < 5);
+                        if !skip_ssh {
+                            self.ssh_write_cooldown = None;
+                            self.ssh_collector.start();
+                        }
                         self.needs_redraw = true;
                     }
                 }
