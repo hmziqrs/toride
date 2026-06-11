@@ -760,11 +760,11 @@ impl AppScreen for DashboardScreen {
         }
 
         match code {
-            // When SSH content has a modal (form/confirm) open, pass 'q' through
-            // so the user can type it into text fields instead of quitting.
-            KeyCode::Char('q')
+            // When SSH content has a modal (form/confirm) open, ALL keys go to
+            // SSH first. This prevents global shortcuts (q, digits, Esc, etc.)
+            // from firing while the user is filling in a form.
+            _
                 if self.active_section() == Section::Ssh
-                    && self.focus.is_focused(&ShellFocus::Content)
                     && self.ssh_content.has_modal() =>
             {
                 return self.ssh_content.handle_key(code);
@@ -799,28 +799,11 @@ impl AppScreen for DashboardScreen {
                 return None;
             }
             KeyCode::Esc => {
-                // If SSH content has a modal open, let it handle Esc first
-                // (regardless of dashboard focus — the modal proves the user
-                // is interacting with SSH content).
-                if self.active_section() == Section::Ssh
-                    && self.ssh_content.has_modal()
-                {
-                    return self.ssh_content.handle_key(code);
-                }
                 if self.focus.is_focused(&ShellFocus::Sidebar) {
                     return Some(Action::Back);
                 }
                 self.focus.set(ShellFocus::Sidebar);
                 return None;
-            }
-            // When SSH content has a modal open, pass digits through to the form
-            // instead of switching sidebar sections.
-            KeyCode::Char(d @ '1'..='9')
-                if self.active_section() == Section::Ssh
-                    && self.focus.is_focused(&ShellFocus::Content)
-                    && self.ssh_content.has_modal() =>
-            {
-                return self.ssh_content.handle_key(code);
             }
             KeyCode::Char(d @ '1'..='9') => {
                 let idx = (d as usize) - ('1' as usize);
@@ -934,6 +917,16 @@ impl AppScreen for DashboardScreen {
 
     fn needs_animation(&self) -> bool {
         self.sidebar.is_animating()
+    }
+
+    fn has_modal(&self) -> bool {
+        if self.module_modal.is_visible() {
+            return true;
+        }
+        if self.active_section() == Section::Ssh && self.ssh_content.has_modal() {
+            return true;
+        }
+        false
     }
 }
 

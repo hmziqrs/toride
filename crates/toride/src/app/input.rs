@@ -50,15 +50,20 @@ impl App {
             return None;
         }
 
-        // Global `?` opens help from any screen
-        if key.code == KeyCode::Char('?') {
+        // Global `?` opens help from any screen — but not when a screen modal
+        // is open (the user might be typing into a form).
+        if key.code == KeyCode::Char('?') && !self.current_screen().has_modal() {
             return Some(Action::Help);
         }
 
         // On welcome screen, `q` quits immediately.
-        // On all other screens, `q` shows the confirmation modal.
+        // On all other screens, `q` shows the confirmation modal — UNLESS a
+        // screen modal (form/confirm) is open, in which case let the screen
+        // handle the key so the user can type 'q' into form fields.
         if key.code == KeyCode::Char('q') && self.nav.current() != Screen::Welcome {
-            return Some(Action::ConfirmQuit);
+            if !self.current_screen().has_modal() {
+                return Some(Action::ConfirmQuit);
+            }
         }
 
         self.current_screen().handle_key(key.code)

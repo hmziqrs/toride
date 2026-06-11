@@ -55,6 +55,13 @@ pub trait AppScreen {
     /// Invalidate cached rendering data (e.g. gradient background).
     fn invalidate_cache(&mut self);
 
+    /// Whether this screen has a modal open (form, confirm, detail, etc.).
+    /// Used by the global input handler to suppress shortcuts like `q` and `?`
+    /// while the user is interacting with a modal.
+    fn has_modal(&self) -> bool {
+        false
+    }
+
     /// Whether this screen currently needs animation ticks.
     /// Return `true` when the screen has an active animation (shimmer,
     /// spinner, etc.). Default: `false`.

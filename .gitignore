@@ -38,3 +38,5 @@ dev/sandbox/lima/images/**/*.iso
 
 # Lima sandbox artifacts (collected test output)
 .sandbox-artifacts/
+
+log.txt
