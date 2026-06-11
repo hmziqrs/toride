@@ -72,6 +72,8 @@ pub struct KeysTab {
     test_passphrase_key: Option<String>,
     /// Result of the last passphrase test: Ok(label) or Err(msg).
     passphrase_test_result: Option<Result<String, String>>,
+    /// Reference instant for spinner animation (keys still generating).
+    anim_start: std::time::Instant,
 }
 
 impl KeysTab {
@@ -104,6 +106,7 @@ impl KeysTab {
             pending_ops: Vec::new(),
             test_passphrase_key: None,
             passphrase_test_result: None,
+            anim_start: std::time::Instant::now(),
         }
     }
 
@@ -623,7 +626,7 @@ impl KeysTab {
                 use rattles::Rattle;
                 let frames = WaveRows::FRAMES;
                 let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
-                let elapsed = std::time::Instant::now().elapsed().as_secs_f32();
+                let elapsed = self.anim_start.elapsed().as_secs_f32();
                 let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1);
                 let frame = frames[idx as usize % frames.len()];
                 let spinner = frame.first().map_or("·", |s| *s);
