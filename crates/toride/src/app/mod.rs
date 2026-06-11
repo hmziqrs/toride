@@ -53,6 +53,12 @@ pub struct App {
     ssh_error_rx: mpsc::UnboundedReceiver<String>,
     /// Sender clone passed to spawned SSH write tasks.
     ssh_error_tx: mpsc::UnboundedSender<String>,
+    /// Receiver for SSH write operation completion signals.
+    ssh_op_done_rx: mpsc::UnboundedReceiver<()>,
+    /// Sender clone passed to spawned SSH write tasks (signals completion).
+    ssh_op_done_tx: mpsc::UnboundedSender<()>,
+    /// Number of SSH write ops currently in-flight.
+    ssh_ops_in_flight: usize,
     /// Time of the last SSH write op — suppresses data refresh to avoid
     /// overwriting optimistic in-memory updates before the async write lands.
     ssh_write_cooldown: Option<Instant>,
@@ -69,11 +75,13 @@ impl App {
     #[must_use]
     pub fn new() -> Self {
         let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
-        // Store sender in a static-ish place so flush_ssh_ops can use it.
-        // We'll pass it through a field instead.
+        let (ssh_op_done_tx, ssh_op_done_rx) = mpsc::unbounded_channel();
         Self {
             ssh_error_tx,
             ssh_error_rx,
+            ssh_op_done_tx,
+            ssh_op_done_rx,
+            ssh_ops_in_flight: 0,
             nav: Navigator::new(),
             welcome: WelcomeScreen::new(),
             dashboard: DashboardScreen::new(),
@@ -171,6 +179,7 @@ impl App {
             return;
         }
         let tx = self.ssh_error_tx.clone();
+        let done_tx = self.ssh_op_done_tx.clone();
         let ops = self.dashboard.drain_ssh_ops();
         if ops.is_empty() {
             return;
@@ -178,12 +187,16 @@ impl App {
         // Set cooldown: skip SSH data refresh for 5 seconds to avoid
         // clobbering the optimistic in-memory update with stale disk state.
         self.ssh_write_cooldown = Some(Instant::now());
+        self.ssh_ops_in_flight += ops.len();
+        self.dashboard.set_ssh_loading(true, self.ssh_ops_in_flight);
         for op in ops {
             let tx = tx.clone();
+            let done_tx = done_tx.clone();
             tokio::spawn(async move {
                 if let Err(msg) = execute_op(op).await {
                     let _ = tx.send(msg);
                 }
+                let _ = done_tx.send(());
             });
         }
     }
@@ -245,6 +258,14 @@ impl App {
                         self.dashboard.push_ssh_error(msg);
                         self.needs_redraw = true;
                     }
+                }
+
+                // Receive SSH write op completion signals
+                Some(()) = self.ssh_op_done_rx.recv() => {
+                    self.ssh_ops_in_flight = self.ssh_ops_in_flight.saturating_sub(1);
+                    let loading = self.ssh_ops_in_flight > 0;
+                    self.dashboard.set_ssh_loading(loading, self.ssh_ops_in_flight);
+                    self.needs_redraw = true;
                 }
 
                 // Periodic status refresh

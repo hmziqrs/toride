@@ -246,6 +246,11 @@ impl DashboardScreen {
         self.ssh_content.push_error(msg);
     }
 
+    /// Update SSH loading state (spinner overlay) from the in-flight counter.
+    pub fn set_ssh_loading(&mut self, loading: bool, count: usize) {
+        self.ssh_content.set_loading(loading, count);
+    }
+
     /// The currently active section.
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
@@ -923,8 +928,10 @@ impl AppScreen for DashboardScreen {
         if self.module_modal.is_visible() {
             return true;
         }
-        if self.active_section() == Section::Ssh && self.ssh_content.has_modal() {
-            return true;
+        if self.active_section() == Section::Ssh {
+            if self.ssh_content.has_modal() || self.ssh_content.is_loading() {
+                return true;
+            }
         }
         false
     }

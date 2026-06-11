@@ -87,6 +87,12 @@ pub struct SshContent {
     pending_ops: Vec<SshOp>,
     /// Last write error message + timestamp, shown as a notification bar.
     last_error: Option<(String, Instant)>,
+    /// Whether SSH write operations are in-flight (drives spinner overlay).
+    ssh_loading: bool,
+    /// Number of SSH ops currently in-flight (displayed in loading bar).
+    ssh_ops_in_flight: usize,
+    /// Timestamp when loading started (drives braille spinner animation).
+    loading_start: Instant,
 }
 
 impl SshContent {
@@ -109,6 +115,9 @@ impl SshContent {
             hovered_tab: None,
             pending_ops: Vec::new(),
             last_error: None,
+            ssh_loading: false,
+            ssh_ops_in_flight: 0,
+            loading_start: Instant::now(),
         }
     }
 
@@ -152,6 +161,52 @@ impl SshContent {
                 self.last_error = None;
             }
         }
+    }
+
+    /// Update the loading state from the app's in-flight counter.
+    pub fn set_loading(&mut self, loading: bool, count: usize) {
+        if loading && !self.ssh_loading {
+            self.loading_start = Instant::now();
+        }
+        self.ssh_loading = loading;
+        self.ssh_ops_in_flight = count;
+    }
+
+    /// Whether SSH write ops are currently in-flight.
+    #[must_use]
+    pub fn is_loading(&self) -> bool {
+        self.ssh_loading
+    }
+
+    /// Render the loading spinner bar.
+    fn render_loading_bar(&self, frame: &mut Frame, area: Rect, p: Palette) {
+        use rattles::presets::braille::WaveRows;
+        use rattles::Rattle;
+
+        let frames = WaveRows::FRAMES;
+        let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
+        let elapsed = self.loading_start.elapsed().as_secs_f32();
+        let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1);
+        let braille = frames[idx as usize % frames.len()];
+        let spinner = braille.first().map_or("·", |s| *s);
+
+        let mut spans = vec![
+            Span::styled(
+                format!(" {spinner} "),
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("applying changes...", Style::new().fg(p.text_dim)),
+        ];
+        if self.ssh_ops_in_flight > 1 {
+            spans.push(Span::styled(
+                format!(" ({} remaining)", self.ssh_ops_in_flight),
+                Style::new().fg(p.text_muted),
+            ));
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(spans)).style(Style::new().bg(p.panel)),
+            area,
+        );
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -205,6 +260,11 @@ impl SshContent {
 
     /// Handle a key press. Returns `Some(Action)` for navigation, `None` if consumed.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        // Block all input while SSH write ops are in-flight.
+        if self.ssh_loading {
+            return None;
+        }
+
         // If the active tab has a modal open, route input there first.
         if self.active_tab().has_modal() {
             let action = self.active_tab_mut().handle_key(code);
@@ -261,6 +321,11 @@ impl SshContent {
 
     /// Handle a mouse event for the SSH content area.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Block all input while SSH write ops are in-flight.
+        if self.ssh_loading {
+            return None;
+        }
+
         // If the active tab has a modal open, delegate to it for
         // click-outside detection.
         if self.active_tab().has_modal() {
@@ -338,13 +403,17 @@ impl SshContent {
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.clear_expired_error();
 
+        let loading_h = if self.ssh_loading { 1u16 } else { 0u16 };
         let error_h = if self.last_error.is_some() { 1u16 } else { 0u16 };
 
-        // Split into tab bar + optional error bar + content area
+        // Split into tab bar + optional loading bar + optional error bar + content area
         let mut constraints = vec![
             Constraint::Length(1), // tab bar
             Constraint::Length(1), // gap
         ];
+        if loading_h > 0 {
+            constraints.push(Constraint::Length(loading_h)); // loading bar
+        }
         if error_h > 0 {
             constraints.push(Constraint::Length(error_h)); // error bar
         }
@@ -357,6 +426,12 @@ impl SshContent {
         i += 1;
         let _gap_area = rects[i];
         i += 1;
+
+        if loading_h > 0 {
+            let loading_area = rects[i];
+            i += 1;
+            self.render_loading_bar(frame, loading_area, p);
+        }
 
         if error_h > 0 {
             let error_area = rects[i];
