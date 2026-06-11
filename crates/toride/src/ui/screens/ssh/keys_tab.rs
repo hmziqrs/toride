@@ -616,10 +616,25 @@ impl KeysTab {
                 Style::new().fg(p.info),
             ));
 
-            // Fingerprint (truncated)
+            // Fingerprint — show braille spinner while generating
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
-            let fp = truncate_str(&key.fingerprint, fp_w);
-            spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
+            if key.fingerprint.is_empty() {
+                use rattles::presets::braille::WaveRows;
+                use rattles::Rattle;
+                let frames = WaveRows::FRAMES;
+                let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
+                let elapsed = std::time::Instant::now().elapsed().as_secs_f32();
+                let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1);
+                let frame = frames[idx as usize % frames.len()];
+                let spinner = frame.first().map_or("·", |s| *s);
+                spans.push(Span::styled(
+                    format!(" {spinner} generating…"),
+                    Style::new().fg(p.accent),
+                ));
+            } else {
+                let fp = truncate_str(&key.fingerprint, fp_w);
+                spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
+            }
 
             // Encrypted badge
             if key.encrypted {
@@ -636,8 +651,10 @@ impl KeysTab {
                 }),
             ));
 
-            // Public key check
-            if key.has_public {
+            // Public key — show spinner while generating, then badge
+            if key.fingerprint.is_empty() {
+                // Still generating, skip the pub badge
+            } else if key.has_public {
                 spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
             }
 
@@ -682,7 +699,11 @@ impl KeysTab {
                     ]),
                     Line::from(vec![
                         Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
+                        if key.fingerprint.is_empty() {
+                            Span::styled("generating…", Style::new().fg(p.accent))
+                        } else {
+                            Span::styled(&key.fingerprint, Style::new().fg(p.text))
+                        },
                     ]),
                     Line::from(vec![
                         Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
@@ -698,8 +719,20 @@ impl KeysTab {
                     Line::from(vec![
                         Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if key.has_public { "✓ present" } else { "✗ missing" },
-                            Style::new().fg(if key.has_public { p.ok } else { p.err }),
+                            if key.fingerprint.is_empty() {
+                                "generating…"
+                            } else if key.has_public {
+                                "✓ present"
+                            } else {
+                                "✗ missing"
+                            },
+                            Style::new().fg(if key.fingerprint.is_empty() {
+                                p.accent
+                            } else if key.has_public {
+                                p.ok
+                            } else {
+                                p.err
+                            }),
                         ),
                     ]),
                     Line::from(vec![
