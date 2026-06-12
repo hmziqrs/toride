@@ -1425,14 +1425,14 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
             })
             .unwrap_or_else(|| "/bin/zsh".to_string());
 
-        let (has_authorized_keys, key_count) = count_authorized_keys(&ssh_dir);
+        let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
             shell,
             home_dir,
-            has_authorized_keys,
-            key_count,
+            ssh_key_count,
+            authorized_key_count,
         });
     }
 
@@ -1495,14 +1495,14 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
             continue;
         }
 
-        let (has_authorized_keys, key_count) = count_authorized_keys(&ssh_dir);
+        let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
             shell: shell.to_string(),
             home_dir: home_dir.to_string(),
-            has_authorized_keys,
-            key_count,
+            ssh_key_count,
+            authorized_key_count,
         });
     }
 
@@ -1510,25 +1510,41 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
     users
 }
 
-/// Count non-empty, non-comment lines in an authorized_keys file.
-fn count_authorized_keys(ssh_dir: &std::path::Path) -> (bool, usize) {
-    let ak_path = ssh_dir.join("authorized_keys");
-    if !ak_path.exists() {
-        return (false, 0);
-    }
-    match std::fs::read_to_string(&ak_path) {
-        Ok(contents) => {
-            let count = contents
-                .lines()
-                .filter(|l| {
-                    let l = l.trim();
-                    !l.is_empty() && !l.starts_with('#')
-                })
-                .count();
-            (count > 0, count)
-        }
-        Err(_) => (false, 0),
-    }
+/// Count SSH key files and authorized_keys entries in a .ssh directory.
+///
+/// Returns `(ssh_key_count, authorized_key_count)`.
+/// SSH keys are private key files (id_ed25519, id_rsa, etc.) — files
+/// starting with "id_" that don't end in .pub, .old, or .bak.
+fn count_ssh_keys(ssh_dir: &std::path::Path) -> (usize, usize) {
+    // Count private key files (id_* without .pub/.old/.bak suffix).
+    let ssh_key_count = match std::fs::read_dir(ssh_dir) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("id_")
+                    && !name.ends_with(".pub")
+                    && !name.ends_with(".old")
+                    && !name.ends_with(".bak")
+            })
+            .count(),
+        Err(_) => 0,
+    };
+
+    // Count authorized_keys entries.
+    let authorized_key_count = match std::fs::read_to_string(ssh_dir.join("authorized_keys")) {
+        Ok(contents) => contents
+            .lines()
+            .filter(|l| {
+                let l = l.trim();
+                !l.is_empty() && !l.starts_with('#')
+            })
+            .count(),
+        Err(_) => 0,
+    };
+
+    (ssh_key_count, authorized_key_count)
 }
 
 // ── Mock Data (test only) ───────────────────────────────────────────────────
@@ -1975,22 +1991,22 @@ mod mock {
                     username: "alice".into(),
                     shell: "/bin/bash".into(),
                     home_dir: "/home/alice".into(),
-                    has_authorized_keys: true,
-                    key_count: 2,
+                    ssh_key_count: 2,
+                    authorized_key_count: 3,
                 },
                 SystemUserInfo {
                     username: "bob".into(),
                     shell: "/bin/zsh".into(),
                     home_dir: "/home/bob".into(),
-                    has_authorized_keys: true,
-                    key_count: 1,
+                    ssh_key_count: 1,
+                    authorized_key_count: 1,
                 },
                 SystemUserInfo {
                     username: "root".into(),
                     shell: "/bin/bash".into(),
                     home_dir: "/root".into(),
-                    has_authorized_keys: false,
-                    key_count: 0,
+                    ssh_key_count: 0,
+                    authorized_key_count: 0,
                 },
             ],
         }

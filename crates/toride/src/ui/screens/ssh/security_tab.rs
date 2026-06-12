@@ -386,11 +386,23 @@ impl SecurityTab {
             let overflow = data.system_users.len().saturating_sub(10);
 
             for user in &display_users {
-                let key_status = if user.has_authorized_keys {
-                    Span::styled(
-                        format!("{} keys", user.key_count),
-                        Style::new().fg(p.accent),
-                    )
+                let key_status = if user.ssh_key_count > 0 || user.authorized_key_count > 0 {
+                    let mut parts = Vec::new();
+                    if user.ssh_key_count > 0 {
+                        parts.push(format!(
+                            "{} key{}",
+                            user.ssh_key_count,
+                            if user.ssh_key_count > 1 { "s" } else { "" }
+                        ));
+                    }
+                    if user.authorized_key_count > 0 {
+                        parts.push(format!(
+                            "{} auth{}",
+                            user.authorized_key_count,
+                            if user.authorized_key_count > 1 { "s" } else { "" }
+                        ));
+                    }
+                    Span::styled(parts.join(", "), Style::new().fg(p.accent))
                 } else {
                     Span::styled("No keys", Style::new().fg(p.text_dim))
                 };
@@ -569,22 +581,22 @@ mod tests {
                     username: "alice".into(),
                     shell: "/bin/bash".into(),
                     home_dir: "/home/alice".into(),
-                    has_authorized_keys: true,
-                    key_count: 2,
+                    ssh_key_count: 2,
+                    authorized_key_count: 3,
                 },
                 SystemUserInfo {
                     username: "bob".into(),
                     shell: "/bin/zsh".into(),
                     home_dir: "/home/bob".into(),
-                    has_authorized_keys: true,
-                    key_count: 1,
+                    ssh_key_count: 1,
+                    authorized_key_count: 1,
                 },
                 SystemUserInfo {
                     username: "root".into(),
                     shell: "/bin/bash".into(),
                     home_dir: "/root".into(),
-                    has_authorized_keys: false,
-                    key_count: 0,
+                    ssh_key_count: 0,
+                    authorized_key_count: 0,
                 },
             ],
         }
@@ -913,8 +925,8 @@ mod tests {
                 username: format!("user{i}"),
                 shell: "/bin/bash".into(),
                 home_dir: format!("/home/user{i}"),
-                has_authorized_keys: false,
-                key_count: 0,
+                ssh_key_count: 0,
+                authorized_key_count: 0,
             });
         }
         tab.set_data(data);

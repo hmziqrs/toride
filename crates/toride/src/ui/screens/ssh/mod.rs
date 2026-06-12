@@ -776,10 +776,10 @@ pub struct SystemUserInfo {
     pub shell: String,
     /// Home directory path.
     pub home_dir: String,
-    /// Whether the user has an authorized_keys file.
-    pub has_authorized_keys: bool,
-    /// Number of keys in authorized_keys (0 if no file).
-    pub key_count: usize,
+    /// Number of SSH key pairs (private keys like id_ed25519, id_rsa) in ~/.ssh/.
+    pub ssh_key_count: usize,
+    /// Number of entries in authorized_keys (keys that can log in as this user).
+    pub authorized_key_count: usize,
 }
 
 #[cfg(test)]
