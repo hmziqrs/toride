@@ -327,7 +327,7 @@ impl TextInput {
             let cursor_x = inner.x + label_w + cursor_col as u16;
             let cursor_y = inner.y;
             if cursor_x < inner.right() {
-                let cell = frame.buffer_mut().get_mut(cursor_x, cursor_y);
+                let cell = &mut frame.buffer_mut()[(cursor_x, cursor_y)];
                 if cursor_col < self.value.chars().count().saturating_sub(self.scroll) {
                     // Cursor is over an existing character — invert it.
                     let fg = cell.fg;

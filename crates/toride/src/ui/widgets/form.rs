@@ -149,6 +149,7 @@ pub struct FormModal {
     /// Current focus target (field index or buttons).
     focus: FocusTarget,
     /// Visual width available for the form content.
+    #[allow(dead_code)]
     width: u16,
     /// Interactive Add/Cancel buttons.
     buttons: ButtonRow<FormResult>,

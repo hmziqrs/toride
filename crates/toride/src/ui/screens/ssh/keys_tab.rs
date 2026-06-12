@@ -100,7 +100,7 @@ impl KeysTab {
             selected: 0,
             scroll: 0,
             detail_key_idx: None,
-            detail_modal: InteractiveModal::display("Key Detail").dimensions(54, 12),
+            detail_modal: InteractiveModal::display("Key Detail").dimensions(54, 16),
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
@@ -293,6 +293,7 @@ impl SshTab for KeysTab {
                                 permissions: "0600".into(),
                                 has_public: false,
                                 has_cert: false,
+                                used_by_hosts: vec![],
                                 host_count: 0,
                             });
                             // Select the newly added key
@@ -735,7 +736,7 @@ impl KeysTab {
 
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
         self.detail_modal.render(frame, p, |frame, content_area| {
-                let lines = vec![
+                let mut lines: Vec<Line> = vec![
                     Line::from(vec![
                         Span::styled("Name:  ", Style::new().fg(p.text_dim)),
                         Span::styled(&key.name, Style::new().fg(p.text).bold()),
@@ -789,18 +790,49 @@ impl KeysTab {
                             Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
                         ),
                     ]),
-                    Line::from(vec![
+                ];
+
+                // Host referencing section
+                if key.used_by_hosts.is_empty() {
+                    lines.push(Line::from(vec![
                         Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            format!("{} referencing", key.host_count),
-                            Style::new().fg(p.text),
+                            "Not referenced in any host config",
+                            Style::new().fg(p.text_dim),
                         ),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
-                    ),
-                ];
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled("◆ Referenced by", p.label_style()),
+                    ]));
+                    if key.used_by_hosts.len() <= 5 {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  {}", key.used_by_hosts.join(", ")),
+                                Style::new().fg(p.text),
+                            ),
+                        ]));
+                    } else {
+                        let display: Vec<&str> =
+                            key.used_by_hosts.iter().take(5).map(|s| s.as_str()).collect();
+                        let remaining = key.used_by_hosts.len() - 5;
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  {}", display.join(", ")),
+                                Style::new().fg(p.text),
+                            ),
+                            Span::styled(
+                                format!(" +{remaining} more"),
+                                Style::new().fg(p.text_dim),
+                            ),
+                        ]));
+                    }
+                }
+
+                lines.push(Line::raw(""));
+                lines.push(Line::from(
+                    Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+                ));
 
                 for (i, line) in lines.into_iter().enumerate() {
                     let y = content_area.y + i as u16;
@@ -821,7 +853,7 @@ impl KeysTab {
     fn render_passphrase_result(
         &mut self,
         frame: &mut Frame,
-        area: Rect,
+        _area: Rect,
         p: Palette,
         result: &Result<String, String>,
     ) {
@@ -872,6 +904,7 @@ mod tests {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
+                used_by_hosts: vec!["github.com".into(), "gh.com".into()],
                 host_count: 2,
             },
             SshKeyEntry {
@@ -882,6 +915,7 @@ mod tests {
                 permissions: "0644".into(),
                 has_public: true,
                 has_cert: true,
+                used_by_hosts: vec![],
                 host_count: 0,
             },
         ]

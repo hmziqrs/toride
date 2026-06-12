@@ -37,6 +37,7 @@ pub struct App {
     nav: Navigator,
     welcome: WelcomeScreen,
     dashboard: DashboardScreen,
+    #[allow(dead_code)] // will be used when help screen gets interactive content
     help: HelpScreen,
     /// Interactive help modal (manages visibility + rect + click-outside).
     help_modal: InteractiveModal<Action>,

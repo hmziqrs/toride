@@ -14,11 +14,12 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ssh_data::{SecurityCheck, SecurityGrade, SshSecurityData};
+use crate::ssh_data::SshSecurityData;
+use super::DiagnosticEntry;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_titled_panel;
 
-use super::{DiagnosticEntry, SshTab};
+use super::SshTab;
 
 // ── SecurityTab ────────────────────────────────────────────────────────────────
 
@@ -193,6 +194,209 @@ impl SecurityTab {
         // 4. Empty line
         lines.push(Line::raw(""));
 
+        // ── AUTH METHODS section ──────────────────────────────────────
+        lines.push(Line::from(Span::styled(
+            "AUTH METHODS",
+            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+        )));
+
+        // Password auth
+        if data.access_info.password_auth {
+            lines.push(Line::from(vec![
+                Span::styled("  ✓ Password", Style::new().fg(p.ok)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  ✗ Password", Style::new().fg(p.err)),
+            ]));
+        }
+
+        // Key auth
+        if data.access_info.pubkey_auth {
+            lines.push(Line::from(vec![
+                Span::styled("  ✓ Public Key", Style::new().fg(p.ok)),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::styled("  ✗ Public Key", Style::new().fg(p.err)),
+            ]));
+        }
+
+        // Root login
+        let root_login = &data.access_info.permit_root_login;
+        let root_color = match root_login.as_str() {
+            "yes" => p.warn,
+            "no" => p.ok,
+            _ => p.info, // "prohibit-password" or "forced-commands-only"
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Root login: ", Style::new().fg(p.text)),
+            Span::styled(root_login.clone(), Style::new().fg(root_color)),
+        ]));
+
+        // Auth methods
+        if !data.access_info.auth_methods.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Methods: ", Style::new().fg(p.text)),
+                Span::styled(
+                    data.access_info.auth_methods.join(", "),
+                    Style::new().fg(p.text_dim),
+                ),
+            ]));
+        }
+
+        // Spacer
+        lines.push(Line::raw(""));
+
+        // ── USER ACCESS section ───────────────────────────────────────
+        lines.push(Line::from(Span::styled(
+            "USER ACCESS",
+            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+        )));
+
+        let access = &data.access_info;
+        let all_empty = access.allowed_users.is_empty()
+            && access.denied_users.is_empty()
+            && access.allowed_groups.is_empty()
+            && access.denied_groups.is_empty();
+
+        if all_empty {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  No access restrictions configured",
+                    Style::new().fg(p.text_dim),
+                ),
+            ]));
+        } else {
+            // Allowed users
+            if access.allowed_users.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  Users: ", Style::new().fg(p.text)),
+                    Span::styled("All users", Style::new().fg(p.text_dim)),
+                ]));
+            } else {
+                let mut spans = vec![Span::styled("  Users: ", Style::new().fg(p.text))];
+                for (i, user) in access.allowed_users.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" ", Style::new()));
+                    }
+                    spans.push(Span::styled(
+                        format!(" {} ", user),
+                        Style::new().fg(p.info),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+
+            // Denied users
+            if !access.denied_users.is_empty() {
+                let mut spans =
+                    vec![Span::styled("  Denied: ", Style::new().fg(p.text))];
+                for (i, user) in access.denied_users.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" ", Style::new()));
+                    }
+                    spans.push(Span::styled(
+                        format!(" {} ", user),
+                        Style::new().fg(p.err),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+
+            // Allowed groups
+            if !access.allowed_groups.is_empty() {
+                let mut spans =
+                    vec![Span::styled("  Groups: ", Style::new().fg(p.text))];
+                for (i, group) in access.allowed_groups.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" ", Style::new()));
+                    }
+                    spans.push(Span::styled(
+                        format!(" @{} ", group),
+                        Style::new().fg(p.info),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+
+            // Denied groups
+            if !access.denied_groups.is_empty() {
+                let mut spans =
+                    vec![Span::styled("  Denied groups: ", Style::new().fg(p.text))];
+                for (i, group) in access.denied_groups.iter().enumerate() {
+                    if i > 0 {
+                        spans.push(Span::styled(" ", Style::new()));
+                    }
+                    spans.push(Span::styled(
+                        format!(" @{} ", group),
+                        Style::new().fg(p.err),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+
+        // Spacer
+        lines.push(Line::raw(""));
+
+        // ── SSH USERS section ─────────────────────────────────────────
+        lines.push(Line::from(Span::styled(
+            "SSH USERS",
+            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+        )));
+
+        if data.system_users.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "  Unable to read system users",
+                    Style::new().fg(p.text_dim),
+                ),
+            ]));
+        } else {
+            let display_users: Vec<_> = data
+                .system_users
+                .iter()
+                .take(10)
+                .collect();
+            let overflow = data.system_users.len().saturating_sub(10);
+
+            for user in &display_users {
+                let key_status = if user.has_authorized_keys {
+                    Span::styled(
+                        format!("{} keys", user.key_count),
+                        Style::new().fg(p.accent),
+                    )
+                } else {
+                    Span::styled("No keys", Style::new().fg(p.text_dim))
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::new()),
+                    Span::styled(
+                        format!("{:<16}", user.username),
+                        Style::new().fg(p.text),
+                    ),
+                    Span::styled(
+                        format!("{:<24}", user.shell),
+                        Style::new().fg(p.text_dim),
+                    ),
+                    key_status,
+                ]));
+            }
+
+            if overflow > 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("  +{} more", overflow),
+                        Style::new().fg(p.text_dim),
+                    ),
+                ]));
+            }
+        }
+
+        // Spacer
+        lines.push(Line::raw(""));
+
         // 5. Access section header
         lines.push(Line::from(Span::styled(
             "ACCESS",
@@ -294,6 +498,7 @@ impl SecurityTab {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::screens::ssh::{SshAccessInfo, SystemUserInfo};
     use std::collections::HashMap;
 
     fn sample_data() -> SshSecurityData {
@@ -314,6 +519,39 @@ mod tests {
             known_hosts_count: 5,
             known_hosts_hashed_count: 1,
             security_diagnostics: vec![],
+            access_info: SshAccessInfo {
+                allowed_users: vec![],
+                denied_users: vec![],
+                allowed_groups: vec!["ssh-users".into()],
+                denied_groups: vec![],
+                auth_methods: vec!["publickey".into()],
+                password_auth: false,
+                pubkey_auth: true,
+                permit_root_login: "prohibit-password".into(),
+            },
+            system_users: vec![
+                SystemUserInfo {
+                    username: "alice".into(),
+                    shell: "/bin/bash".into(),
+                    home_dir: "/home/alice".into(),
+                    has_authorized_keys: true,
+                    key_count: 2,
+                },
+                SystemUserInfo {
+                    username: "bob".into(),
+                    shell: "/bin/zsh".into(),
+                    home_dir: "/home/bob".into(),
+                    has_authorized_keys: true,
+                    key_count: 1,
+                },
+                SystemUserInfo {
+                    username: "root".into(),
+                    shell: "/bin/bash".into(),
+                    home_dir: "/root".into(),
+                    has_authorized_keys: false,
+                    key_count: 0,
+                },
+            ],
         }
     }
 
@@ -372,6 +610,9 @@ mod tests {
         let output = terminal.backend().to_string();
         assert!(output.contains("Grade"), "grade banner: {output}");
         assert!(output.contains("SERVER CONFIG"), "server config: {output}");
+        assert!(output.contains("AUTH METHODS"), "auth methods: {output}");
+        assert!(output.contains("USER ACCESS"), "user access: {output}");
+        assert!(output.contains("SSH USERS"), "ssh users: {output}");
         assert!(output.contains("ACCESS"), "access section: {output}");
         assert!(output.contains("KNOWN HOSTS"), "known hosts: {output}");
         assert!(output.contains("ALL CLEAR"), "all clear: {output}");
@@ -487,5 +728,134 @@ mod tests {
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("A"), "grade A for secure config: {output}");
+    }
+
+    #[test]
+    fn render_auth_methods_section() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("✗ Password"),
+            "should show disabled password auth: {output}"
+        );
+        assert!(
+            output.contains("✓ Public Key"),
+            "should show enabled pubkey auth: {output}"
+        );
+        assert!(
+            output.contains("prohibit-password"),
+            "should show root login policy: {output}"
+        );
+        assert!(
+            output.contains("Methods:"),
+            "should show auth methods: {output}"
+        );
+    }
+
+    #[test]
+    fn render_user_access_section() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("USER ACCESS"),
+            "should show user access section: {output}"
+        );
+        assert!(
+            output.contains("@ssh-users"),
+            "should show allowed group: {output}"
+        );
+    }
+
+    #[test]
+    fn render_ssh_users_section() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("SSH USERS"),
+            "should show ssh users header: {output}"
+        );
+        assert!(
+            output.contains("alice"),
+            "should show user alice: {output}"
+        );
+        assert!(
+            output.contains("bob"),
+            "should show user bob: {output}"
+        );
+        assert!(
+            output.contains("root"),
+            "should show user root: {output}"
+        );
+        assert!(
+            output.contains("2 keys"),
+            "should show key count for alice: {output}"
+        );
+        assert!(
+            output.contains("No keys"),
+            "should show no keys for root: {output}"
+        );
+    }
+
+    #[test]
+    fn render_user_access_empty_restrictions() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info = SshAccessInfo::default();
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("No access restrictions configured"),
+            "should show no restrictions message when all empty: {output}"
+        );
+    }
+
+    #[test]
+    fn render_ssh_users_overflow() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        // Add enough users to trigger overflow
+        for i in 0..12 {
+            data.system_users.push(SystemUserInfo {
+                username: format!("user{i}"),
+                shell: "/bin/bash".into(),
+                home_dir: format!("/home/user{i}"),
+                has_authorized_keys: false,
+                key_count: 0,
+            });
+        }
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("+5 more"),
+            "should show overflow count: {output}"
+        );
     }
 }

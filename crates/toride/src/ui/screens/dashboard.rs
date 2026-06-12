@@ -5,7 +5,7 @@
 //! an internal "active section"; only [`Section::Dashboard`] renders full
 //! content for now, other sections show a placeholder.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -31,7 +31,7 @@ use crate::ui::shell::{
 };
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    Card, Modal, Tooltip, accent_badge, kv, kv_with_suffix, neutral_badge,
+    Card, Tooltip, kv, kv_with_suffix,
     render_panel, render_titled_panel, tag_badge, title_line, title_line_with_detail,
 };
 use crate::ui::screens::base::ScreenBase;

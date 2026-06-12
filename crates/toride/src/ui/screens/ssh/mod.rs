@@ -522,6 +522,7 @@ trait SshTab {
         false
     }
     /// Close any open modal on this tab.
+    #[allow(dead_code)]
     fn close_modal(&mut self) {}
     /// Drain pending write operations queued by this tab.
     fn drain_ops(&mut self) -> Vec<SshOp> {
@@ -548,6 +549,8 @@ pub struct SshKeyEntry {
     pub has_public: bool,
     /// Whether a certificate is associated.
     pub has_cert: bool,
+    /// Host aliases in ~/.ssh/config that reference this key via IdentityFile.
+    pub used_by_hosts: Vec<String>,
     /// Number of config hosts referencing this key.
     pub host_count: usize,
 }
@@ -726,6 +729,42 @@ pub struct CertificateEntry {
     pub principals: Vec<String>,
 }
 
+/// SSH server access control information parsed from sshd_config.
+#[derive(Debug, Clone, Default)]
+pub struct SshAccessInfo {
+    /// Users allowed via AllowUsers (empty = all allowed).
+    pub allowed_users: Vec<String>,
+    /// Users denied via DenyUsers.
+    pub denied_users: Vec<String>,
+    /// Groups allowed via AllowGroups (empty = all allowed).
+    pub allowed_groups: Vec<String>,
+    /// Groups denied via DenyGroups.
+    pub denied_groups: Vec<String>,
+    /// Authentication methods from AuthenticationMethods directive.
+    pub auth_methods: Vec<String>,
+    /// Whether password authentication is enabled.
+    pub password_auth: bool,
+    /// Whether public key authentication is enabled.
+    pub pubkey_auth: bool,
+    /// Root login policy (yes/no/prohibit-password/forced-commands-only).
+    pub permit_root_login: String,
+}
+
+/// A system user with SSH-relevant information.
+#[derive(Debug, Clone)]
+pub struct SystemUserInfo {
+    /// Username.
+    pub username: String,
+    /// Login shell path.
+    pub shell: String,
+    /// Home directory path.
+    pub home_dir: String,
+    /// Whether the user has an authorized_keys file.
+    pub has_authorized_keys: bool,
+    /// Number of keys in authorized_keys (0 if no file).
+    pub key_count: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -773,6 +812,7 @@ mod tests {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
+                used_by_hosts: vec![],
                 host_count: 2,
             },
         ]);

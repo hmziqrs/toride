@@ -16,8 +16,11 @@ use tokio::sync::oneshot;
 use crate::ssh_convert;
 use crate::ui::screens::ssh::{
     AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
-    DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
+    DiagnosticEntry, ForwardSessionEntry, KnownHostEntry, SshAccessInfo,
+    SshKeyEntry, SystemUserInfo,
 };
+#[cfg(test)]
+use crate::ui::screens::ssh::ForwardEntry;
 use crate::ui::theme::Palette;
 
 /// Aggregated SSH data for all tabs.
@@ -671,6 +674,8 @@ fn empty_bundle() -> SshDataBundle {
             known_hosts_count: 0,
             known_hosts_hashed_count: 0,
             security_diagnostics: Vec::new(),
+            access_info: SshAccessInfo::default(),
+            system_users: Vec::new(),
         },
     }
 }
@@ -871,6 +876,8 @@ fn build_security_data(
         known_hosts_count: known_hosts.len(),
         known_hosts_hashed_count,
         security_diagnostics,
+        access_info: parse_sshd_access_info(),
+        system_users: parse_system_users(),
     }
 }
 
@@ -940,6 +947,10 @@ pub struct SshSecurityData {
     pub known_hosts_hashed_count: usize,
     /// Security-relevant diagnostics (warnings/errors only).
     pub security_diagnostics: Vec<DiagnosticEntry>,
+    /// Access control information parsed from sshd_config.
+    pub access_info: SshAccessInfo,
+    /// System users with valid login shells and SSH key info.
+    pub system_users: Vec<SystemUserInfo>,
 }
 
 impl SshSecurityData {
@@ -1109,6 +1120,137 @@ fn parse_sshd_config() -> HashMap<String, String> {
     config
 }
 
+/// Parse access control information from /etc/ssh/sshd_config.
+///
+/// Extracts AllowUsers, DenyUsers, AllowGroups, DenyGroups,
+/// AuthenticationMethods, and auth booleans.
+fn parse_sshd_access_info() -> SshAccessInfo {
+    let mut info = SshAccessInfo::default();
+    let path = Path::new("/etc/ssh/sshd_config");
+
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return info,
+    };
+
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Split on first whitespace
+        let (key, value) = match line.split_once(char::is_whitespace) {
+            Some((k, v)) => (k, v.trim()),
+            None => continue,
+        };
+
+        match key.to_lowercase().as_str() {
+            "allowusers" => {
+                info.allowed_users = value.split_whitespace().map(String::from).collect();
+            }
+            "denyusers" => {
+                info.denied_users = value.split_whitespace().map(String::from).collect();
+            }
+            "allowgroups" => {
+                info.allowed_groups = value.split_whitespace().map(String::from).collect();
+            }
+            "denygroups" => {
+                info.denied_groups = value.split_whitespace().map(String::from).collect();
+            }
+            "authenticationmethods" => {
+                info.auth_methods = value.split(',').map(|s| s.trim().to_string()).collect();
+            }
+            "passwordauthentication" => {
+                info.password_auth = value.eq_ignore_ascii_case("yes");
+            }
+            "pubkeyauthentication" => {
+                info.pubkey_auth = value.eq_ignore_ascii_case("yes");
+            }
+            "permitrootlogin" => {
+                info.permit_root_login = value.to_string();
+            }
+            _ => {}
+        }
+    }
+
+    // PubkeyAuthentication defaults to yes per OpenSSH spec
+    if !info.pubkey_auth {
+        info.pubkey_auth = true;
+    }
+
+    info
+}
+
+/// Parse system users with valid login shells from /etc/passwd.
+///
+/// Checks each user's home directory for ~/.ssh/authorized_keys.
+fn parse_system_users() -> Vec<SystemUserInfo> {
+    let contents = match std::fs::read_to_string("/etc/passwd") {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let invalid_shells = [
+        "/bin/false",
+        "/sbin/nologin",
+        "/usr/sbin/nologin",
+        "/bin/nologin",
+        "/dev/null",
+        "/bin/sync",
+        "/usr/bin/nologin",
+    ];
+
+    let mut users = Vec::new();
+
+    for line in contents.lines() {
+        let parts: Vec<&str> = line.splitn(7, ':').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+
+        let username = parts[0];
+        let home_dir = parts[5];
+        let shell = parts[6];
+
+        // Skip users with invalid shells
+        if invalid_shells.iter().any(|s| shell == *s) || shell.is_empty() {
+            continue;
+        }
+
+        // Check for authorized_keys
+        let ak_path = std::path::Path::new(home_dir).join(".ssh/authorized_keys");
+        let (has_authorized_keys, key_count) = if ak_path.exists() {
+            match std::fs::read_to_string(&ak_path) {
+                Ok(contents) => {
+                    let count = contents
+                        .lines()
+                        .filter(|l| {
+                            let l = l.trim();
+                            !l.is_empty() && !l.starts_with('#')
+                        })
+                        .count();
+                    (true, count)
+                }
+                Err(_) => (true, 0),
+            }
+        } else {
+            (false, 0)
+        };
+
+        users.push(SystemUserInfo {
+            username: username.to_string(),
+            shell: shell.to_string(),
+            home_dir: home_dir.to_string(),
+            has_authorized_keys,
+            key_count,
+        });
+    }
+
+    users.sort_by(|a, b| a.username.cmp(&b.username));
+    users
+}
+
 // ── Mock Data (test only) ───────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1140,6 +1282,7 @@ mod mock {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
+                used_by_hosts: vec!["github.com".into(), "gitlab.com".into()],
                 host_count: 2,
             },
             SshKeyEntry {
@@ -1150,6 +1293,7 @@ mod mock {
                 permissions: "0644".into(),
                 has_public: true,
                 has_cert: true,
+                used_by_hosts: vec![],
                 host_count: 0,
             },
             SshKeyEntry {
@@ -1160,6 +1304,7 @@ mod mock {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
+                used_by_hosts: vec!["prod-server".into(), "staging".into(), "dev".into(), "backup".into(), "monitor".into()],
                 host_count: 5,
             },
         ]
@@ -1537,6 +1682,39 @@ mod mock {
                 message: "Private key id_rsa has overly permissive mode (0644)".into(),
                 hint: Some("Run chmod 600 ~/.ssh/id_rsa".into()),
             }],
+            access_info: SshAccessInfo {
+                allowed_users: vec![],
+                denied_users: vec![],
+                allowed_groups: vec!["ssh-users".into()],
+                denied_groups: vec![],
+                auth_methods: vec!["publickey".into()],
+                password_auth: false,
+                pubkey_auth: true,
+                permit_root_login: "prohibit-password".into(),
+            },
+            system_users: vec![
+                SystemUserInfo {
+                    username: "alice".into(),
+                    shell: "/bin/bash".into(),
+                    home_dir: "/home/alice".into(),
+                    has_authorized_keys: true,
+                    key_count: 2,
+                },
+                SystemUserInfo {
+                    username: "bob".into(),
+                    shell: "/bin/zsh".into(),
+                    home_dir: "/home/bob".into(),
+                    has_authorized_keys: true,
+                    key_count: 1,
+                },
+                SystemUserInfo {
+                    username: "root".into(),
+                    shell: "/bin/bash".into(),
+                    home_dir: "/root".into(),
+                    has_authorized_keys: false,
+                    key_count: 0,
+                },
+            ],
         }
     }
 }

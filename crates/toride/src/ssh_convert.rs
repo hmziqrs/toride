@@ -200,6 +200,7 @@ pub fn convert_keys(keys: Vec<toride_ssh::SshKey>) -> Vec<SshKeyEntry> {
                 .unwrap_or_default(),
             has_public: k.has_public_pair,
             has_cert: k.has_certificate,
+            used_by_hosts: k.used_by_hosts.clone(),
             host_count: k.used_by_hosts.len(),
         })
         .collect()
