@@ -209,80 +209,89 @@ impl SecurityTab {
         // 4. Empty line
         lines.push(Line::raw(""));
 
-        // ── AUTH METHODS section ──────────────────────────────────────
-        lines.push(Line::from(Span::styled(
-            "AUTH METHODS",
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
+        // ── AUTH METHODS / USER ACCESS / SSH USERS sections ────────────
+        // Only show these when sshd_config was readable on this machine.
+        // Without it, we'd show misleading defaults (e.g. on macOS there
+        // is no /etc/ssh/sshd_config and /etc/passwd is mostly daemons).
+        if data.access_info.available {
 
-        // Password auth
-        if data.access_info.password_auth {
+            // Spacer
+            lines.push(Line::raw(""));
+
+            // ── AUTH METHODS section ──────────────────────────────────────
+            lines.push(Line::from(Span::styled(
+                "AUTH METHODS",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            )));
+
+            // Password auth
+            if data.access_info.password_auth {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✓ Password", Style::new().fg(p.ok)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✗ Password", Style::new().fg(p.err)),
+                ]));
+            }
+
+            // Key auth
+            if data.access_info.pubkey_auth {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✓ Public Key", Style::new().fg(p.ok)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("  ✗ Public Key", Style::new().fg(p.err)),
+                ]));
+            }
+
+            // Root login
+            let root_login = &data.access_info.permit_root_login;
+            let root_color = match root_login.as_str() {
+                "yes" => p.warn,
+                "no" => p.ok,
+                _ => p.info, // "prohibit-password" or "forced-commands-only"
+            };
             lines.push(Line::from(vec![
-                Span::styled("  ✓ Password", Style::new().fg(p.ok)),
+                Span::styled("  Root login: ", Style::new().fg(p.text)),
+                Span::styled(root_login.clone(), Style::new().fg(root_color)),
             ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("  ✗ Password", Style::new().fg(p.err)),
-            ]));
-        }
 
-        // Key auth
-        if data.access_info.pubkey_auth {
-            lines.push(Line::from(vec![
-                Span::styled("  ✓ Public Key", Style::new().fg(p.ok)),
-            ]));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled("  ✗ Public Key", Style::new().fg(p.err)),
-            ]));
-        }
+            // Auth methods
+            if !data.access_info.auth_methods.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("  Methods: ", Style::new().fg(p.text)),
+                    Span::styled(
+                        data.access_info.auth_methods.join(", "),
+                        Style::new().fg(p.text_dim),
+                    ),
+                ]));
+            }
 
-        // Root login
-        let root_login = &data.access_info.permit_root_login;
-        let root_color = match root_login.as_str() {
-            "yes" => p.warn,
-            "no" => p.ok,
-            _ => p.info, // "prohibit-password" or "forced-commands-only"
-        };
-        lines.push(Line::from(vec![
-            Span::styled("  Root login: ", Style::new().fg(p.text)),
-            Span::styled(root_login.clone(), Style::new().fg(root_color)),
-        ]));
+            // Spacer
+            lines.push(Line::raw(""));
 
-        // Auth methods
-        if !data.access_info.auth_methods.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("  Methods: ", Style::new().fg(p.text)),
-                Span::styled(
-                    data.access_info.auth_methods.join(", "),
-                    Style::new().fg(p.text_dim),
-                ),
-            ]));
-        }
+            // ── USER ACCESS section ───────────────────────────────────────
+            lines.push(Line::from(Span::styled(
+                "USER ACCESS",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            )));
 
-        // Spacer
-        lines.push(Line::raw(""));
+            let access = &data.access_info;
+            let all_empty = access.allowed_users.is_empty()
+                && access.denied_users.is_empty()
+                && access.allowed_groups.is_empty()
+                && access.denied_groups.is_empty();
 
-        // ── USER ACCESS section ───────────────────────────────────────
-        lines.push(Line::from(Span::styled(
-            "USER ACCESS",
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        let access = &data.access_info;
-        let all_empty = access.allowed_users.is_empty()
-            && access.denied_users.is_empty()
-            && access.allowed_groups.is_empty()
-            && access.denied_groups.is_empty();
-
-        if all_empty {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "  No access restrictions configured",
-                    Style::new().fg(p.text_dim),
-                ),
-            ]));
-        } else {
+            if all_empty {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "  All users allowed (no restrictions)",
+                        Style::new().fg(p.text_dim),
+                    ),
+                ]));
+            } else {
             // Allowed users
             if access.allowed_users.is_empty() {
                 lines.push(Line::from(vec![
@@ -364,7 +373,7 @@ impl SecurityTab {
         if data.system_users.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled(
-                    "  Unable to read system users",
+                    "  No SSH users with keys configured",
                     Style::new().fg(p.text_dim),
                 ),
             ]));
@@ -413,6 +422,11 @@ impl SecurityTab {
                 ]));
             }
         }
+
+        // Spacer
+        lines.push(Line::raw(""));
+
+        } // end available block
 
         // Spacer
         lines.push(Line::raw(""));
@@ -540,6 +554,7 @@ mod tests {
             known_hosts_hashed_count: 1,
             security_diagnostics: vec![],
             access_info: SshAccessInfo {
+                available: true,
                 allowed_users: vec![],
                 denied_users: vec![],
                 allowed_groups: vec!["ssh-users".into()],
@@ -835,20 +850,53 @@ mod tests {
     }
 
     #[test]
-    fn render_user_access_empty_restrictions() {
+    fn render_user_access_hidden_when_no_sshd_config() {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut tab = SecurityTab::new();
         let mut data = sample_data();
-        data.access_info = SshAccessInfo::default();
+        // Simulate no sshd_config on the machine (e.g. macOS).
+        data.access_info = SshAccessInfo::default(); // available: false
+        data.system_users = vec![];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        // Sections should be HIDDEN when sshd_config is unavailable.
+        assert!(
+            !output.contains("AUTH METHODS"),
+            "auth methods should be hidden without sshd_config: {output}"
+        );
+        assert!(
+            !output.contains("USER ACCESS"),
+            "user access should be hidden without sshd_config: {output}"
+        );
+        assert!(
+            !output.contains("SSH USERS"),
+            "ssh users should be hidden without sshd_config: {output}"
+        );
+    }
+
+    #[test]
+    fn render_user_access_all_users_allowed() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        // sshd_config exists but has no AllowUsers/DenyUsers.
+        data.access_info.allowed_users = vec![];
+        data.access_info.denied_users = vec![];
+        data.access_info.allowed_groups = vec![];
+        data.access_info.denied_groups = vec![];
         tab.set_data(data);
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(
-            output.contains("No access restrictions configured"),
-            "should show no restrictions message when all empty: {output}"
+            output.contains("All users allowed"),
+            "should show 'all users allowed' when no restrictions: {output}"
         );
     }
 
@@ -1048,8 +1096,8 @@ mod tests {
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(
-            output.contains("Unable to read system users"),
-            "should show unable to read message: {output}"
+            output.contains("No SSH users with keys configured"),
+            "should show no ssh users message: {output}"
         );
     }
 

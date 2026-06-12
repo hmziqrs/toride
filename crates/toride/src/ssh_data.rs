@@ -729,6 +729,7 @@ async fn collect_real_data(
                 known_hosts_hashed_count: 0,
                 security_diagnostics: Vec::new(),
                 access_info: SshAccessInfo {
+                    available: true,
                     allowed_users: vec![],
                     denied_users: vec![],
                     allowed_groups: vec![],
@@ -781,6 +782,7 @@ fn empty_bundle() -> SshDataBundle {
             known_hosts_hashed_count: 0,
             security_diagnostics: Vec::new(),
             access_info: SshAccessInfo {
+                available: false, // no sshd_config read
                 allowed_users: vec![],
                 denied_users: vec![],
                 allowed_groups: vec![],
@@ -1272,7 +1274,10 @@ fn parse_sshd_access_info() -> SshAccessInfo {
 
 /// Parse access control information from pre-read sshd_config content.
 fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
-    let mut info = SshAccessInfo::default();
+    let mut info = SshAccessInfo {
+        available: true,
+        ..SshAccessInfo::default()
+    };
 
     // Track which directives were explicitly seen so we can apply
     // OpenSSH defaults only when the directive is absent.
@@ -1347,17 +1352,96 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
     info
 }
 
-/// Parse system users with valid login shells from /etc/passwd.
-///
-/// Checks each user's home directory for ~/.ssh/authorized_keys.
 /// Discover real SSH users on the system.
 ///
-/// Unlike a brute-force `/etc/passwd` dump, this only returns users who
-/// have SSH actually configured — a real login shell, an existing home
-/// directory, and a `.ssh/` directory with at least one key file or
-/// config. This filters out the 100+ system daemon accounts that litter
-/// `/etc/passwd` on both macOS and Linux.
+/// On macOS, uses Directory Service (`dscl`) to enumerate real user
+/// accounts — `/etc/passwd` only contains system daemons on macOS.
+/// On Linux, reads `/etc/passwd` directly.
+///
+/// Only returns users who have SSH actually configured: a real login
+/// shell, an existing home directory, and a `.ssh/` directory.
 fn parse_system_users() -> Vec<SystemUserInfo> {
+    if cfg!(target_os = "macos") {
+        parse_system_users_macos()
+    } else {
+        parse_system_users_linux()
+    }
+}
+
+/// macOS: use `dscl` to query Directory Service for real users.
+fn parse_system_users_macos() -> Vec<SystemUserInfo> {
+    // dscl . -list /Users UniqueID
+    let output = match std::process::Command::new("dscl")
+        .args([".", "-list", "/Users", "UniqueID"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return vec![],
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut users = Vec::new();
+
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 2 {
+            continue;
+        }
+        let username = parts[0];
+        let uid: u32 = match parts[1].parse() {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
+
+        // Skip system accounts and underscore-prefixed daemons.
+        if uid < 500 || username.starts_with('_') {
+            continue;
+        }
+
+        // macOS home dirs are /Users/<name>.
+        let home_dir = format!("/Users/{username}");
+        let home = std::path::Path::new(&home_dir);
+        if !home.is_dir() {
+            continue;
+        }
+
+        // Only include users who have .ssh/ configured.
+        let ssh_dir = home.join(".ssh");
+        if !ssh_dir.is_dir() {
+            continue;
+        }
+
+        // Look up the user's shell.
+        let shell = std::process::Command::new("dscl")
+            .args([".", "-read", &format!("/Users/{username}"), "UserShell"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("UserShell:"))
+                    .and_then(|l| l.strip_prefix("UserShell:"))
+                    .map(|v| v.trim().to_string())
+            })
+            .unwrap_or_else(|| "/bin/zsh".to_string());
+
+        let (has_authorized_keys, key_count) = count_authorized_keys(&ssh_dir);
+
+        users.push(SystemUserInfo {
+            username: username.to_string(),
+            shell,
+            home_dir,
+            has_authorized_keys,
+            key_count,
+        });
+    }
+
+    users.sort_by(|a, b| a.username.cmp(&b.username));
+    users
+}
+
+/// Linux: read /etc/passwd for real users with SSH configured.
+fn parse_system_users_linux() -> Vec<SystemUserInfo> {
     let contents = match std::fs::read_to_string("/etc/passwd") {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -1389,7 +1473,7 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
         let home_dir = parts[5];
         let shell = parts[6];
 
-        // Skip system accounts (uid 0 = root, <500 on macOS, <1000 on Linux).
+        // Skip system accounts.
         if uid < 500 {
             continue;
         }
@@ -1405,32 +1489,13 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
             continue;
         }
 
-        // Only include users who have .ssh/ set up — if there's no .ssh
-        // directory at all, this user has never used SSH on this machine.
+        // Only include users who have .ssh/ set up.
         let ssh_dir = home.join(".ssh");
         if !ssh_dir.is_dir() {
             continue;
         }
 
-        // Count keys in authorized_keys.
-        let ak_path = ssh_dir.join("authorized_keys");
-        let (has_authorized_keys, key_count) = if ak_path.exists() {
-            match std::fs::read_to_string(&ak_path) {
-                Ok(contents) => {
-                    let count = contents
-                        .lines()
-                        .filter(|l| {
-                            let l = l.trim();
-                            !l.is_empty() && !l.starts_with('#')
-                        })
-                        .count();
-                    (count > 0, count)
-                }
-                Err(_) => (false, 0),
-            }
-        } else {
-            (false, 0)
-        };
+        let (has_authorized_keys, key_count) = count_authorized_keys(&ssh_dir);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
@@ -1443,6 +1508,27 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
 
     users.sort_by(|a, b| a.username.cmp(&b.username));
     users
+}
+
+/// Count non-empty, non-comment lines in an authorized_keys file.
+fn count_authorized_keys(ssh_dir: &std::path::Path) -> (bool, usize) {
+    let ak_path = ssh_dir.join("authorized_keys");
+    if !ak_path.exists() {
+        return (false, 0);
+    }
+    match std::fs::read_to_string(&ak_path) {
+        Ok(contents) => {
+            let count = contents
+                .lines()
+                .filter(|l| {
+                    let l = l.trim();
+                    !l.is_empty() && !l.starts_with('#')
+                })
+                .count();
+            (count > 0, count)
+        }
+        Err(_) => (false, 0),
+    }
 }
 
 // ── Mock Data (test only) ───────────────────────────────────────────────────
@@ -1874,6 +1960,7 @@ mod mock {
                 hint: Some("Run chmod 600 ~/.ssh/id_rsa".into()),
             }],
             access_info: SshAccessInfo {
+                available: true,
                 allowed_users: vec![],
                 denied_users: vec![],
                 allowed_groups: vec!["ssh-users".into()],

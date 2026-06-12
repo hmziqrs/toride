@@ -744,6 +744,11 @@ pub struct CertificateEntry {
 /// SSH server access control information parsed from sshd_config.
 #[derive(Debug, Clone, Default)]
 pub struct SshAccessInfo {
+    /// Whether sshd_config was found and readable on this machine.
+    /// When false, all other fields are defaults — the UI should hide
+    /// sections that depend on server config rather than showing
+    /// misleading empty states.
+    pub available: bool,
     /// Users allowed via AllowUsers (empty = all allowed).
     pub allowed_users: Vec<String>,
     /// Users denied via DenyUsers.
