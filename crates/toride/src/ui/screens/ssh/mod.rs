@@ -298,6 +298,10 @@ impl SshContent {
                 self.focus = Focus::List;
                 None
             }
+            KeyCode::BackTab => {
+                self.focus = Focus::List;
+                None
+            }
             KeyCode::Esc => return Some(Action::Back),
             _ => None,
         }
@@ -309,7 +313,7 @@ impl SshContent {
                 // Delegate up/down to the active tab's handle_key
                 self.active_tab_mut().handle_key(code)
             }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = Focus::TabBar;
                 None
             }

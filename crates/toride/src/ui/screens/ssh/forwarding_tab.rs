@@ -122,11 +122,6 @@ impl ForwardingTab {
         self.detail_open = None;
     }
 
-    /// Drain pending write operations queued by this tab.
-    pub fn drain_ops(&mut self) -> Vec<SshOp> {
-        std::mem::take(&mut self.pending_ops)
-    }
-
     /// Compute the total number of rendered rows across all sessions.
     fn total_rows(&self) -> usize {
         self.sessions

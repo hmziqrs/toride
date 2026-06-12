@@ -765,16 +765,17 @@ impl AppScreen for DashboardScreen {
         }
 
         match code {
-            // When SSH content has a modal (form/confirm) open, ALL keys go to
-            // SSH first. This prevents global shortcuts (q, digits, Esc, etc.)
-            // from firing while the user is filling in a form.
+            // When SSH content has a modal (form/confirm) open OR is loading,
+            // ALL keys go to SSH first. This prevents global shortcuts (q,
+            // digits, Esc, etc.) from firing while the user is filling in a
+            // form or while write ops are in-flight.
             _
                 if self.active_section() == Section::Ssh
-                    && self.ssh_content.has_modal() =>
+                    && (self.ssh_content.has_modal() || self.ssh_content.is_loading()) =>
             {
                 return self.ssh_content.handle_key(code);
             }
-            KeyCode::Char('q') => return Some(Action::Quit),
+            KeyCode::Char('q') => return Some(Action::ConfirmQuit),
             // Tab/BackTab on Sidebar: cycle shell focus. On Content: forward to section.
             KeyCode::Tab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
@@ -1380,9 +1381,9 @@ mod tests {
     }
 
     #[test]
-    fn q_quits() {
+    fn q_confirms_quit() {
         let mut s = DashboardScreen::new();
-        assert_eq!(s.handle_key(KeyCode::Char('q')), Some(Action::Quit));
+        assert_eq!(s.handle_key(KeyCode::Char('q')), Some(Action::ConfirmQuit));
     }
 
     #[test]

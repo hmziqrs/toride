@@ -78,8 +78,9 @@ impl AgentTab {
                 InteractiveButton::new("↵ detail", "↵", '\r'),
                 InteractiveButton::new("a add", "a", 'a'),
                 InteractiveButton::new("d remove", "d", 'd'),
+                InteractiveButton::new("D clear", "D", 'D'),
             ],
-            vec![1, 1, 1],
+            vec![1, 1, 1, 1],
         );
         Self {
             status: AgentStatus {
@@ -286,8 +287,9 @@ impl SshTab for AgentTab {
                         Some(ConfirmResult::Confirmed) => {
                             if !self.keys.is_empty() {
                                 let name = self.keys[self.selected].name.clone();
-                                // Persist to disk — derive a plausible key path
-                                let path = format!("~/.ssh/{name}");
+                                // Persist to disk — derive absolute key path
+                                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                                let path = format!("{home}/.ssh/{name}");
                                 self.pending_ops.push(SshOp::AgentRemoveKey { path });
                                 // Optimistic in-memory update
                                 self.keys.remove(self.selected);
@@ -488,10 +490,15 @@ impl AgentTab {
         let line1_area = Rect::new(inner.x, inner.y, inner.width, 1);
         frame.render_widget(Paragraph::new(status_line), line1_area);
 
-        // Line 2: key count
+        // Line 2: key count — show both agent-reported count and displayed count
+        let count_display = if self.keys.len() != self.status.key_count {
+            format!("{} keys loaded ({} reported)", self.keys.len(), self.status.key_count)
+        } else {
+            format!("{} keys loaded", self.keys.len())
+        };
         let count_line = Line::from(vec![
             Span::styled(
-                format!("{} keys loaded", self.keys.len()),
+                count_display,
                 Style::new().fg(p.text_dim),
             ),
         ]);

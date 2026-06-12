@@ -221,9 +221,16 @@ impl SshTab for DiagnosticsTab {
                     }
                 }
                 ActionModal::FixAll => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        // Fix all auto-fixable issues
-                        self.action_modal = None;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            // Fix all auto-fixable issues
+                            self.pending_ops.push(SshOp::DoctorRunChecks);
+                            self.action_modal = None;
+                        }
+                        Some(ConfirmResult::Cancelled) => {
+                            self.action_modal = None;
+                        }
+                        None => {}
                     }
                 }
             }

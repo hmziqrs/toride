@@ -46,8 +46,16 @@ impl SecurityTab {
 
     /// Replace the security data with new data.
     pub fn set_data(&mut self, data: SshSecurityData) {
+        let structurally_changed = match &self.data {
+            None => true,
+            Some(old) => old.checks().len() != data.checks().len()
+                || old.system_users.len() != data.system_users.len(),
+        };
         self.data = Some(data);
-        self.scroll = 0;
+        if structurally_changed {
+            self.scroll = 0;
+        }
+        // Otherwise preserve scroll; the render path will clamp it.
     }
 }
 
@@ -112,7 +120,7 @@ impl SshTab for SecurityTab {
             return;
         };
 
-        let lines = self.build_lines(data, p);
+        let lines = self.build_lines(data, p, inner.width);
 
         self.content_height = lines.len();
 
@@ -152,7 +160,7 @@ impl SshTab for SecurityTab {
 
 impl SecurityTab {
     /// Build all dashboard lines from security data.
-    fn build_lines(&self, data: &SshSecurityData, p: Palette) -> Vec<Line<'static>> {
+    fn build_lines(&self, data: &SshSecurityData, p: Palette, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let checks = data.checks();
         let grade = data.grade();
@@ -174,6 +182,10 @@ impl SecurityTab {
         )));
 
         // 3. Check rows (up to 8)
+        let w = inner_width as usize;
+        // label_col + detail_col + icon ≈ w; reserve 4 for indent and icon
+        let label_col = 24.min(w.saturating_sub(4) / 2);
+        let detail_col = 24.min(w.saturating_sub(label_col + 4));
         for check in &checks {
             let icon = if check.informational {
                 Span::styled(" ·", Style::new().fg(p.text_muted))
@@ -183,10 +195,13 @@ impl SecurityTab {
                 Span::styled(" ✗", Style::new().fg(p.err))
             };
 
+            let label_display = crate::ui::responsive::truncate_str(&check.label, label_col);
+            let detail_display = crate::ui::responsive::truncate_str(&check.detail, detail_col);
+
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::new()),
-                Span::styled(format!("{:<24}", check.label), Style::new().fg(p.text)),
-                Span::styled(format!("{:<24}", check.detail), Style::new().fg(p.text_dim)),
+                Span::styled(format!("{:width$}", label_display, width = label_col), Style::new().fg(p.text)),
+                Span::styled(format!("{:width$}", detail_display, width = detail_col), Style::new().fg(p.text_dim)),
                 icon,
             ]));
         }
@@ -370,14 +385,19 @@ impl SecurityTab {
                 } else {
                     Span::styled("No keys", Style::new().fg(p.text_dim))
                 };
+                // Dynamically size columns based on available width
+                let name_w = 16.min(w.saturating_sub(6) / 3);
+                let shell_w = 24.min(w.saturating_sub(name_w + 6) / 2);
+                let name_display = crate::ui::responsive::truncate_str(&user.username, name_w);
+                let shell_display = crate::ui::responsive::truncate_str(&user.shell, shell_w);
                 lines.push(Line::from(vec![
                     Span::styled("  ", Style::new()),
                     Span::styled(
-                        format!("{:<16}", user.username),
+                        format!("{:width$}", name_display, width = name_w),
                         Style::new().fg(p.text),
                     ),
                     Span::styled(
-                        format!("{:<24}", user.shell),
+                        format!("{:width$}", shell_display, width = shell_w),
                         Style::new().fg(p.text_dim),
                     ),
                     key_status,

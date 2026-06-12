@@ -92,8 +92,9 @@ impl KeysTab {
                 InteractiveButton::new("r rename", "r", 'r'),
                 InteractiveButton::new("p passphrase", "p", 'p'),
                 InteractiveButton::new("i install", "i", 'i'),
+                InteractiveButton::new("x chmod", "x", 'x'),
             ],
-            vec![1, 1, 1, 1, 1, 1],
+            vec![1, 1, 1, 1, 1, 1, 1],
         );
         Self {
             keys: Vec::new(),
@@ -364,22 +365,12 @@ impl SshTab for KeysTab {
                                 .map(|s| s.to_string())
                                 .unwrap_or_default();
                             if let Some(name) = self.test_passphrase_key.take() {
-                                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                                let key_path = format!("{home}/.ssh/{name}");
-                                let output = std::process::Command::new("ssh-keygen")
-                                    .args(["-y", "-f", &key_path, "-P", &passphrase])
-                                    .output();
-                                self.passphrase_test_result = Some(match output {
-                                    Ok(o) if o.status.success() => {
-                                        Ok(format!("passphrase correct for '{name}'"))
-                                    }
-                                    Ok(_) => {
-                                        Err("wrong passphrase".to_string())
-                                    }
-                                    Err(e) => {
-                                        Err(format!("failed to test: {e}"))
-                                    }
+                                self.pending_ops.push(SshOp::KeyTestPassphrase {
+                                    name: name.clone(),
+                                    passphrase,
                                 });
+                                // Show a pending result that will be replaced by the async pipeline
+                                self.passphrase_test_result = Some(Ok(format!("testing '{name}'...")));
                             }
                             self.action_modal = None;
                         }
@@ -807,9 +798,11 @@ impl KeysTab {
                         Span::styled("◆ Referenced by", p.label_style()),
                     ]));
                     if key.used_by_hosts.len() <= 5 {
+                        let hosts_str = format!("  {}", key.used_by_hosts.join(", "));
+                        let hosts_display = truncate_str(&hosts_str, content_area.width as usize);
                         lines.push(Line::from(vec![
                             Span::styled(
-                                format!("  {}", key.used_by_hosts.join(", ")),
+                                hosts_display,
                                 Style::new().fg(p.text),
                             ),
                         ]));
@@ -817,13 +810,18 @@ impl KeysTab {
                         let display: Vec<&str> =
                             key.used_by_hosts.iter().take(5).map(|s| s.as_str()).collect();
                         let remaining = key.used_by_hosts.len() - 5;
+                        let overflow_suffix = format!(" +{remaining} more");
+                        let overflow_w = overflow_suffix.chars().count();
+                        let max_hosts_w = content_area.width.saturating_sub(overflow_w as u16) as usize;
+                        let hosts_str = format!("  {}", display.join(", "));
+                        let hosts_display = truncate_str(&hosts_str, max_hosts_w);
                         lines.push(Line::from(vec![
                             Span::styled(
-                                format!("  {}", display.join(", ")),
+                                hosts_display,
                                 Style::new().fg(p.text),
                             ),
                             Span::styled(
-                                format!(" +{remaining} more"),
+                                overflow_suffix,
                                 Style::new().fg(p.text_dim),
                             ),
                         ]));

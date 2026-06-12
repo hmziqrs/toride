@@ -186,17 +186,23 @@ impl SshTab for CertificatesTab {
         if let Some(action) = self.action_modal {
             match action {
                 ActionModal::Revoke => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.entries.is_empty() {
-                            let cert = &self.entries[self.selected];
-                            self.pending_ops.push(SshOp::CertificateRevoke { name: cert.name.clone() });
-                            self.entries.remove(self.selected);
-                            if self.selected >= self.entries.len() && !self.entries.is_empty() {
-                                self.selected = self.entries.len() - 1;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.entries.is_empty() {
+                                let cert = &self.entries[self.selected];
+                                self.pending_ops.push(SshOp::CertificateRevoke { name: cert.name.clone() });
+                                self.entries.remove(self.selected);
+                                if self.selected >= self.entries.len() && !self.entries.is_empty() {
+                                    self.selected = self.entries.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => {
+                            self.action_modal = None;
+                        }
+                        None => {}
                     }
                 }
             }

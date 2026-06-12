@@ -52,13 +52,24 @@ pub struct SshDataBundle {
 /// Manages periodic async collection of SSH data.
 pub struct SshDataCollector {
     rx: Option<oneshot::Receiver<SshDataBundle>>,
+    /// Cached diagnostics from the last collection (avoids re-running every 2s).
+    cached_diagnostics: Option<Vec<DiagnosticEntry>>,
+    /// When the diagnostics cache was last refreshed.
+    diagnostics_fresh_at: Option<std::time::Instant>,
 }
+
+/// How long to keep cached diagnostics before re-running the full suite.
+const DIAGNOSTICS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SshDataCollector {
     /// Create a new collector with no pending collection.
     #[must_use]
     pub fn new() -> Self {
-        Self { rx: None }
+        Self {
+            rx: None,
+            cached_diagnostics: None,
+            diagnostics_fresh_at: None,
+        }
     }
 
     /// Whether a collection is currently in-flight.
@@ -74,9 +85,12 @@ impl SshDataCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
+        let use_cache = self.cached_diagnostics.is_some()
+            && self.diagnostics_fresh_at.map_or(false, |t| t.elapsed() < DIAGNOSTICS_TTL);
+        let cached_diag = self.cached_diagnostics.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let bundle = collect_real_data().await;
+            let bundle = collect_real_data(use_cache, cached_diag).await;
             let _ = tx.send(bundle);
         });
     }
@@ -89,11 +103,21 @@ impl SshDataCollector {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
+                if let Some(ref bundle) = result {
+                    self.cached_diagnostics = Some(bundle.diagnostics.clone());
+                    self.diagnostics_fresh_at = Some(std::time::Instant::now());
+                }
                 self.rx = None;
                 result
             }
             None => None,
         }
+    }
+
+    /// Invalidate the diagnostics cache so the next collection re-runs checks.
+    pub fn invalidate_diagnostics_cache(&mut self) {
+        self.cached_diagnostics = None;
+        self.diagnostics_fresh_at = None;
     }
 }
 
@@ -200,6 +224,11 @@ pub enum SshOp {
     KeyInstallToRemote {
         key_name: String,
         dest: String,
+    },
+    /// Test whether a passphrase unlocks an SSH key.
+    KeyTestPassphrase {
+        name: String,
+        passphrase: String,
     },
 }
 
@@ -586,6 +615,44 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 }
             }
         }
+        SshOp::KeyTestPassphrase { name, passphrase } => {
+            let ssh_dir = match toride_ssh::SshPaths::new() {
+                Ok(p) => p.ssh_dir().to_path_buf(),
+                Err(e) => {
+                    let msg = format!("failed to resolve SSH directory: {e}");
+                    tracing::error!("keys: {msg}");
+                    return Err(msg);
+                }
+            };
+            let key_path = ssh_dir.join(&name);
+            let key_path_str = key_path.to_string_lossy().into_owned();
+            let output = tokio::task::spawn_blocking(move || {
+                std::process::Command::new("ssh-keygen")
+                    .args(["-y", "-f", &key_path_str, "-P", &passphrase])
+                    .output()
+            }).await;
+            match output {
+                Ok(Ok(o)) if o.status.success() => {
+                    tracing::info!("keys: passphrase correct for '{name}'");
+                    Ok(format!("passphrase correct for '{name}'"))
+                }
+                Ok(Ok(_)) => {
+                    let msg = format!("wrong passphrase for '{name}'");
+                    tracing::warn!("keys: {msg}");
+                    Err(msg)
+                }
+                Ok(Err(e)) => {
+                    let msg = format!("failed to test passphrase for '{name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
+                Err(e) => {
+                    let msg = format!("task join error testing passphrase for '{name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
+            }
+        }
     }
 }
 
@@ -593,7 +660,13 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
 ///
 /// All subsystems run in parallel via `tokio::join!`. Individual failures are
 /// logged and produce empty data — the app never crashes from a bad subsystem.
-async fn collect_real_data() -> SshDataBundle {
+///
+/// When `use_cache` is true and `cached_diag` is provided, diagnostics are
+/// reused from the cache instead of re-running the full check suite.
+async fn collect_real_data(
+    use_cache: bool,
+    cached_diag: Option<Vec<DiagnosticEntry>>,
+) -> SshDataBundle {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
         Err(e) => {
@@ -602,14 +675,14 @@ async fn collect_real_data() -> SshDataBundle {
         }
     };
 
-    // All subsystems in parallel
+    // All subsystems in parallel — diagnostics may be cached
     let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) =
         tokio::join!(
             collect_keys(&mgr),
             collect_known_hosts(&mgr),
             collect_authorized_keys(&mgr),
             collect_config_hosts(&mgr),
-            collect_diagnostics(&mgr),
+            async { if use_cache { None } else { Some(collect_diagnostics(&mgr).await) } },
             collect_agent(&mgr),
             collect_forwarding(&mgr),
             collect_certificates(&mgr),
@@ -619,7 +692,11 @@ async fn collect_real_data() -> SshDataBundle {
     let known_hosts = known_hosts_r.unwrap_or_default();
     let authorized_keys = auth_keys_r.unwrap_or_default();
     let config_hosts = config_r.unwrap_or_default();
-    let diagnostics = diag_r.unwrap_or_default();
+    let diagnostics = if use_cache {
+        cached_diag.unwrap_or_default()
+    } else {
+        diag_r.and_then(|r| r.ok()).unwrap_or_default()
+    };
 
     let (agent_status, agent_keys) = agent_r.unwrap_or_else(|_| {
         (
@@ -1147,6 +1224,7 @@ impl SshSecurityData {
 /// **Note:** `Match` and `Include` blocks are silently skipped. Directives
 /// inside a `Match` block are not parsed, so the security dashboard may not
 /// reflect conditional overrides.
+#[allow(dead_code)]
 fn parse_sshd_config() -> HashMap<String, String> {
     let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
         .unwrap_or_default();
@@ -1185,6 +1263,7 @@ fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
 /// the actual sshd configuration, which is managed by launchd. Additionally,
 /// system users are parsed from `/etc/passwd`, which is not the primary user
 /// database on macOS (Directory Service is). Results on macOS may be incomplete.
+#[allow(dead_code)]
 fn parse_sshd_access_info() -> SshAccessInfo {
     let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
         .unwrap_or_default();
