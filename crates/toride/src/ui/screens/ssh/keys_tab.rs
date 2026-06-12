@@ -38,6 +38,8 @@ enum ActionModal {
     Rename,
     /// Test passphrase form.
     TestPassphrase,
+    /// Install public key to remote host form.
+    Install,
 }
 
 // ── KeysTab ──────────────────────────────────────────────────────────────────
@@ -74,6 +76,8 @@ pub struct KeysTab {
     passphrase_test_result: Option<Result<String, String>>,
     /// Reference instant for spinner animation (keys still generating).
     anim_start: std::time::Instant,
+    /// Key name for the install-to-remote operation (set when Install modal opens).
+    install_key_name: Option<String>,
 }
 
 impl KeysTab {
@@ -107,6 +111,7 @@ impl KeysTab {
             test_passphrase_key: None,
             passphrase_test_result: None,
             anim_start: std::time::Instant::now(),
+            install_key_name: None,
         }
     }
 
@@ -385,6 +390,28 @@ impl SshTab for KeysTab {
                         FormResult::Pending => {}
                     }
                 }
+                ActionModal::Install => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let key_name = self.install_key_name.take().unwrap_or_default();
+                            let dest = self.form.text_value(1)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            if !key_name.is_empty() && !dest.is_empty() {
+                                self.pending_ops.push(SshOp::KeyInstallToRemote {
+                                    key_name,
+                                    dest,
+                                });
+                            }
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.install_key_name = None;
+                            self.action_modal = None;
+                        }
+                        FormResult::Pending => {}
+                    }
+                }
             }
             return None;
         }
@@ -449,7 +476,14 @@ impl SshTab for KeysTab {
                 None
             }
             KeyCode::Char('i') => {
-                // TODO: Open install to remote modal
+                if !self.keys.is_empty() && self.action_modal.is_none() && !self.detail_modal.is_visible() {
+                    let key_name = self.keys[self.selected].name.clone();
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Key", 40).placeholder("current key name"))
+                        .text_field(TextInput::new("Destination (user@host)", 40).placeholder("user@host").required());
+                    self.install_key_name = Some(key_name);
+                    self.action_modal = Some(ActionModal::Install);
+                }
                 None
             }
             KeyCode::Char('x') => {
@@ -500,6 +534,12 @@ impl SshTab for KeysTab {
                 self.form.render_in_modal_with_hint(
                     frame, p, "Test Passphrase", 48, 11,
                     "Enter passphrase and press Enter to verify",
+                );
+            }
+            Some(ActionModal::Install) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Install Key to Remote", 52, 13,
+                    "Enter user@host, Esc to cancel",
                 );
             }
             None => {
