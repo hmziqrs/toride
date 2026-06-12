@@ -33,6 +33,8 @@ enum ActionModal {
     Add,
     /// Remove key from agent confirmation.
     Remove,
+    /// Remove all keys from agent confirmation.
+    RemoveAll,
 }
 
 // ── AgentTab ─────────────────────────────────────────────────────────────────
@@ -136,7 +138,9 @@ impl AgentTab {
     /// Handle a mouse event for the agent key list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Confirm modal open: delegate mouse clicks to its buttons.
-        if self.action_modal == Some(ActionModal::Remove) {
+        if self.action_modal == Some(ActionModal::Remove)
+            || self.action_modal == Some(ActionModal::RemoveAll)
+        {
             if let Some(result) = self.confirm.handle_mouse(&mouse) {
                 return match result {
                     ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
@@ -149,7 +153,7 @@ impl AgentTab {
             return None;
         }
         // Form modal open: delegate mouse to form buttons.
-        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Remove) {
+        if self.action_modal.is_some() {
             if let Some(result) = self.form.handle_mouse(&mouse) {
                 return match result {
                     FormResult::Submitted => self.handle_key(KeyCode::Enter),
@@ -298,6 +302,20 @@ impl SshTab for AgentTab {
                         None => {}
                     }
                 }
+                ActionModal::RemoveAll => {
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            self.pending_ops.push(SshOp::AgentRemoveAll);
+                            // Optimistic in-memory update
+                            self.keys.clear();
+                            self.selected = 0;
+                            self.scroll = 0;
+                            self.action_modal = None;
+                        }
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
+                    }
+                }
             }
             None
         } else {
@@ -338,7 +356,10 @@ impl SshTab for AgentTab {
                     None
                 }
                 KeyCode::Char('D') => {
-                    // TODO: Remove all keys from agent
+                    if !self.keys.is_empty() {
+                        self.confirm = ConfirmModal::new("Remove all keys from SSH agent?");
+                        self.action_modal = Some(ActionModal::RemoveAll);
+                    }
                     None
                 }
                 _ => None,
@@ -375,6 +396,9 @@ impl SshTab for AgentTab {
             }
             Some(ActionModal::Remove) => {
                 self.confirm.render(frame, p, "Remove Key");
+            }
+            Some(ActionModal::RemoveAll) => {
+                self.confirm.render(frame, p, "Remove All Keys");
             }
             None => {}
         }

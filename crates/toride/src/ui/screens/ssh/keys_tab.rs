@@ -453,7 +453,11 @@ impl SshTab for KeysTab {
                 None
             }
             KeyCode::Char('x') => {
-                // TODO: Fix permissions
+                if !self.keys.is_empty() && self.action_modal.is_none() && !self.detail_modal.is_visible() {
+                    let name = self.keys[self.selected].name.clone();
+                    self.pending_ops.push(SshOp::KeyChmodFix { name });
+                    self.keys[self.selected].permissions = "0600".into();
+                }
                 None
             }
             _ => None,

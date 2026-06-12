@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -56,6 +57,8 @@ pub struct CertificatesTab {
     action_modal: Option<ActionModal>,
     /// Confirm modal for revoke operations.
     confirm: ConfirmModal,
+    /// Pending write operations to be collected by SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl CertificatesTab {
@@ -81,6 +84,7 @@ impl CertificatesTab {
             buttons,
             action_modal: None,
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -184,6 +188,8 @@ impl SshTab for CertificatesTab {
                 ActionModal::Revoke => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.entries.is_empty() {
+                            let cert = &self.entries[self.selected];
+                            self.pending_ops.push(SshOp::CertificateRevoke { name: cert.name.clone() });
                             self.entries.remove(self.selected);
                             if self.selected >= self.entries.len() && !self.entries.is_empty() {
                                 self.selected = self.entries.len() - 1;
@@ -276,6 +282,10 @@ impl SshTab for CertificatesTab {
         self.detail_modal.close();
         self.detail_entry_idx = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

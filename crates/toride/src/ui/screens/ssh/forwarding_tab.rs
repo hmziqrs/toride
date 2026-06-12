@@ -15,6 +15,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -59,6 +60,8 @@ pub struct ForwardingTab {
     action_modal: Option<ActionModal>,
     /// Confirm modal for cancel/exit operations.
     confirm: ConfirmModal,
+    /// Pending SSH write operations to be drained by the parent SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl ForwardingTab {
@@ -84,6 +87,7 @@ impl ForwardingTab {
             buttons,
             action_modal: None,
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -116,6 +120,11 @@ impl ForwardingTab {
     /// Close the detail modal (if open).
     pub fn close_modal(&mut self) {
         self.detail_open = None;
+    }
+
+    /// Drain pending write operations queued by this tab.
+    pub fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 
     /// Compute the total number of rendered rows across all sessions.
@@ -243,12 +252,16 @@ impl SshTab for ForwardingTab {
                 ActionModal::Cancel => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.sessions.is_empty() {
+                            let session = &self.sessions[self.selected];
+                            for forward in &session.forwards {
+                                self.pending_ops.push(SshOp::ForwardCancel {
+                                    control_path: session.control_path.clone(),
+                                    local_port: forward.local_port,
+                                });
+                            }
                             let session = &mut self.sessions[self.selected];
                             session.forwards.clear();
                             session.forward_count = 0;
-                            if self.sessions.len() > 1 || !self.sessions.is_empty() {
-                                // Keep the session but clear its forwards
-                            }
                         }
                         self.action_modal = None;
                     }
@@ -256,6 +269,10 @@ impl SshTab for ForwardingTab {
                 ActionModal::Exit => {
                     if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
                         if !self.sessions.is_empty() {
+                            let session = &self.sessions[self.selected];
+                            self.pending_ops.push(SshOp::ForwardExitSession {
+                                control_path: session.control_path.clone(),
+                            });
                             self.sessions.remove(self.selected);
                             if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
                                 self.selected = self.sessions.len() - 1;
@@ -354,6 +371,10 @@ impl SshTab for ForwardingTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

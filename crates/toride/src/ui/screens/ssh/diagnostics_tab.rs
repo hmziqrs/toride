@@ -14,6 +14,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
+use crate::ssh_data::SshOp;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
@@ -61,6 +62,8 @@ pub struct DiagnosticsTab {
     form: FormModal,
     /// Confirm modal for fix all operation.
     confirm: ConfirmModal,
+    /// Pending write operations to be drained by the parent SshContent.
+    pending_ops: Vec<SshOp>,
 }
 
 impl DiagnosticsTab {
@@ -87,6 +90,7 @@ impl DiagnosticsTab {
             action_modal: None,
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
+            pending_ops: Vec::new(),
         }
     }
 
@@ -207,7 +211,7 @@ impl SshTab for DiagnosticsTab {
                 ActionModal::Run => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            // Run diagnostics with selected scope
+                            self.pending_ops.push(SshOp::DoctorRunChecks);
                             self.action_modal = None;
                         }
                         FormResult::Cancelled => {
@@ -310,6 +314,10 @@ impl SshTab for DiagnosticsTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
     }
 }
 

@@ -166,6 +166,38 @@ pub enum SshOp {
     AuthorizedKeyRemove {
         fingerprint: String,
     },
+    /// Fix permissions on an SSH key pair.
+    KeyChmodFix {
+        name: String,
+    },
+    /// Scan a host for its SSH host keys.
+    KnownHostScan {
+        host: String,
+    },
+    /// Hash all plaintext hostnames in known_hosts.
+    KnownHostHashAll,
+    /// Remove all keys from the SSH agent.
+    AgentRemoveAll,
+    /// Cancel a specific port forward on a control session.
+    ForwardCancel {
+        control_path: String,
+        local_port: u16,
+    },
+    /// Exit (terminate) a control master session.
+    ForwardExitSession {
+        control_path: String,
+    },
+    /// Revoke a key by adding it to the KRL.
+    CertificateRevoke {
+        name: String,
+    },
+    /// Run all local SSH diagnostic checks.
+    DoctorRunChecks,
+    /// Install a public key to a remote host.
+    KeyInstallToRemote {
+        key_name: String,
+        dest: String,
+    },
 }
 
 /// Execute a pending write operation using the given `SshManager`.
@@ -406,6 +438,147 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove authorized key '{fingerprint}': {e}");
                     tracing::error!("authorized_keys: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KeyChmodFix { name } => {
+            let svc = mgr.keys();
+            match svc.chmod_fix(&name).await {
+                Ok(()) => {
+                    tracing::info!("keys: fixed permissions on '{name}'");
+                    Ok(format!("fixed permissions on '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to fix permissions on '{name}': {e}");
+                    tracing::error!("keys: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KnownHostScan { host } => {
+            let svc = mgr.known_hosts();
+            match svc.scan(&host).await {
+                Ok(keys) => {
+                    tracing::info!("known_hosts: scanned '{host}' ({} key(s))", keys.len());
+                    Ok(format!("scanned '{host}' ({} key(s))", keys.len()))
+                }
+                Err(e) => {
+                    let msg = format!("failed to scan host '{host}': {e}");
+                    tracing::error!("known_hosts: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KnownHostHashAll => {
+            let svc = mgr.known_hosts();
+            match svc.hash_all().await {
+                Ok(()) => {
+                    tracing::info!("known_hosts: hashed all hostnames");
+                    Ok("hashed all known hostnames".to_string())
+                }
+                Err(e) => {
+                    let msg = format!("failed to hash all known hostnames: {e}");
+                    tracing::error!("known_hosts: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::AgentRemoveAll => {
+            let svc = mgr.agent();
+            match svc.remove_all().await {
+                Ok(()) => {
+                    tracing::info!("agent: removed all keys");
+                    Ok("removed all keys from agent".to_string())
+                }
+                Err(e) => {
+                    let msg = format!("failed to remove all keys from agent: {e}");
+                    tracing::error!("agent: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::ForwardCancel { control_path, local_port } => {
+            let svc = mgr.forward();
+            let path = std::path::Path::new(&control_path);
+            match svc.cancel(path, local_port).await {
+                Ok(()) => {
+                    tracing::info!("forward: cancelled port {local_port} on '{control_path}'");
+                    Ok(format!("cancelled forward on port {local_port}"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to cancel forward on port {local_port}: {e}");
+                    tracing::error!("forward: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::ForwardExitSession { control_path } => {
+            let svc = mgr.forward();
+            let path = std::path::Path::new(&control_path);
+            match svc.exit_session(path).await {
+                Ok(()) => {
+                    tracing::info!("forward: exited session '{control_path}'");
+                    Ok(format!("exited session '{control_path}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to exit session '{control_path}': {e}");
+                    tracing::error!("forward: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::CertificateRevoke { name } => {
+            let svc = mgr.certificate();
+            let krl_str = toride_ssh::SshPaths::new()
+                .map(|p| p.ssh_dir().join("revoked_keys").to_string_lossy().into_owned())
+                .unwrap_or_else(|_| format!("{}/.ssh/revoked_keys", std::env::var("HOME").unwrap_or_default()));
+            let krl_path = std::path::Path::new(&krl_str);
+            match svc.revoke_key(krl_path, &name).await {
+                Ok(()) => {
+                    tracing::info!("certificates: revoked key '{name}'");
+                    Ok(format!("revoked key '{name}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to revoke key '{name}': {e}");
+                    tracing::error!("certificates: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::DoctorRunChecks => {
+            let svc = mgr.doctor();
+            match svc.run_local_checks().await {
+                Ok(diagnostics) => {
+                    tracing::info!("doctor: ran local checks ({} finding(s))", diagnostics.len());
+                    Ok(serde_json::to_string(&diagnostics).unwrap_or_default())
+                }
+                Err(e) => {
+                    let msg = format!("failed to run local checks: {e}");
+                    tracing::error!("doctor: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::KeyInstallToRemote { key_name, dest } => {
+            let svc = mgr.keys();
+            let ssh_dir = match toride_ssh::SshPaths::new() {
+                Ok(p) => p.ssh_dir().to_path_buf(),
+                Err(e) => {
+                    let msg = format!("failed to resolve SSH directory: {e}");
+                    tracing::error!("keys: {msg}");
+                    return Err(msg);
+                }
+            };
+            let key_path = ssh_dir.join(&key_name);
+            match svc.install_key_to_remote(&key_path, &dest).await {
+                Ok(_) => {
+                    tracing::info!("keys: installed '{key_name}' to '{dest}'");
+                    Ok(format!("installed '{key_name}' to '{dest}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to install '{key_name}' to '{dest}': {e}");
+                    tracing::error!("keys: {msg}");
                     Err(msg)
                 }
             }
