@@ -230,6 +230,21 @@ pub enum SshOp {
         name: String,
         passphrase: String,
     },
+    /// Grant a user SSH login access by adding them to `AllowUsers` in
+    /// `/etc/ssh/sshd_config` (and removing them from `DenyUsers` if present).
+    SshdAllowUser {
+        username: String,
+    },
+    /// Revoke a user's SSH login access by adding them to `DenyUsers` in
+    /// `/etc/ssh/sshd_config`.
+    SshdDenyUser {
+        username: String,
+    },
+    /// Reset a user to the default access policy by removing them from both
+    /// `AllowUsers` and `DenyUsers`.
+    SshdResetUserAccess {
+        username: String,
+    },
 }
 
 /// Execute a pending write operation using the given `SshManager`.
@@ -653,6 +668,62 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 }
             }
         }
+        SshOp::SshdAllowUser { username } => {
+            let is_root = toride_ssh::is_root();
+            let result = toride_ssh::config::sshd::edit(is_root, |ast| {
+                toride_ssh::config::sshd::add_user_to_allow(ast, &username)?;
+                toride_ssh::config::sshd::remove_user_from_deny(ast, &username)?;
+                Ok(())
+            }).await;
+            match result {
+                Ok(()) => {
+                    tracing::info!("sshd: granted login access to '{username}'");
+                    Ok(format!("granted login access to '{username}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to allow '{username}': {e}");
+                    tracing::error!("sshd: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::SshdDenyUser { username } => {
+            let is_root = toride_ssh::is_root();
+            let result = toride_ssh::config::sshd::edit(is_root, |ast| {
+                toride_ssh::config::sshd::add_user_to_deny(ast, &username)?;
+                Ok(())
+            }).await;
+            match result {
+                Ok(()) => {
+                    tracing::info!("sshd: revoked login access for '{username}'");
+                    Ok(format!("revoked login access for '{username}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to deny '{username}': {e}");
+                    tracing::error!("sshd: {msg}");
+                    Err(msg)
+                }
+            }
+        }
+        SshOp::SshdResetUserAccess { username } => {
+            let is_root = toride_ssh::is_root();
+            let result = toride_ssh::config::sshd::edit(is_root, |ast| {
+                toride_ssh::config::sshd::remove_user_from_allow(ast, &username)?;
+                toride_ssh::config::sshd::remove_user_from_deny(ast, &username)?;
+                Ok(())
+            }).await;
+            match result {
+                Ok(()) => {
+                    tracing::info!("sshd: reset access for '{username}'");
+                    Ok(format!("reset access for '{username}'"))
+                }
+                Err(e) => {
+                    let msg = format!("failed to reset '{username}': {e}");
+                    tracing::error!("sshd: {msg}");
+                    Err(msg)
+                }
+            }
+        }
     }
 }
 
@@ -740,6 +811,7 @@ async fn collect_real_data(
                     permit_root_login: "prohibit-password".to_string(),
                 },
                 system_users: Vec::new(),
+                is_root: toride_ssh::is_root(),
             }
         })
     };
@@ -794,6 +866,7 @@ fn empty_bundle() -> SshDataBundle {
                 permit_root_login: "prohibit-password".to_string(),
             },
             system_users: Vec::new(),
+            is_root: toride_ssh::is_root(),
         },
     }
 }
@@ -1004,6 +1077,7 @@ fn build_security_data(
         security_diagnostics,
         access_info: parse_sshd_access_info_from(&sshd_contents),
         system_users: parse_system_users(),
+        is_root: toride_ssh::is_root(),
     }
 }
 
@@ -1077,6 +1151,9 @@ pub struct SshSecurityData {
     pub access_info: SshAccessInfo,
     /// System users with valid login shells and SSH key info.
     pub system_users: Vec<SystemUserInfo>,
+    /// Whether the app is running as root (drives edit capability for
+    /// sshd_config and other users' authorized_keys).
+    pub is_root: bool,
 }
 
 impl SshSecurityData {
@@ -1426,6 +1503,7 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
             .unwrap_or_else(|| "/bin/zsh".to_string());
 
         let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
+        let authorized_keys_preview = collect_authorized_keys_preview(&ssh_dir, 10);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
@@ -1433,6 +1511,7 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
             home_dir,
             ssh_key_count,
             authorized_key_count,
+            authorized_keys_preview,
         });
     }
 
@@ -1496,6 +1575,7 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
         }
 
         let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
+        let authorized_keys_preview = collect_authorized_keys_preview(&ssh_dir, 10);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
@@ -1503,6 +1583,7 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
             home_dir: home_dir.to_string(),
             ssh_key_count,
             authorized_key_count,
+            authorized_keys_preview,
         });
     }
 
@@ -1545,6 +1626,78 @@ fn count_ssh_keys(ssh_dir: &std::path::Path) -> (usize, usize) {
     };
 
     (ssh_key_count, authorized_key_count)
+}
+
+/// Read up to `cap` authorized_keys entries from a .ssh directory as previews
+/// for the user detail modal.
+///
+/// Each entry captures key type, trailing comment, 1-based line number, and a
+/// best-effort SHA-256 fingerprint (computed via `ssh-key`; left as
+/// `"(unknown)"` if the key blob can't be parsed). Returns an empty vec when
+/// the file is absent or unreadable.
+fn collect_authorized_keys_preview(
+    ssh_dir: &std::path::Path,
+    cap: usize,
+) -> Vec<crate::ui::screens::ssh::AuthorizedKeyPreview> {
+    use crate::ui::screens::ssh::AuthorizedKeyPreview;
+
+    let Ok(contents) = std::fs::read_to_string(ssh_dir.join("authorized_keys")) else {
+        return Vec::new();
+    };
+
+    let mut previews = Vec::new();
+    for (idx, raw) in contents.lines().enumerate() {
+        if previews.len() >= cap {
+            break;
+        }
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // An authorized_keys entry is: [options] type base64 [comment].
+        // Heuristic: if the first whitespace token parses as a known key type,
+        // there are no options; otherwise skip the leading options token.
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < 2 {
+            continue;
+        }
+        let known_types = [
+            "ssh-rsa",
+            "ssh-dss",
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+        ];
+        let (key_type, base64_idx, comment) =
+            if known_types.contains(&tokens[0]) || tokens[0].starts_with("ssh-") {
+                (tokens[0], 1, tokens.get(2).copied())
+            } else {
+                // Options present: type is the second token.
+                (tokens[1], 2, tokens.get(3).copied())
+            };
+
+        // Best-effort fingerprint from the openssh string "<type> <base64>".
+        let fingerprint = if base64_idx < tokens.len() {
+            let openssh = format!("{key_type} {}", tokens[base64_idx]);
+            ssh_key::PublicKey::from_openssh(&openssh)
+                .ok()
+                .map(|k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+                .unwrap_or_else(|| "(unknown)".to_string())
+        } else {
+            "(unknown)".to_string()
+        };
+
+        previews.push(AuthorizedKeyPreview {
+            key_type: key_type.to_string(),
+            comment: comment.map(str::to_owned),
+            fingerprint,
+            line: idx + 1,
+        });
+    }
+    previews
 }
 
 // ── Mock Data (test only) ───────────────────────────────────────────────────
@@ -1993,6 +2146,7 @@ mod mock {
                     home_dir: "/home/alice".into(),
                     ssh_key_count: 2,
                     authorized_key_count: 3,
+                    authorized_keys_preview: Vec::new(),
                 },
                 SystemUserInfo {
                     username: "bob".into(),
@@ -2000,6 +2154,7 @@ mod mock {
                     home_dir: "/home/bob".into(),
                     ssh_key_count: 1,
                     authorized_key_count: 1,
+                    authorized_keys_preview: Vec::new(),
                 },
                 SystemUserInfo {
                     username: "root".into(),
@@ -2007,8 +2162,10 @@ mod mock {
                     home_dir: "/root".into(),
                     ssh_key_count: 0,
                     authorized_key_count: 0,
+                    authorized_keys_preview: Vec::new(),
                 },
             ],
+            is_root: false,
         }
     }
 }

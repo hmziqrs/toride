@@ -1,25 +1,54 @@
 //! Security Overview sub-tab for the SSH management screen.
 //!
-//! Read-only scrollable dashboard displaying the SSH security grade, server
-//! configuration checks, access summary, known hosts trust status, and
-//! active warnings. Scroll-only navigation with j/k or arrow keys.
+//! A scrollable dashboard (security grade, server config checks, auth methods,
+//! access summary, known hosts, warnings) plus an **interactive SSH USERS
+//! list**. Each system user can be opened into a detail modal where their login
+//! access can be toggled via `AllowUsers`/`DenyUsers` in `/etc/ssh/sshd_config`.
+//!
+//! Navigation:
+//! - `j/k` or `↑/↓` move the SSH USERS selection (when users exist) and the
+//!   view auto-scrolls to keep the selection visible. When there are no users
+//!   (e.g. no readable `sshd_config`), the same keys scroll the dashboard.
+//! - Mouse wheel scrolls the dashboard freely; clicking a user selects it and
+//!   opens its detail modal.
+//! - In the detail modal: `a` allow login, `d` deny (confirm), `r` reset
+//!   (confirm), `Esc` close. Writes are applied optimistically in memory and
+//!   forwarded to the app's SSH op pipeline.
 
-use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 use crate::action::Action;
-use crate::ssh_data::SshSecurityData;
+use crate::ssh_data::{SshOp, SshSecurityData};
 use super::DiagnosticEntry;
+use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::render_titled_panel;
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, InteractiveModal, ModalEvent, render_titled_panel,
+};
 
-use super::SshTab;
+use super::{SshAccessInfo, SystemUserInfo, SshTab};
+
+// ── UserAction ────────────────────────────────────────────────────────────────
+
+/// An access-control action the user can take on a system user from the detail
+/// modal. Used as the (display-only) modal's action type and to track which
+/// destructive action is awaiting confirmation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UserAction {
+    /// Add to `AllowUsers` (and remove from `DenyUsers`).
+    AllowLogin,
+    /// Add to `DenyUsers`.
+    DenyLogin,
+    /// Remove from both `AllowUsers` and `DenyUsers`.
+    ResetAccess,
+}
 
 // ── SecurityTab ────────────────────────────────────────────────────────────────
 
@@ -27,10 +56,31 @@ use super::SshTab;
 pub struct SecurityTab {
     /// Security data to display.
     data: Option<SshSecurityData>,
-    /// Vertical scroll offset.
+    /// Vertical scroll offset of the dashboard.
     scroll: usize,
     /// Total content height (recalculated each frame).
     content_height: usize,
+    /// Absolute line indices (within the built dashboard) of each displayed SSH
+    /// USERS row, in display order. Populated each frame; empty when the
+    /// section is hidden or has no users.
+    user_row_line_indices: Vec<usize>,
+    /// Hitbox rects for SSH USERS rows (rebuilt each frame).
+    row_hitboxes: Vec<Rect>,
+    /// Index of the currently selected SSH user (into `data.system_users`).
+    selected_user: usize,
+    /// Which row is hovered by the mouse (user-list index).
+    hovered_row: Option<usize>,
+    /// Index of the user shown in the detail modal (if open).
+    detail_user_idx: Option<usize>,
+    /// Interactive detail modal (display-only; action keys are intercepted in
+    /// `handle_key` so `a`/`d`/`r`/`Esc` get direct handling).
+    detail_modal: InteractiveModal<UserAction>,
+    /// Confirm modal for destructive actions (deny / reset).
+    confirm: ConfirmModal,
+    /// Which destructive action is awaiting confirmation, if any.
+    pending_confirm: Option<UserAction>,
+    /// Pending write operations to forward to `SshContent`.
+    pending_ops: Vec<SshOp>,
 }
 
 impl SecurityTab {
@@ -41,6 +91,15 @@ impl SecurityTab {
             data: None,
             scroll: 0,
             content_height: 0,
+            user_row_line_indices: Vec::new(),
+            row_hitboxes: Vec::new(),
+            selected_user: 0,
+            hovered_row: None,
+            detail_user_idx: None,
+            detail_modal: InteractiveModal::display("User Access").dimensions(56, 18),
+            confirm: ConfirmModal::new(""),
+            pending_confirm: None,
+            pending_ops: Vec::new(),
         }
     }
 
@@ -51,11 +110,29 @@ impl SecurityTab {
             Some(old) => old.checks().len() != data.checks().len()
                 || old.system_users.len() != data.system_users.len(),
         };
+        // Clamp the selection into the new user list.
+        if data.system_users.is_empty() {
+            self.selected_user = 0;
+        } else if self.selected_user >= data.system_users.len() {
+            self.selected_user = data.system_users.len() - 1;
+        }
+        // If the detail modal is open on a user that's gone, close it.
+        if let Some(idx) = self.detail_user_idx
+            && idx >= data.system_users.len()
+        {
+            self.detail_modal.close();
+            self.detail_user_idx = None;
+        }
         self.data = Some(data);
         if structurally_changed {
             self.scroll = 0;
         }
         // Otherwise preserve scroll; the render path will clamp it.
+    }
+
+    /// Number of displayed SSH USERS rows (capped at 10 in the dashboard).
+    fn displayed_user_count(data: &SshSecurityData) -> usize {
+        data.system_users.len().min(10)
     }
 }
 
@@ -65,20 +142,191 @@ impl Default for SecurityTab {
     }
 }
 
+impl SecurityTab {
+    /// Number of selectable SSH USERS rows currently available.
+    fn selectable_count(&self) -> usize {
+        self.data
+            .as_ref()
+            .map_or(0, Self::displayed_user_count)
+    }
+
+    /// Resolve a screen coordinate to a displayed SSH USERS row index.
+    fn row_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.row_hitboxes.iter().position(|rect| {
+            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+        })
+    }
+
+    /// Adjust `scroll` so the selected user's row stays within the viewport,
+    /// using the last frame's recorded row positions.
+    fn keep_selected_visible(&mut self, visible: usize) {
+        let Some(&target) = self.user_row_line_indices.get(self.selected_user) else {
+            return;
+        };
+        if self.scroll > target {
+            self.scroll = target;
+        } else if target >= self.scroll + visible {
+            self.scroll = target - visible + 1;
+        }
+    }
+
+    /// Move the SSH USERS selection by `delta`, clamping to the list.
+    fn move_selection(&mut self, delta: i32, visible: usize) {
+        let count = self.selectable_count();
+        if count == 0 {
+            return;
+        }
+        let cur = self.selected_user as i32;
+        let next = cur + delta;
+        self.selected_user = next.clamp(0, (count - 1) as i32) as usize;
+        self.keep_selected_visible(visible);
+    }
+
+    /// Open the detail modal for the currently selected user.
+    fn open_detail(&mut self) {
+        if self.selectable_count() > 0 {
+            self.detail_user_idx = Some(self.selected_user);
+            self.detail_modal.open();
+        }
+    }
+
+    // ── Access actions (optimistic in-memory + push SshOp) ──────────────────
+
+    /// Apply a (confirmed) access action to the selected/detail user, updating
+    /// `access_info` optimistically and queueing the matching `SshOp`.
+    fn apply_action(&mut self, action: UserAction) {
+        let Some(idx) = self.detail_user_idx.or(Some(self.selected_user)) else {
+            return;
+        };
+        let Some(data) = self.data.as_mut() else {
+            return;
+        };
+        let Some(user) = data.system_users.get(idx).cloned() else {
+            return;
+        };
+        let username = user.username.clone();
+        let access = &mut data.access_info;
+        match action {
+            UserAction::AllowLogin => {
+                if !access.allowed_users.iter().any(|u| u == &username) {
+                    access.allowed_users.push(username.clone());
+                }
+                access.denied_users.retain(|u| u != &username);
+                self.pending_ops
+                    .push(SshOp::SshdAllowUser { username });
+            }
+            UserAction::DenyLogin => {
+                if !access.denied_users.iter().any(|u| u == &username) {
+                    access.denied_users.push(username.clone());
+                }
+                self.pending_ops
+                    .push(SshOp::SshdDenyUser { username });
+            }
+            UserAction::ResetAccess => {
+                access.allowed_users.retain(|u| u != &username);
+                access.denied_users.retain(|u| u != &username);
+                self.pending_ops
+                    .push(SshOp::SshdResetUserAccess { username });
+            }
+        }
+    }
+
+    /// Request confirmation for a destructive action (deny/reset), or apply it
+    /// directly if non-destructive.
+    fn trigger_action(&mut self, action: UserAction) {
+        match action {
+            UserAction::AllowLogin => self.apply_action(UserAction::AllowLogin),
+            UserAction::DenyLogin | UserAction::ResetAccess => {
+                let username = self
+                    .detail_user_idx
+                    .or(Some(self.selected_user))
+                    .and_then(|i| self.data.as_ref().and_then(|d| d.system_users.get(i)))
+                    .map(|u| u.username.clone())
+                    .unwrap_or_default();
+                let verb = match action {
+                    UserAction::DenyLogin => "deny SSH login for",
+                    UserAction::ResetAccess => "reset SSH access for",
+                    UserAction::AllowLogin => "allow",
+                };
+                self.confirm = ConfirmModal::new(format!(
+                    "{verb} \"{username}\"?\nThis edits /etc/ssh/sshd_config."
+                ));
+                self.pending_confirm = Some(action);
+            }
+        }
+    }
+}
+
 impl SshTab for SecurityTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        let visible = self.content_height;
+
+        // ── Confirm modal open: it sits on top of the detail modal, so it
+        //     takes input priority (otherwise the detail modal underneath
+        //     would swallow the y/n confirm keys). ──
+        if self.pending_confirm.is_some() {
+            if let Some(result) = self.confirm.handle_key(code) {
+                match result {
+                    ConfirmResult::Confirmed => {
+                        if let Some(action) = self.pending_confirm.take() {
+                            self.apply_action(action);
+                        }
+                    }
+                    ConfirmResult::Cancelled => {
+                        self.pending_confirm = None;
+                    }
+                }
+            }
+            return None;
+        }
+
+        // ── Detail modal open: intercept action shortcuts, else delegate. ──
+        if self.detail_modal.is_visible() {
+            match code {
+                KeyCode::Char('a') => {
+                    self.trigger_action(UserAction::AllowLogin);
+                    return None;
+                }
+                KeyCode::Char('d') => {
+                    self.trigger_action(UserAction::DenyLogin);
+                    return None;
+                }
+                KeyCode::Char('r') => {
+                    self.trigger_action(UserAction::ResetAccess);
+                    return None;
+                }
+                _ => {}
+            }
+            match self.detail_modal.handle_key(code) {
+                ModalEvent::Closed => self.detail_user_idx = None,
+                ModalEvent::Consumed | ModalEvent::Button(_) => {}
+            }
+            return None;
+        }
+
+        // ── Dashboard / user list navigation. ──
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
-                if self.scroll > 0 {
+                if self.selectable_count() > 0 {
+                    self.move_selection(-1, visible);
+                } else if self.scroll > 0 {
                     self.scroll -= 1;
                 }
                 None
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let max_scroll = self.content_height.saturating_sub(1);
-                if self.scroll < max_scroll {
-                    self.scroll += 1;
+                if self.selectable_count() > 0 {
+                    self.move_selection(1, visible);
+                } else {
+                    let max_scroll = self.content_height.saturating_sub(1);
+                    if self.scroll < max_scroll {
+                        self.scroll += 1;
+                    }
                 }
+                None
+            }
+            KeyCode::Enter => {
+                self.open_detail();
                 None
             }
             _ => None,
@@ -86,7 +334,44 @@ impl SshTab for SecurityTab {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Confirm modal open: it sits on top of the detail modal, so it takes
+        // input priority — a click on the confirm buttons must reach the
+        // ConfirmModal, not be swallowed by the detail modal underneath.
+        if self.pending_confirm.is_some() {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                match result {
+                    ConfirmResult::Confirmed => {
+                        if let Some(action) = self.pending_confirm.take() {
+                            self.apply_action(action);
+                        }
+                    }
+                    ConfirmResult::Cancelled => {
+                        self.pending_confirm = None;
+                    }
+                }
+            }
+            return None;
+        }
+
+        // Detail modal open: delegate for click-outside-to-close.
+        if self.detail_modal.is_visible() {
+            if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
+                self.detail_user_idx = None;
+            }
+            return None;
+        }
+
         match mouse.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.hovered_row = self.row_at(mouse.column, mouse.row);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(idx) = self.row_at(mouse.column, mouse.row) {
+                    self.selected_user = idx;
+                    self.detail_user_idx = Some(idx);
+                    self.detail_modal.open();
+                }
+            }
             MouseEventKind::ScrollUp => {
                 if self.scroll > 0 {
                     self.scroll -= 1;
@@ -110,7 +395,7 @@ impl SshTab for SecurityTab {
             return;
         }
 
-        let Some(ref data) = self.data else {
+        if self.data.is_none() {
             let msg = Line::from(Span::styled(
                 "Loading security data..",
                 Style::new().fg(p.text_dim),
@@ -118,11 +403,13 @@ impl SshTab for SecurityTab {
             let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
             frame.render_widget(Paragraph::new(msg).centered(), centered);
             return;
-        };
+        }
 
-        let lines = self.build_lines(data, p, inner.width);
-
+        // Build lines + the absolute line indices of SSH USERS rows.
+        let data_ref = self.data.as_ref().unwrap();
+        let (lines, user_indices) = self.build_lines(data_ref, p, inner.width);
         self.content_height = lines.len();
+        self.user_row_line_indices = user_indices;
 
         let visible = inner.height as usize;
         let max_scroll = self.content_height.saturating_sub(visible);
@@ -132,6 +419,9 @@ impl SshTab for SecurityTab {
 
         let skip = self.scroll;
         let take = visible;
+        let selected = self.selected_user;
+        let hovered = self.hovered_row;
+        let mut new_hitboxes: Vec<Rect> = Vec::new();
 
         for (row, line) in lines.into_iter().enumerate() {
             if row < skip {
@@ -145,23 +435,81 @@ impl SshTab for SecurityTab {
                 break;
             }
             let row_area = Rect::new(inner.x, y, inner.width, 1);
+
+            // SSH USERS row: track hitbox + apply selection/hover highlight.
+            if let Some(u) = self
+                .user_row_line_indices
+                .iter()
+                .position(|&r| r == row)
+            {
+                new_hitboxes.push(row_area);
+                let is_selected = u == selected;
+                let is_hovered = hovered == Some(u);
+                if is_selected || is_hovered {
+                    let bg = if is_selected { p.sel_bg } else { p.bg_alt };
+                    for x in row_area.x..row_area.right() {
+                        if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
+                            cell.set_bg(bg);
+                        }
+                    }
+                }
+            }
+
             frame.render_widget(Paragraph::new(line), row_area);
+        }
+
+        self.row_hitboxes = new_hitboxes;
+
+        // Render the detail modal on top.
+        if let Some(idx) = self.detail_user_idx
+            && let Some(user) = self.data.as_ref().and_then(|d| d.system_users.get(idx)).cloned()
+        {
+            let access = self
+                .data
+                .as_ref()
+                .map(|d| d.access_info.clone())
+                .unwrap_or_default();
+            let is_root = self.data.as_ref().map_or(false, |d| d.is_root);
+            self.render_detail_modal(frame, p, &user, &access, is_root);
+        }
+
+        // Render the confirm modal above the detail modal.
+        if self.pending_confirm.is_some() {
+            self.confirm.render(frame, p, "Confirm");
         }
     }
 
     fn has_modal(&self) -> bool {
-        false
+        self.detail_modal.is_visible() || self.pending_confirm.is_some()
     }
 
-    fn close_modal(&mut self) {}
+    fn close_modal(&mut self) {
+        self.detail_modal.close();
+        self.detail_user_idx = None;
+        self.pending_confirm = None;
+    }
+
+    fn drain_ops(&mut self) -> Vec<SshOp> {
+        std::mem::take(&mut self.pending_ops)
+    }
 }
 
 // ── Line builders ──────────────────────────────────────────────────────────────
 
 impl SecurityTab {
     /// Build all dashboard lines from security data.
-    fn build_lines(&self, data: &SshSecurityData, p: Palette, inner_width: u16) -> Vec<Line<'static>> {
+    ///
+    /// Returns the lines plus the absolute line indices (within the returned
+    /// vec) of each displayed SSH USERS row, in display order. Used by `view`
+    /// to apply selection highlights and record mouse hitboxes.
+    fn build_lines(
+        &self,
+        data: &SshSecurityData,
+        p: Palette,
+        inner_width: u16,
+    ) -> (Vec<Line<'static>>, Vec<usize>) {
         let mut lines = Vec::new();
+        let mut user_indices: Vec<usize> = Vec::new();
         let checks = data.checks();
         let grade = data.grade();
 
@@ -409,8 +757,10 @@ impl SecurityTab {
                 // Dynamically size columns based on available width
                 let name_w = 16.min(w.saturating_sub(6) / 3);
                 let shell_w = 24.min(w.saturating_sub(name_w + 6) / 2);
-                let name_display = crate::ui::responsive::truncate_str(&user.username, name_w);
-                let shell_display = crate::ui::responsive::truncate_str(&user.shell, shell_w);
+                let name_display = truncate_str(&user.username, name_w);
+                let shell_display = truncate_str(&user.shell, shell_w);
+                // Record this row's absolute line index before pushing it.
+                user_indices.push(lines.len());
                 lines.push(Line::from(vec![
                     Span::styled("  ", Style::new()),
                     Span::styled(
@@ -528,14 +878,154 @@ impl SecurityTab {
             }
         }
 
-        // 12. Footer
+        // 12. Footer — context-aware key hints.
         lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::styled("  j/k ", p.key_style()),
-            Span::styled("scroll", p.label_style()),
-        ]));
+        let footer_spans = if data.system_users.is_empty() {
+            vec![
+                Span::styled("  j/k ", p.key_style()),
+                Span::styled("scroll", p.label_style()),
+            ]
+        } else {
+            vec![
+                Span::styled("  j/k ", p.key_style()),
+                Span::styled("select user", p.label_style()),
+                Span::styled("  ↵ ", p.key_style()),
+                Span::styled("detail", p.label_style()),
+                Span::styled("  wheel ", p.key_style()),
+                Span::styled("scroll", p.label_style()),
+            ]
+        };
+        lines.push(Line::from(footer_spans));
 
-        lines
+        (lines, user_indices)
+    }
+}
+
+// ── Detail modal ──────────────────────────────────────────────────────────────
+
+impl SecurityTab {
+    /// Compute the login status of `username` against the current sshd_config
+    /// access rules, returning (icon, label, color).
+    ///
+    /// Order matters: an explicit `DenyUsers` entry always wins; otherwise a
+    /// non-empty `AllowUsers` list acts as a whitelist; group-based rules are
+    /// reported as ambiguous (we can't resolve group membership here); and the
+    /// default (no restrictions) is "allowed".
+    fn login_status(username: &str, access: &SshAccessInfo, p: Palette) -> (String, String, Color) {
+        if access.denied_users.iter().any(|u| u == username) {
+            ("✗".into(), "denied (DenyUsers)".into(), p.err)
+        } else if !access.allowed_users.is_empty()
+            && !access.allowed_users.iter().any(|u| u == username)
+        {
+            ("✗".into(), "not in allowlist".into(), p.err)
+        } else if !access.allowed_groups.is_empty() || !access.denied_groups.is_empty() {
+            ("~".into(), "via group rules".into(), p.warn)
+        } else {
+            ("✓".into(), "allowed".into(), p.ok)
+        }
+    }
+
+    /// Render the user detail modal: shell, home, computed login status, the
+    /// user's authorized keys (read-only in Phase 1), and action key hints.
+    fn render_detail_modal(
+        &mut self,
+        frame: &mut Frame,
+        p: Palette,
+        user: &SystemUserInfo,
+        access: &SshAccessInfo,
+        is_root: bool,
+    ) {
+        let (status_icon, status_label, status_color) =
+            Self::login_status(&user.username, access, p);
+
+        self.detail_modal.render(frame, p, |frame, content_area| {
+            let mut lines: Vec<Line> = vec![
+                Line::from(vec![
+                    Span::styled("User:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(&user.username, Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Shell:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(&user.shell, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Home:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(&user.home_dir, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Login:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(format!("{status_icon} {status_label}"), Style::new().fg(status_color)),
+                ]),
+                Line::raw(""),
+            ];
+
+            // Authorized keys preview (read-only in Phase 1).
+            let header = format!("AUTHORIZED KEYS ({})", user.authorized_key_count);
+            lines.push(Line::from(Span::styled(
+                header,
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            )));
+            if user.authorized_keys_preview.is_empty() {
+                let note = if user.authorized_key_count == 0 {
+                    "  (none)"
+                } else {
+                    "  (unreadable — run as root to view other users' keys)"
+                };
+                lines.push(Line::from(Span::styled(note, Style::new().fg(p.text_dim))));
+            } else {
+                for (i, key) in user.authorized_keys_preview.iter().take(6).enumerate() {
+                    let comment = key
+                        .comment
+                        .clone()
+                        .unwrap_or_else(|| truncate_str(&key.fingerprint, 20));
+                    let comment_disp = truncate_str(&comment, (content_area.width as usize).saturating_sub(16));
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            format!("  {}. ", i + 1),
+                            Style::new().fg(p.text_muted),
+                        ),
+                        Span::styled(format!("{:14}", key.key_type), Style::new().fg(p.info)),
+                        Span::styled(comment_disp, Style::new().fg(p.text_dim)),
+                    ]));
+                }
+                let hidden = user.authorized_key_count.saturating_sub(user.authorized_keys_preview.len());
+                if hidden > 0 {
+                    lines.push(Line::from(Span::styled(
+                        format!("  +{hidden} more"),
+                        Style::new().fg(p.text_muted),
+                    )));
+                }
+            }
+
+            lines.push(Line::raw(""));
+
+            // Action hints. Non-root edits go through `sudo -n`; surface that.
+            let priv_hint = if is_root { "" } else { "  (⚠ via sudo)" };
+            lines.push(Line::from(vec![
+                Span::styled("  a ", p.key_style()),
+                Span::styled("allow", p.label_style()),
+                Span::styled("  d ", p.key_style()),
+                Span::styled("deny", p.label_style()),
+                Span::styled("  r ", p.key_style()),
+                Span::styled("reset", p.label_style()),
+                Span::styled("  esc ", p.key_style()),
+                Span::styled("close", p.label_style()),
+            ]));
+            if !priv_hint.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    priv_hint,
+                    Style::new().fg(p.warn),
+                )));
+            }
+
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
+                }
+            }
+        });
     }
 }
 
@@ -576,6 +1066,7 @@ mod tests {
                 pubkey_auth: true,
                 permit_root_login: "prohibit-password".into(),
             },
+            is_root: false,
             system_users: vec![
                 SystemUserInfo {
                     username: "alice".into(),
@@ -583,6 +1074,7 @@ mod tests {
                     home_dir: "/home/alice".into(),
                     ssh_key_count: 2,
                     authorized_key_count: 3,
+                    authorized_keys_preview: Vec::new(),
                 },
                 SystemUserInfo {
                     username: "bob".into(),
@@ -590,6 +1082,7 @@ mod tests {
                     home_dir: "/home/bob".into(),
                     ssh_key_count: 1,
                     authorized_key_count: 1,
+                    authorized_keys_preview: Vec::new(),
                 },
                 SystemUserInfo {
                     username: "root".into(),
@@ -597,6 +1090,7 @@ mod tests {
                     home_dir: "/root".into(),
                     ssh_key_count: 0,
                     authorized_key_count: 0,
+                    authorized_keys_preview: Vec::new(),
                 },
             ],
         }
@@ -616,10 +1110,12 @@ mod tests {
 
     #[test]
     fn new_is_empty() {
-        let tab = SecurityTab::new();
+        let mut tab = SecurityTab::new();
         assert!(tab.data.is_none());
         assert!(!tab.has_modal());
         assert_eq!(tab.scroll, 0);
+        assert_eq!(tab.selected_user, 0);
+        assert!(tab.drain_ops().is_empty());
     }
 
     #[test]
@@ -682,44 +1178,62 @@ mod tests {
     }
 
     #[test]
-    fn scroll_clamps() {
+    fn selection_moves_and_clamps() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
         let mut tab = SecurityTab::new();
         tab.set_data(sample_data());
 
-        // Scroll should not go below zero.
-        tab.handle_key(KeyCode::Up);
-        assert_eq!(tab.scroll, 0);
-
-        // Render to set content_height.
-        use crate::ui::theme::CHARM;
-        use ratatui::{Terminal, backend::TestBackend};
+        // Render once so user row indices are populated.
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
 
-        let saved_scroll = tab.scroll;
+        assert_eq!(tab.selected_user, 0, "starts on first user");
+        // Down moves the selection forward.
+        tab.handle_key(KeyCode::Down);
+        assert_eq!(tab.selected_user, 1);
+        tab.handle_key(KeyCode::Down);
+        assert_eq!(tab.selected_user, 2);
 
-        // Scroll down a bunch past content_height.
-        for _ in 0..200 {
+        // sample_data has 3 users (alice, bob, root) → clamps at last index.
+        for _ in 0..50 {
             tab.handle_key(KeyCode::Down);
         }
-        // Re-render to clamp.
-        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
-
-        // scroll should be clamped to content_height - visible, not larger.
-        let visible = 40u16.saturating_sub(2) as usize; // minus border
-        let max_scroll = tab.content_height.saturating_sub(visible);
-        assert!(
-            tab.scroll <= max_scroll,
-            "scroll {} should be <= max_scroll {}",
-            tab.scroll,
-            max_scroll,
+        assert_eq!(
+            tab.selected_user,
+            2,
+            "selection clamps to last user, never panics"
         );
 
-        // Scroll back up to zero.
-        for _ in 0..200 {
+        // Up moves back and clamps at zero.
+        tab.handle_key(KeyCode::Up);
+        assert_eq!(tab.selected_user, 1);
+        for _ in 0..50 {
             tab.handle_key(KeyCode::Up);
         }
-        assert_eq!(tab.scroll, 0, "should be able to scroll back to top");
+        assert_eq!(tab.selected_user, 0, "selection clamps at first user");
+    }
+
+    #[test]
+    fn selection_falls_back_to_scroll_without_users() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info = SshAccessInfo::default(); // available: false → no SSH USERS section
+        data.system_users = vec![];
+        tab.set_data(data);
+        // Render to set content_height.
+        let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+
+        // With no users, j/k scroll the dashboard instead of moving selection.
+        tab.handle_key(KeyCode::Down);
+        assert_eq!(tab.scroll, 1, "Down scrolls dashboard when no users");
+        tab.handle_key(KeyCode::Up);
+        assert_eq!(tab.scroll, 0, "Up scrolls back");
     }
 
     #[test]
@@ -927,6 +1441,7 @@ mod tests {
                 home_dir: format!("/home/user{i}"),
                 ssh_key_count: 0,
                 authorized_key_count: 0,
+                authorized_keys_preview: Vec::new(),
             });
         }
         tab.set_data(data);
@@ -1131,5 +1646,251 @@ mod tests {
             output.contains("Run chmod 600 ~/.ssh/id_rsa"),
             "should show the hint text: {output}"
         );
+    }
+
+    // ── Interactive behavior ─────────────────────────────────────────────
+
+    /// Helper: set sample data, render once, and open the detail modal on the
+    /// given user index.
+    fn open_modal(user_idx: usize) -> (SecurityTab, ratatui::Terminal<ratatui::backend::TestBackend>) {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = user_idx;
+        tab.handle_key(KeyCode::Enter);
+        (tab, terminal)
+    }
+
+    #[test]
+    fn enter_opens_detail_modal() {
+        let (tab, _) = open_modal(0);
+        assert!(tab.has_modal(), "Enter should open the detail modal");
+        assert_eq!(tab.detail_user_idx, Some(0));
+    }
+
+    #[test]
+    fn esc_closes_detail_modal() {
+        let (mut tab, _) = open_modal(0);
+        assert!(tab.has_modal());
+        tab.handle_key(KeyCode::Esc);
+        assert!(!tab.has_modal(), "Esc closes the detail modal");
+        assert!(tab.detail_user_idx.is_none());
+    }
+
+    #[test]
+    fn allow_action_pushes_op_and_updates_optimistically() {
+        let (mut tab, _) = open_modal(0); // alice
+
+        // alice is currently not in any allow/deny list.
+        tab.handle_key(KeyCode::Char('a'));
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1, "'a' should queue exactly one op");
+        match &ops[0] {
+            SshOp::SshdAllowUser { username } => assert_eq!(username, "alice"),
+            other => panic!("expected SshdAllowUser, got {other:?}"),
+        }
+        // Optimistic in-memory update: alice added to allow list.
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(access.allowed_users.iter().any(|u| u == "alice"));
+        assert!(!access.denied_users.iter().any(|u| u == "alice"));
+    }
+
+    #[test]
+    fn allow_action_removes_from_deny_optimistically() {
+        let mut data = sample_data();
+        data.access_info.denied_users = vec!["alice".into()];
+        let mut tab = SecurityTab::new();
+        tab.set_data(data);
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = 0;
+        tab.handle_key(KeyCode::Enter);
+        tab.handle_key(KeyCode::Char('a'));
+
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(
+            !access.denied_users.iter().any(|u| u == "alice"),
+            "allow should remove from deny list"
+        );
+    }
+
+    #[test]
+    fn deny_action_requires_confirm_then_applies() {
+        let (mut tab, _) = open_modal(1); // bob
+
+        // 'd' opens a confirm modal, does NOT apply yet.
+        tab.handle_key(KeyCode::Char('d'));
+        assert!(tab.pending_confirm.is_some(), "'d' should request confirm");
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        // Confirm with 'y'.
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.pending_confirm.is_none(), "confirm consumed the pending action");
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::SshdDenyUser { username } => assert_eq!(username, "bob"),
+            other => panic!("expected SshdDenyUser, got {other:?}"),
+        }
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(access.denied_users.iter().any(|u| u == "bob"));
+    }
+
+    #[test]
+    fn reset_action_requires_confirm_then_applies() {
+        let mut data = sample_data();
+        data.access_info.allowed_users = vec!["alice".into(), "bob".into()];
+        data.access_info.denied_users = vec!["bob".into()]; // bob in both
+        let mut tab = SecurityTab::new();
+        tab.set_data(data);
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = 1; // bob
+        tab.handle_key(KeyCode::Enter);
+
+        tab.handle_key(KeyCode::Char('r'));
+        assert!(tab.pending_confirm.is_some(), "'r' should request confirm");
+        assert!(tab.drain_ops().is_empty());
+
+        // Cancel with 'n' — nothing applied.
+        tab.handle_key(KeyCode::Char('n'));
+        assert!(tab.pending_confirm.is_none());
+        assert!(tab.drain_ops().is_empty());
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(access.allowed_users.iter().any(|u| u == "bob"), "cancel leaves state intact");
+
+        // Re-trigger and confirm this time.
+        tab.handle_key(KeyCode::Char('r'));
+        tab.handle_key(KeyCode::Char('y'));
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::SshdResetUserAccess { username } => assert_eq!(username, "bob"),
+            other => panic!("expected SshdResetUserAccess, got {other:?}"),
+        }
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(!access.allowed_users.iter().any(|u| u == "bob"));
+        assert!(!access.denied_users.iter().any(|u| u == "bob"));
+    }
+
+    #[test]
+    fn close_modal_clears_confirm() {
+        let (mut tab, _) = open_modal(0);
+        tab.handle_key(KeyCode::Char('d'));
+        assert!(tab.pending_confirm.is_some());
+        tab.close_modal();
+        assert!(tab.pending_confirm.is_none());
+        assert!(!tab.has_modal());
+    }
+
+    #[test]
+    fn login_status_logic() {
+        use crate::ui::theme::CHARM;
+
+        // Denied wins.
+        let mut a = SshAccessInfo::default();
+        a.denied_users = vec!["x".into()];
+        let (icon, _, _) = SecurityTab::login_status("x", &a, CHARM);
+        assert_eq!(icon, "✗");
+
+        // Allowlist (non-empty) and user absent → not allowed.
+        let mut a = SshAccessInfo::default();
+        a.allowed_users = vec!["alice".into()];
+        let (icon, label, _) = SecurityTab::login_status("bob", &a, CHARM);
+        assert_eq!(icon, "✗");
+        assert!(label.contains("allowlist"));
+
+        // User in allowlist → allowed (falls through to default since no groups).
+        let (icon, _, _) = SecurityTab::login_status("alice", &a, CHARM);
+        assert_eq!(icon, "✓");
+
+        // Group rules present (user not denied) → ambiguous.
+        let mut a = SshAccessInfo::default();
+        a.allowed_groups = vec!["ssh".into()];
+        let (icon, _, _) = SecurityTab::login_status("alice", &a, CHARM);
+        assert_eq!(icon, "~");
+
+        // No restrictions → allowed.
+        let a = SshAccessInfo::default();
+        let (icon, _, _) = SecurityTab::login_status("anyone", &a, CHARM);
+        assert_eq!(icon, "✓");
+    }
+
+    #[test]
+    fn detail_modal_renders_user_and_actions() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let (mut tab, mut terminal) = open_modal(0); // alice
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(output.contains("User:"), "modal shows user label: {output}");
+        assert!(output.contains("alice"), "modal shows username: {output}");
+        assert!(output.contains("Login:"), "modal shows login status: {output}");
+        assert!(output.contains("allow"), "modal shows allow hint: {output}");
+        assert!(output.contains("deny"), "modal shows deny hint: {output}");
+        assert!(output.contains("reset"), "modal shows reset hint: {output}");
+    }
+
+    #[test]
+    fn non_root_modal_shows_sudo_hint() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut data = sample_data();
+        data.is_root = false;
+        let mut tab = SecurityTab::new();
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = 0;
+        tab.handle_key(KeyCode::Enter);
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(output.contains("sudo"), "non-root should show sudo hint: {output}");
+    }
+
+    #[test]
+    fn root_modal_hides_sudo_hint() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut data = sample_data();
+        data.is_root = true;
+        let mut tab = SecurityTab::new();
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = 0;
+        tab.handle_key(KeyCode::Enter);
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(!output.contains("via sudo"), "root should hide sudo hint: {output}");
+    }
+
+    #[test]
+    fn set_data_clamps_selection_and_closes_stale_modal() {
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data()); // 3 users
+        tab.selected_user = 2;
+        tab.handle_key(KeyCode::Enter); // open modal on user 2
+        assert!(tab.has_modal());
+
+        // Replace with data that has only 1 user: selection must clamp, modal on
+        // the now-invalid index must close.
+        let mut data = sample_data();
+        data.system_users.truncate(1);
+        tab.set_data(data);
+        assert!(tab.selected_user <= 0, "selection clamps into new list");
+        assert!(!tab.has_modal(), "stale modal closed");
     }
 }

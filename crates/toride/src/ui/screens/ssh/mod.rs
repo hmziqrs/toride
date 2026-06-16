@@ -780,6 +780,22 @@ pub struct SystemUserInfo {
     pub ssh_key_count: usize,
     /// Number of entries in authorized_keys (keys that can log in as this user).
     pub authorized_key_count: usize,
+    /// Up to a handful of authorized_keys entries for the user detail modal.
+    /// Empty when unreadable (e.g. another user's file without root).
+    pub authorized_keys_preview: Vec<AuthorizedKeyPreview>,
+}
+
+/// A compact view of one authorized_keys entry, for the user detail modal.
+#[derive(Debug, Clone)]
+pub struct AuthorizedKeyPreview {
+    /// Key type (e.g. `ssh-ed25519`).
+    pub key_type: String,
+    /// Trailing comment, if any.
+    pub comment: Option<String>,
+    /// SHA-256 fingerprint of the public key.
+    pub fingerprint: String,
+    /// 1-based line number in the authorized_keys file.
+    pub line: usize,
 }
 
 #[cfg(test)]

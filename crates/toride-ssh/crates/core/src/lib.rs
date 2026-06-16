@@ -15,10 +15,12 @@
 pub mod paths;
 mod types;
 
+pub mod privilege;
 pub mod runner;
 pub mod undo;
 
 pub use paths::SshPaths;
+pub use privilege::{is_root, PrivilegedOp, run_privileged};
 pub use runner::{CliRunner, DefaultCliRunner, MockCliRunner};
 pub use types::*;
 
@@ -152,6 +154,20 @@ pub enum Error {
     /// Filesystem permission error.
     #[error("permission denied: {0}")]
     PermissionDenied(String),
+
+    /// A privileged command (run via `sudo -n` or as root) failed.
+    ///
+    /// Includes the command's stderr so the UI can surface a useful message
+    /// (e.g. "sudo: a password is required").
+    #[error("privileged operation failed: {0}")]
+    SudoFailed(String),
+
+    /// The new `sshd_config` was rejected by `sshd -t`.
+    ///
+    /// Carries `sshd`'s diagnostic output explaining why the config is invalid.
+    /// The write is aborted before the live config is touched.
+    #[error("sshd_config validation failed: {0}")]
+    SshdConfigInvalid(String),
 
     /// Underlying I/O error.
     #[error(transparent)]

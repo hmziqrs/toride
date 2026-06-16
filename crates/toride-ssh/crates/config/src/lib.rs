@@ -11,6 +11,7 @@ mod editor;
 mod managed;
 mod parse;
 pub mod resolve;
+pub mod sshd;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
