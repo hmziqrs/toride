@@ -91,7 +91,24 @@ pub fn get_deny_users(ast: &ConfigAst) -> Vec<String> {
     collect_global_users(ast, "DenyUsers")
 }
 
+/// The current global `AllowGroups` list (ignoring `Match`-scoped directives).
+///
+/// OpenSSH treats multiple `AllowGroups` lines as additive, so values from all
+/// global occurrences are concatenated.
+pub fn get_allow_groups(ast: &ConfigAst) -> Vec<String> {
+    collect_global_users(ast, "AllowGroups")
+}
+
+/// The current global `DenyGroups` list (ignoring `Match`-scoped directives).
+pub fn get_deny_groups(ast: &ConfigAst) -> Vec<String> {
+    collect_global_users(ast, "DenyGroups")
+}
+
 /// Collect every whitespace-separated token from all global `<key>` directives.
+///
+/// Only top-level [`ConfigNode::Directive`] nodes are considered — values
+/// inside `Match`/`Host` blocks are intentionally skipped, since those are
+/// scope-specific and not what Toride's global UI exposes.
 fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
     let mut out = Vec::new();
     for node in &ast.nodes {
@@ -105,6 +122,39 @@ fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Pattern detection
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if `value` contains any OpenSSH pattern tokens.
+///
+/// `AllowUsers`/`DenyUsers` values are pattern strings: a token may contain
+/// glob wildcards (`*`, `?`) or a `user@host` selector. Such a directive
+/// cannot be safely edited by exact username — adding a plain name would be
+/// swallowed by an existing pattern, and "removing" against patterns would be
+/// semantically meaningless. The editor refuses to mutate such directives
+/// instead (see [`directive_has_patterns`]).
+///
+/// Each whitespace-separated token is inspected independently.
+pub fn has_pattern_tokens(value: &str) -> bool {
+    value
+        .split_whitespace()
+        .any(|tok| tok.contains('*') || tok.contains('?') || tok.contains('@'))
+}
+
+/// Returns `true` if any global `<key>` directive contains pattern tokens.
+///
+/// `Match`-scoped directives are ignored, consistent with the rest of this
+/// module's global-only scope.
+pub fn directive_has_patterns(ast: &ConfigAst, key: &str) -> bool {
+    ast.nodes.iter().any(|node| match node {
+        ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key) => {
+            has_pattern_tokens(&d.value)
+        }
+        _ => false,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
@@ -114,9 +164,16 @@ fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
 /// directive exists, one is appended at the end of the global section (before
 /// the first `Match`/`Host` block, or at the end of the file).
 ///
+/// Multiple global `AllowUsers` lines are consolidated into the first
+/// occurrence (OpenSSH treats them as additive, so the merge is semantically
+/// equivalent).
+///
 /// # Errors
 ///
-/// Currently always returns `Ok`; reserved for future validation.
+/// Returns [`Error::SshdConfigInvalid`] if an existing `AllowUsers` directive
+/// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified in that
+/// case. Editing a pattern directive by exact username would be semantically
+/// wrong.
 pub fn add_user_to_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "AllowUsers", user, Action::Add)
 }
@@ -125,11 +182,13 @@ pub fn add_user_to_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// If the removal empties the list, the directive is deleted entirely (an
 /// absent `AllowUsers` means "all allowed", which is the OpenSSH default and
-/// clearer than a dangling empty line).
+/// clearer than a dangling empty line). Multiple global `AllowUsers` lines are
+/// merged first, so removing a user who lived only on a later line succeeds.
 ///
 /// # Errors
 ///
-/// Currently always returns `Ok`; reserved for future validation.
+/// Returns [`Error::SshdConfigInvalid`] if an existing `AllowUsers` directive
+/// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn remove_user_from_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "AllowUsers", user, Action::Remove)
 }
@@ -138,7 +197,8 @@ pub fn remove_user_from_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Currently always returns `Ok`; reserved for future validation.
+/// Returns [`Error::SshdConfigInvalid`] if an existing `DenyUsers` directive
+/// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn add_user_to_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "DenyUsers", user, Action::Add)
 }
@@ -148,7 +208,8 @@ pub fn add_user_to_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Currently always returns `Ok`; reserved for future validation.
+/// Returns [`Error::SshdConfigInvalid`] if an existing `DenyUsers` directive
+/// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn remove_user_from_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "DenyUsers", user, Action::Remove)
 }
@@ -159,9 +220,18 @@ enum Action {
     Remove,
 }
 
-/// Add or remove `user` from the first global `<key>` directive, creating or
-/// deleting the directive as needed. Consolidates into the first occurrence
-/// and warns if multiple occurrences exist (Phase 3 will merge them fully).
+/// Add or remove `user` from the global `<key>` directive(s), creating or
+/// deleting the directive as needed.
+///
+/// Refuses to touch the AST (returning [`Error::SshdConfigInvalid`]) if any
+/// global occurrence of `<key>` contains pattern tokens — editing a pattern
+/// directive by exact username would be semantically wrong.
+///
+/// When multiple global occurrences exist, they are merged into the first
+/// (deduplicated, order-preserving) and the rest are deleted. OpenSSH treats
+/// multiple lines as additive, so the merge is lossless from the daemon's
+/// perspective and keeps the file readable. A warning is logged when a merge
+/// occurs.
 fn upsert_user_in_directive(
     ast: &mut ConfigAst,
     key: &str,
@@ -178,21 +248,61 @@ fn upsert_user_in_directive(
         .map(|(i, _)| i)
         .collect();
 
+    // Refuse to mutate any directive that already uses patterns — exact
+    // username edits against glob/@ selectors are semantically wrong. Check
+    // before touching anything so the AST is left unmodified on error.
+    if indices
+        .iter()
+        .any(|&i| matches!(&ast.nodes[i], ConfigNode::Directive(d) if has_pattern_tokens(&d.value)))
+    {
+        return Err(toride_ssh_core::Error::SshdConfigInvalid(format!(
+            "{key} uses pattern tokens (* ? @); refusing to edit by exact username"
+        )));
+    }
+
     if indices.len() > 1 {
         tracing::warn!(
-            "{key} appears {} times in sshd_config; consolidating into the first occurrence",
+            "{key} appears {} times in sshd_config; merging into the first occurrence",
             indices.len()
         );
     }
 
     match indices.first() {
-        // Modify the first global occurrence in place.
-        Some(&idx) => {
-            if let ConfigNode::Directive(d) = &mut ast.nodes[idx] {
-                apply_to_value(&mut d.value, user, action);
-                // If the directive is now empty, remove it entirely.
-                if d.value.trim().is_empty() {
-                    ast.nodes.remove(idx);
+        Some(&first) => {
+            // Gather the UNION of values across all global occurrences
+            // (deduplicated, order-preserving), then drop occurrences 2..N.
+            let mut merged: Vec<String> = Vec::new();
+            for &i in &indices {
+                if let ConfigNode::Directive(d) = &ast.nodes[i] {
+                    for tok in d.value.split_whitespace() {
+                        if !merged.iter().any(|m| m == tok) {
+                            merged.push(tok.to_owned());
+                        }
+                    }
+                }
+            }
+
+            // Apply the requested Add/Remove against the merged union.
+            apply_action_to_users(&mut merged, user, action);
+
+            // Write the result back into the first occurrence (or delete it if
+            // the union is now empty — an absent directive is clearer than a
+            // dangling empty line and matches the OpenSSH default).
+            if merged.is_empty() {
+                // Remove ALL occurrences (first first, then the rest in reverse
+                // so earlier indices stay valid as we drain).
+                for &i in indices.iter().rev() {
+                    ast.nodes.remove(i);
+                }
+            } else {
+                let joined = merged.join(" ");
+                if let ConfigNode::Directive(d) = &mut ast.nodes[first] {
+                    d.value = joined;
+                }
+                // Delete occurrences 2..N. Iterate in reverse to keep earlier
+                // indices valid as we remove.
+                for &i in indices.iter().skip(1).rev() {
+                    ast.nodes.remove(i);
                 }
             }
         }
@@ -208,9 +318,8 @@ fn upsert_user_in_directive(
     Ok(())
 }
 
-/// Apply an Add/Remove to a directive's whitespace-separated `value`.
-fn apply_to_value(value: &mut String, user: &str, action: Action) {
-    let mut users: Vec<String> = value.split_whitespace().map(str::to_owned).collect();
+/// Apply an Add/Remove to an in-memory user list (order-preserving).
+fn apply_action_to_users(users: &mut Vec<String>, user: &str, action: Action) {
     match action {
         Action::Add => {
             if !users.iter().any(|u| u == user) {
@@ -221,7 +330,6 @@ fn apply_to_value(value: &mut String, user: &str, action: Action) {
             users.retain(|u| u != user);
         }
     }
-    *value = users.join(" ");
 }
 
 /// Append a new global `<key> <value>` directive, placed before the first
@@ -346,5 +454,150 @@ mod tests {
         let allow_pos = out.find("AllowUsers").unwrap();
         let match_pos = out.find("Match User").unwrap();
         assert!(allow_pos < match_pos, "AllowUsers must precede the Match block");
+    }
+
+    // --- pattern-token detection ------------------------------------------
+
+    #[test]
+    fn has_pattern_tokens_detects_wildcards() {
+        assert!(has_pattern_tokens("alice * bob"));
+        assert!(has_pattern_tokens("ali?ce"));
+        assert!(has_pattern_tokens("alice@host"));
+        assert!(!has_pattern_tokens("alice bob carol"));
+        assert!(!has_pattern_tokens(""));
+    }
+
+    #[test]
+    fn directive_has_patterns_scans_global_only() {
+        // Global wildcard occurrence.
+        let a = ast("AllowUsers *\n");
+        assert!(directive_has_patterns(&a, "AllowUsers"));
+
+        // Plain usernames.
+        let a = ast("AllowUsers alice bob\n");
+        assert!(!directive_has_patterns(&a, "AllowUsers"));
+
+        // Pattern only inside a Match block is ignored (global scope).
+        let a = ast("AllowUsers alice\nMatch User carol\n    AllowUsers *\n");
+        assert!(
+            !directive_has_patterns(&a, "AllowUsers"),
+            "Match-scoped patterns must not count"
+        );
+    }
+
+    #[test]
+    fn add_user_to_allow_refuses_pattern_directive() {
+        let mut a = ast("AllowUsers *\n");
+        let before = a.to_string_lossless();
+        let err = add_user_to_allow(&mut a, "bob").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        // AST must be untouched.
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn remove_user_from_allow_refuses_pattern_directive() {
+        let mut a = ast("AllowUsers alice *@host\n");
+        let before = a.to_string_lossless();
+        let err = remove_user_from_allow(&mut a, "alice").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn add_user_to_deny_refuses_question_pattern() {
+        let mut a = ast("DenyUsers ?uest\n");
+        let before = a.to_string_lossless();
+        let err = add_user_to_deny(&mut a, "bob").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    // --- multi-line consolidation -----------------------------------------
+
+    #[test]
+    fn add_merges_multiple_allow_users_lines() {
+        let mut a = ast("AllowUsers alice\nPort 22\nAllowUsers bob\n");
+        add_user_to_allow(&mut a, "carol").unwrap();
+        // Union on a single line; second occurrence gone.
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob", "carol"]);
+        assert_eq!(
+            a.to_string_lossless()
+                .matches("AllowUsers")
+                .count(),
+            1,
+            "exactly one AllowUsers line after merge"
+        );
+    }
+
+    #[test]
+    fn add_merge_dedupes_and_preserves_order() {
+        let mut a = ast("AllowUsers alice bob\nAllowUsers bob carol\n");
+        add_user_to_allow(&mut a, "alice").unwrap();
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob", "carol"]);
+        assert_eq!(
+            a.to_string_lossless().matches("AllowUsers").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn remove_across_multiple_occurrences() {
+        // bob lives only on the second line; removal must still succeed.
+        let mut a = ast("AllowUsers alice\nAllowUsers bob\n");
+        remove_user_from_allow(&mut a, "bob").unwrap();
+        assert_eq!(get_allow_users(&a), vec!["alice"]);
+        assert_eq!(
+            a.to_string_lossless().matches("AllowUsers").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn remove_empties_union_deletes_all_occurrences() {
+        // alice spread across two lines; removing her empties the union.
+        let mut a = ast("AllowUsers alice\nAllowUsers alice\n");
+        remove_user_from_allow(&mut a, "alice").unwrap();
+        assert!(get_allow_users(&a).is_empty());
+        assert!(
+            !a.to_string_lossless().contains("AllowUsers"),
+            "directive deleted entirely when union is empty"
+        );
+    }
+
+    // --- group getters + read-path coverage -------------------------------
+
+    #[test]
+    fn get_allow_groups_reads_global() {
+        let a = ast("AllowGroups wheel staff\nMatch User carol\n    AllowGroups extra\n");
+        assert_eq!(get_allow_groups(&a), vec!["wheel", "staff"]);
+    }
+
+    #[test]
+    fn get_deny_groups_reads_global_and_skips_match() {
+        let a = ast("DenyGroups banned\nMatch User carol\n    DenyGroups scoped\n");
+        assert_eq!(get_deny_groups(&a), vec!["banned"]);
+    }
+
+    #[test]
+    fn get_deny_users_concatenates_multiple_lines() {
+        let a = ast("DenyUsers alice\nDenyUsers bob\n");
+        assert_eq!(get_deny_users(&a), vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn get_groups_empty_when_absent() {
+        let a = ast("Port 22\n");
+        assert!(get_allow_groups(&a).is_empty());
+        assert!(get_deny_groups(&a).is_empty());
     }
 }

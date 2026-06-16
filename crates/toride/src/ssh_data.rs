@@ -247,17 +247,184 @@ pub enum SshOp {
     },
 }
 
+/// A typed error from a write operation.
+///
+/// `revert_optimistic` tells the app whether the optimistic in-memory UI
+/// update is now a lie that must be reverted right away (by forcing an
+/// immediate SSH data refresh) rather than waiting out the write cooldown.
+///
+/// It is set to `true` when the on-disk state is **known to be unchanged**
+/// after the failed op (so the optimistic update is definitely stale) —
+/// specifically for the `sshd_config` ops: a validation failure
+/// ([`toride_ssh::Error::SshdConfigInvalid`] / [`SshdNotFound`]) means the
+/// privileged write path never installed anything, and a privilege failure
+/// ([`toride_ssh::Error::SudoFailed`]) means `sudo -n` could not run. Both
+/// leave disk untouched while the UI has already applied the change.
+///
+/// It is `false` for other / transient errors where disk state is uncertain
+/// (the regular cooldown will reconcile it).
+///
+/// [`SshdNotFound`]: toride_ssh::Error::SshdNotFound
+#[derive(Debug, Clone)]
+pub struct SshOpError {
+    /// Human-readable error message (also surfaced to the user as a toast).
+    pub message: String,
+    /// When true, the optimistic UI update should be reverted immediately by
+    /// forcing an SSH data refresh instead of waiting for the write cooldown.
+    pub revert_optimistic: bool,
+}
+
+impl SshOpError {
+    /// Build a non-reverting (transient) error wrapping the given message.
+    #[allow(dead_code)]
+    fn transient(message: String) -> Self {
+        Self {
+            message,
+            revert_optimistic: false,
+        }
+    }
+
+    /// Build a reverting error: the optimistic update is stale and should be
+    /// overwritten by disk truth right away.
+    fn reverting(message: String) -> Self {
+        Self {
+            message,
+            revert_optimistic: true,
+        }
+    }
+}
+
+/// Map a backend `sshd_config` write error to a [`SshOpError`].
+///
+/// Validation / binary / privilege failures (`SshdConfigInvalid`,
+/// `SshdNotFound`, `SudoFailed`) leave the on-disk config unchanged, so they
+/// must revert the optimistic update (`revert_optimistic = true`). Everything
+/// else is treated as transient (the cooldown will reconcile it).
+fn map_sshd_error(verb: &str, who: &str, e: toride_ssh::Error) -> SshOpError {
+    let message = format!("failed to {verb} '{who}': {e}");
+    tracing::error!("sshd: {message}");
+    let revert = matches!(
+        e,
+        toride_ssh::Error::SshdConfigInvalid(_)
+            | toride_ssh::Error::SshdNotFound(_)
+            | toride_ssh::Error::SudoFailed(_)
+    );
+    if revert {
+        SshOpError::reverting(message)
+    } else {
+        SshOpError::transient(message)
+    }
+}
+
+/// Privilege-inversion guard: refuse to lock the operator out.
+///
+/// Returns `Some(err)` when denying or resetting `username` would be
+/// self-destructive — i.e. it targets the literal `root`, any account with
+/// UID 0, or the account currently running toride. This is defense-in-depth
+/// (the UI may also guard); [`execute_op`] MUST refuse regardless.
+///
+/// `verb` is "deny" or "reset" for the error message.
+///
+/// Best-effort but correct for the common cases: literal "root", current
+/// effective user, and a `/etc/passwd` (Linux) / `dscl` (macOS) UID lookup.
+fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
+    // Always refuse the literal root account.
+    if username == "root" {
+        return Some(SshOpError::reverting(format!(
+            "refusing to {verb} '{username}': would lock out root / your own account"
+        )));
+    }
+    // Refuse if this is the account running toride.
+    if let Some(current) = current_username() {
+        if current == username {
+            return Some(SshOpError::reverting(format!(
+                "refusing to {verb} '{username}': would lock out root / your own account"
+            )));
+        }
+    }
+    // Refuse if the username resolves to UID 0.
+    if uid_for_username(username) == Some(0) {
+        return Some(SshOpError::reverting(format!(
+            "refusing to {verb} '{username}': would lock out root / your own account"
+        )));
+    }
+    None
+}
+
+/// Best-effort name of the account running this process.
+fn current_username() -> Option<String> {
+    // SAFETY: geteuid is a trivial read with no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    uid_to_username(euid)
+}
+
+/// Look up the UID for a username via `/etc/passwd` (Linux) or `dscl` (macOS).
+///
+/// Returns `None` if the lookup fails or the user is unknown — callers treat
+/// that as "not UID 0, not refused" (the literal-`root` and current-user
+/// checks already cover the dangerous common cases).
+fn uid_for_username(username: &str) -> Option<u32> {
+    if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("dscl")
+            .args([".", "-read", &format!("/Users/{username}"), "UniqueID"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines()
+            .find_map(|l| l.strip_prefix("UniqueID:"))
+            .and_then(|v| v.trim().parse::<u32>().ok())
+    } else {
+        let contents = std::fs::read_to_string("/etc/passwd").ok()?;
+        contents.lines().find_map(|line| {
+            let parts: Vec<&str> = line.splitn(7, ':').collect();
+            if parts.len() < 3 || parts[0] != username {
+                return None;
+            }
+            parts[2].parse::<u32>().ok()
+        })
+    }
+}
+
+/// Resolve a UID back to a username via the same database.
+fn uid_to_username(uid: u32) -> Option<String> {
+    if cfg!(target_os = "macos") {
+        let out = std::process::Command::new("dscl")
+            .args([".", "-search", "/Users", "UniqueID", &uid.to_string()])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let s = String::from_utf8_lossy(&out.stdout);
+        s.lines().next().and_then(|l| l.split_whitespace().next()).map(str::to_owned)
+    } else {
+        let contents = std::fs::read_to_string("/etc/passwd").ok()?;
+        contents.lines().find_map(|line| {
+            let parts: Vec<&str> = line.splitn(7, ':').collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            (parts[2].parse::<u32>().ok() == Some(uid)).then(|| parts[0].to_owned())
+        })
+    }
+}
+
 /// Execute a pending write operation using the given `SshManager`.
 ///
 /// Returns `Ok(label)` on success (e.g. `"added host 'myserver'"`) or
-/// `Err(message)` on failure. Both outcomes are also logged via tracing.
-pub async fn execute_op(op: SshOp) -> Result<String, String> {
+/// `Err(SshOpError)` on failure. On error, `revert_optimistic` signals
+/// whether the optimistic UI update is known-stale and should be reverted
+/// immediately. Both outcomes are also logged via tracing.
+pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
         Err(e) => {
             let msg = format!("SSH init failed: {e}");
             tracing::error!("{msg}");
-            return Err(msg);
+            return Err(SshOpError::transient(msg));
         }
     };
 
@@ -284,7 +451,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to add host '{name}': {e}");
                     tracing::error!("config: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -300,7 +467,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove host '{name}': {e}");
                     tracing::error!("config: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -328,7 +495,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to edit host '{old_name}': {e}");
                     tracing::error!("config: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -359,7 +526,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to create key '{name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -381,7 +548,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to delete key '{name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -395,7 +562,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to rename '{old_name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -409,7 +576,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to add known host '{host}': {e}");
                     tracing::error!("known_hosts: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -423,7 +590,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove known host '{host}': {e}");
                     tracing::error!("known_hosts: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -438,7 +605,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to add key '{path}' to agent: {e}");
                     tracing::error!("agent: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -453,7 +620,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove key '{path}' from agent: {e}");
                     tracing::error!("agent: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -471,7 +638,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to add authorized key: {e}");
                     tracing::error!("authorized_keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -485,7 +652,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove authorized key '{fingerprint}': {e}");
                     tracing::error!("authorized_keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -499,7 +666,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to fix permissions on '{name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -513,7 +680,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to scan host '{host}': {e}");
                     tracing::error!("known_hosts: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -527,7 +694,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to hash all known hostnames: {e}");
                     tracing::error!("known_hosts: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -541,7 +708,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to remove all keys from agent: {e}");
                     tracing::error!("agent: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -556,7 +723,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to cancel forward on port {local_port}: {e}");
                     tracing::error!("forward: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -571,7 +738,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to exit session '{control_path}': {e}");
                     tracing::error!("forward: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -589,7 +756,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to revoke key '{name}': {e}");
                     tracing::error!("certificates: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -603,7 +770,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to run local checks: {e}");
                     tracing::error!("doctor: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -614,7 +781,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to resolve SSH directory: {e}");
                     tracing::error!("keys: {msg}");
-                    return Err(msg);
+                    return Err(SshOpError::transient(msg));
                 }
             };
             let key_path = ssh_dir.join(&key_name);
@@ -626,7 +793,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to install '{key_name}' to '{dest}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
@@ -636,7 +803,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Err(e) => {
                     let msg = format!("failed to resolve SSH directory: {e}");
                     tracing::error!("keys: {msg}");
-                    return Err(msg);
+                    return Err(SshOpError::transient(msg));
                 }
             };
             let key_path = ssh_dir.join(&name);
@@ -654,21 +821,23 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 Ok(Ok(_)) => {
                     let msg = format!("wrong passphrase for '{name}'");
                     tracing::warn!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
                 Ok(Err(e)) => {
                     let msg = format!("failed to test passphrase for '{name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
                 Err(e) => {
                     let msg = format!("task join error testing passphrase for '{name}': {e}");
                     tracing::error!("keys: {msg}");
-                    Err(msg)
+                    Err(SshOpError::transient(msg))
                 }
             }
         }
         SshOp::SshdAllowUser { username } => {
+            // No privilege-inversion guard: allowing login can never lock the
+            // operator out. (Deny/reset carry the guard; allow is always safe.)
             let is_root = toride_ssh::is_root();
             let result = toride_ssh::config::sshd::edit(is_root, |ast| {
                 toride_ssh::config::sshd::add_user_to_allow(ast, &username)?;
@@ -680,14 +849,17 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                     tracing::info!("sshd: granted login access to '{username}'");
                     Ok(format!("granted login access to '{username}'"))
                 }
-                Err(e) => {
-                    let msg = format!("failed to allow '{username}': {e}");
-                    tracing::error!("sshd: {msg}");
-                    Err(msg)
-                }
+                Err(e) => Err(map_sshd_error("allow", &username, e)),
             }
         }
         SshOp::SshdDenyUser { username } => {
+            // Privilege-inversion guard: refuse BEFORE touching anything if
+            // denying this user would lock the operator out (literal root,
+            // UID 0, or the current account). execute_op MUST refuse regardless
+            // of any UI-side guard — defense in depth.
+            if let Some(err) = would_lock_out("deny", &username) {
+                return Err(err);
+            }
             let is_root = toride_ssh::is_root();
             let result = toride_ssh::config::sshd::edit(is_root, |ast| {
                 toride_ssh::config::sshd::add_user_to_deny(ast, &username)?;
@@ -698,14 +870,17 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                     tracing::info!("sshd: revoked login access for '{username}'");
                     Ok(format!("revoked login access for '{username}'"))
                 }
-                Err(e) => {
-                    let msg = format!("failed to deny '{username}': {e}");
-                    tracing::error!("sshd: {msg}");
-                    Err(msg)
-                }
+                Err(e) => Err(map_sshd_error("deny", &username, e)),
             }
         }
         SshOp::SshdResetUserAccess { username } => {
+            // Privilege-inversion guard: refuse BEFORE touching anything if
+            // resetting this user would lock the operator out. Reset removes an
+            // explicit allow; if the operator depended on it (group-only
+            // setups), they could be stranded. Refuse the dangerous cases.
+            if let Some(err) = would_lock_out("reset", &username) {
+                return Err(err);
+            }
             let is_root = toride_ssh::is_root();
             let result = toride_ssh::config::sshd::edit(is_root, |ast| {
                 toride_ssh::config::sshd::remove_user_from_allow(ast, &username)?;
@@ -717,11 +892,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                     tracing::info!("sshd: reset access for '{username}'");
                     Ok(format!("reset access for '{username}'"))
                 }
-                Err(e) => {
-                    let msg = format!("failed to reset '{username}': {e}");
-                    tracing::error!("sshd: {msg}");
-                    Err(msg)
-                }
+                Err(e) => Err(map_sshd_error("reset", &username, e)),
             }
         }
     }
@@ -1332,11 +1503,10 @@ fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
 /// Parse access control information from /etc/ssh/sshd_config.
 ///
 /// Extracts AllowUsers, DenyUsers, AllowGroups, DenyGroups,
-/// AuthenticationMethods, and auth booleans.
-///
-/// **Note:** `Match` and `Include` blocks are silently skipped. Directives
-/// inside a `Match` block (e.g. `PasswordAuthentication yes`) are not parsed,
-/// so the security dashboard may not reflect conditional overrides.
+/// AuthenticationMethods, and auth booleans from **global** scope only —
+/// directives nested inside a `Match` block are read through the lossless AST
+/// and excluded from the global values, so the security dashboard never
+/// reflects conditional Match-scoped overrides.
 ///
 /// **Note:** On macOS, `/etc/ssh/sshd_config` may not exist or may not reflect
 /// the actual sshd configuration, which is managed by launchd. Additionally,
@@ -1350,49 +1520,57 @@ fn parse_sshd_access_info() -> SshAccessInfo {
 }
 
 /// Parse access control information from pre-read sshd_config content.
+///
+/// This uses the lossless AST ([`toride_ssh::config::sshd`] getters) so that:
+/// - `AllowUsers`/`DenyUsers`/`AllowGroups`/`DenyGroups` are read from
+///   **global** scope only — directives nested inside a `Match` block never
+///   leak into the global list (a previous last-wins scanner had this bug).
+/// - Multiple global occurrences are **concatenated** (OpenSSH treats them as
+///   additive), matching what the editor (`sshd::add_user_to_allow`, etc.)
+///   produces. Read and write now agree.
+///
+/// The remaining scalar directives (`AuthenticationMethods`, the auth booleans,
+/// `PermitRootLogin`) are scanned from top-level [`ConfigNode::Directive`]
+/// nodes only — which, by construction, excludes anything inside a
+/// `Match`/`Host` block — so Match-scoped overrides never reach the global
+/// values the security dashboard reports.
 fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
+    use toride_ssh::config::ast::{parse, ConfigNode};
+    use toride_ssh::config::sshd::{
+        get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
+    };
+
+    let ast = parse(contents);
+
     let mut info = SshAccessInfo {
         available: true,
         ..SshAccessInfo::default()
     };
 
-    // Track which directives were explicitly seen so we can apply
+    // The list directives: populate from the global-only, concatenating
+    // getters. This is the same view the editor mutates, so read == write.
+    info.allowed_users = get_allow_users(&ast);
+    info.denied_users = get_deny_users(&ast);
+    info.allowed_groups = get_allow_groups(&ast);
+    info.denied_groups = get_deny_groups(&ast);
+
+    // Track which scalar directives were explicitly seen so we can apply
     // OpenSSH defaults only when the directive is absent.
     let mut seen_pubkey = false;
     let mut seen_password = false;
     let mut seen_permit_root = false;
 
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+    // Scalar fields: iterate top-level Directive nodes only. The AST nests the
+    // contents of `Match`/`Host` blocks under their block node, so anything
+    // inside a block is structurally invisible here — Match-scoped overrides
+    // (e.g. `Match Address ...` → `PasswordAuthentication yes`) cannot leak
+    // into the global value.
+    for node in &ast.nodes {
+        let ConfigNode::Directive(d) = node else {
             continue;
-        }
-
-        // Skip Match and Include blocks — directives inside them are not parsed.
-        let lower = line.to_ascii_lowercase();
-        if lower.starts_with("match ") || lower.starts_with("include ") {
-            continue;
-        }
-
-        // Split on first whitespace
-        let (key, value) = match line.split_once(char::is_whitespace) {
-            Some((k, v)) => (k, v.trim()),
-            None => continue,
         };
-
-        match key.to_lowercase().as_str() {
-            "allowusers" => {
-                info.allowed_users = value.split_whitespace().map(String::from).collect();
-            }
-            "denyusers" => {
-                info.denied_users = value.split_whitespace().map(String::from).collect();
-            }
-            "allowgroups" => {
-                info.allowed_groups = value.split_whitespace().map(String::from).collect();
-            }
-            "denygroups" => {
-                info.denied_groups = value.split_whitespace().map(String::from).collect();
-            }
+        let value = d.value.trim();
+        match d.keyword.to_lowercase().as_str() {
             "authenticationmethods" => {
                 info.auth_methods = value.split(',').map(|s| s.trim().to_string()).collect();
             }
@@ -2412,14 +2590,106 @@ mod tests {
     }
 
     #[test]
-    fn parse_access_info_skips_match_lines() {
-        // The parser skips lines starting with "match " but does not
-        // skip indented content inside Match blocks — that's a known limitation.
-        let contents = "\
-            PasswordAuthentication no\n\
-            Match Address 192.168.0.0/16\n";
+    fn parse_access_info_skips_match_scoped_directives() {
+        // A directive inside a Match block must NOT leak into the global value.
+        // The global PasswordAuthentication=no must be preserved, and the
+        // Match-scoped PasswordAuthentication=yes must be ignored. The body
+        // line is genuinely indented (4 spaces) so the AST nests it inside the
+        // Match block rather than treating it as a top-level directive.
+        let contents = concat!(
+            "PasswordAuthentication no\n",
+            "Match Address 192.168.0.0/16\n",
+            "    PasswordAuthentication yes\n",
+        );
         let info = parse_sshd_access_info_from(contents);
-        assert!(!info.password_auth, "PasswordAuthentication no should be preserved");
+        assert!(!info.password_auth, "global PasswordAuthentication=no must win over Match-scoped yes");
+    }
+
+    #[test]
+    fn parse_access_info_match_scoped_allow_users_does_not_leak() {
+        // Regression: the old line-scanner only skipped the literal 'Match'
+        // header, so the indented AllowUsers inside the block OVERWROTE the
+        // global list (last-wins), producing the wrong login_status.
+        let contents = concat!(
+            "AllowUsers alice\n",
+            "Match User carol\n",
+            "    AllowUsers bob\n",
+        );
+        let info = parse_sshd_access_info_from(contents);
+        assert_eq!(
+            info.allowed_users,
+            vec!["alice"],
+            "Match-scoped AllowUsers must not leak into the global list"
+        );
+        assert!(
+            !info.allowed_users.contains(&"bob".to_string()),
+            "Match-scoped user 'bob' leaked into global allowed_users"
+        );
+    }
+
+    #[test]
+    fn parse_access_info_concatenates_multiple_global_allow_users() {
+        // OpenSSH treats multiple global AllowUsers lines as additive. The read
+        // path must concatenate them, not take the last one.
+        let contents = concat!(
+            "AllowUsers alice\n",
+            "Port 22\n",
+            "AllowUsers bob carol\n",
+        );
+        let info = parse_sshd_access_info_from(contents);
+        assert_eq!(
+            info.allowed_users,
+            vec!["alice", "bob", "carol"],
+            "multiple global AllowUsers lines must concatenate in order"
+        );
+
+        // Same goes for DenyUsers / AllowGroups / DenyGroups.
+        let contents = concat!(
+            "DenyUsers dan\n",
+            "DenyUsers eve\n",
+            "AllowGroups wheel\n",
+            "AllowGroups staff\n",
+            "DenyGroups banned\n",
+            "DenyGroups revoked\n",
+        );
+        let info = parse_sshd_access_info_from(contents);
+        assert_eq!(info.denied_users, vec!["dan", "eve"]);
+        assert_eq!(info.allowed_groups, vec!["wheel", "staff"]);
+        assert_eq!(info.denied_groups, vec!["banned", "revoked"]);
+    }
+
+    #[test]
+    fn parse_access_info_read_matches_editor_getters() {
+        // The read path and the editor must agree on what the global
+        // Allow/Deny lists are. This is the property the fix is built on:
+        // parse_sshd_access_info_from now uses the same sshd getters the
+        // editor's add/remove helpers operate against.
+        use toride_ssh::config::ast::parse;
+        use toride_ssh::config::sshd::{
+            get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
+        };
+
+        // The Match body lines are genuinely indented so the AST nests them.
+        let contents = concat!(
+            "AllowUsers alice\n",
+            "DenyUsers mallory\n",
+            "AllowGroups wheel\n",
+            "DenyGroups banned\n",
+            "Match User carol\n",
+            "    AllowUsers bob\n",
+            "    DenyUsers scoped\n",
+        );
+        let info = parse_sshd_access_info_from(contents);
+
+        // The AST the editor would load for the same content.
+        let ast = parse(contents);
+        assert_eq!(info.allowed_users, get_allow_users(&ast));
+        assert_eq!(info.denied_users, get_deny_users(&ast));
+        assert_eq!(info.allowed_groups, get_allow_groups(&ast));
+        assert_eq!(info.denied_groups, get_deny_groups(&ast));
+        // Match-scoped values must be absent from both views.
+        assert_eq!(info.allowed_users, vec!["alice"]);
+        assert_eq!(info.denied_users, vec!["mallory"]);
     }
 
     // ── Write-path integration tests ─────────────────────────────────────────

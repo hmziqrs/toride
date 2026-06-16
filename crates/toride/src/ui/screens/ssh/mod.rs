@@ -260,16 +260,22 @@ impl SshContent {
 
     /// Handle a key press. Returns `Some(Action)` for navigation, `None` if consumed.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // Block all input while SSH write ops are in-flight.
-        if self.ssh_loading {
-            return None;
-        }
-
-        // If the active tab has a modal open, route input there first.
+        // A modal (detail / confirm) must ALWAYS be closable — even while a
+        // write is in flight — otherwise the user is frozen out of the modal
+        // they just opened. Route modal input (Esc to close, action keys)
+        // BEFORE the loading gate; the gate only applies to non-modal list
+        // navigation below.
         if self.active_tab().has_modal() {
             let action = self.active_tab_mut().handle_key(code);
             self.collect_ops();
             return action;
+        }
+
+        // No modal: block non-modal list navigation while SSH write ops are
+        // in-flight (the list is being mutated optimistically; the loading
+        // spinner overlay reflects this).
+        if self.ssh_loading {
+            return None;
         }
 
         let action = match self.focus {
@@ -325,16 +331,17 @@ impl SshContent {
 
     /// Handle a mouse event for the SSH content area.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Block all input while SSH write ops are in-flight.
-        if self.ssh_loading {
-            return None;
-        }
-
-        // If the active tab has a modal open, delegate to it for
-        // click-outside detection.
+        // A modal must always be interactable (click-outside-to-close, confirm
+        // button clicks) — route modal input BEFORE the loading gate so a write
+        // in flight can't freeze the user inside a modal.
         if self.active_tab().has_modal() {
             self.active_tab_mut().handle_mouse(mouse);
             self.collect_ops();
+            return None;
+        }
+
+        // No modal: block non-modal interaction while SSH write ops are in-flight.
+        if self.ssh_loading {
             return None;
         }
 

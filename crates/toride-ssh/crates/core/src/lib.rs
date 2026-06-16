@@ -169,6 +169,16 @@ pub enum Error {
     #[error("sshd_config validation failed: {0}")]
     SshdConfigInvalid(String),
 
+    /// The `sshd` binary could not be found, so the new config could not be
+    /// validated.
+    ///
+    /// We fail closed rather than installing an unvalidatable config: a bad
+    /// `sshd_config` can lock the user out of SSH, so we never install one we
+    /// could not check. Carries the detail we observed (e.g. the privileged
+    /// invocation's stderr).
+    #[error("sshd binary not found; cannot validate sshd_config: {0}")]
+    SshdNotFound(String),
+
     /// Underlying I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),

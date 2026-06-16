@@ -20,9 +20,11 @@ duct = "1"
 libc = "0.2"
 base64 = "0.22"
 gethostname = "0.5"
-
-[dev-dependencies]
-tempfile = "3"
+# `tempfile` is a runtime dependency: WriteSshdConfig stages the new
+# sshd_config in an O_EXCL, unpredictable-named temp file in the *same
+# directory* as the target (so the install is an atomic rename within one
+# filesystem, and `sshd -t` resolves relative `Include` directives correctly).
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

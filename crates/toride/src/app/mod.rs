@@ -18,7 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
-use crate::ssh_data::{SshDataCollector, execute_op};
+use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
@@ -51,9 +51,9 @@ pub struct App {
     collector: StatusCollector,
     ssh_collector: SshDataCollector,
     /// Receiver for SSH write operation error messages.
-    ssh_error_rx: mpsc::UnboundedReceiver<String>,
+    ssh_error_rx: mpsc::UnboundedReceiver<SshOpError>,
     /// Sender clone passed to spawned SSH write tasks.
-    ssh_error_tx: mpsc::UnboundedSender<String>,
+    ssh_error_tx: mpsc::UnboundedSender<SshOpError>,
     /// Receiver for SSH write operation completion signals.
     ssh_op_done_rx: mpsc::UnboundedReceiver<()>,
     /// Sender clone passed to spawned SSH write tasks (signals completion).
@@ -170,17 +170,26 @@ impl App {
         }
     }
 
-    /// Drain pending SSH write operations and spawn async tasks for each.
-    /// Errors are sent back via the error channel and surfaced in the UI.
-    /// Sets a 5-second cooldown on SSH data refresh to prevent the next
-    /// refresh from overwriting optimistic in-memory updates before the
-    /// async write lands on disk.
+    /// Drain pending SSH write operations and run them in a SINGLE serialized
+    /// background task.
+    ///
+    /// All drained ops are coalesced into one spawned task that awaits each
+    /// `execute_op` strictly in order. This is critical for correctness: the
+    /// `sshd::edit()` write path is a non-atomic load→mutate→save, so two ops
+    /// drained in the same flush would otherwise both load the original config
+    /// and clobber each other (a lost-update race). One task + sequential
+    /// awaits guarantees no two writes — and in particular no two sshd writes
+    /// — ever run concurrently.
+    ///
+    /// Done/error accounting stays per-logical-op: the task sends one `()`
+    /// per op to `ssh_op_done_tx` and one error per failed op to
+    /// `ssh_error_tx`. A 5-second cooldown on SSH data refresh prevents the
+    /// next refresh from overwriting optimistic in-memory updates before the
+    /// async writes land on disk.
     fn flush_ssh_ops(&mut self) {
         if !matches!(self.nav.current(), Screen::Dashboard) {
             return;
         }
-        let tx = self.ssh_error_tx.clone();
-        let done_tx = self.ssh_op_done_tx.clone();
         let ops = self.dashboard.drain_ssh_ops();
         if ops.is_empty() {
             return;
@@ -190,16 +199,19 @@ impl App {
         self.ssh_write_cooldown = Some(Instant::now());
         self.ssh_ops_in_flight += ops.len();
         self.dashboard.set_ssh_loading(true, self.ssh_ops_in_flight);
-        for op in ops {
-            let tx = tx.clone();
-            let done_tx = done_tx.clone();
-            tokio::spawn(async move {
-                if let Err(msg) = execute_op(op).await {
-                    let _ = tx.send(msg);
+
+        let error_tx = self.ssh_error_tx.clone();
+        let done_tx = self.ssh_op_done_tx.clone();
+        // ONE task for the whole batch — ops run sequentially inside it.
+        tokio::spawn(async move {
+            for op in ops {
+                if let Err(err) = execute_op(op).await {
+                    let _ = error_tx.send(err);
                 }
+                // Signal completion for this logical op regardless of outcome.
                 let _ = done_tx.send(());
-            });
-        }
+            }
+        });
     }
 
     /// Run the main event loop.
@@ -253,10 +265,22 @@ impl App {
                     self.needs_redraw = true;
                 }
 
-                // Receive SSH write errors from spawned tasks
-                Some(msg) = self.ssh_error_rx.recv() => {
+                // Receive SSH write errors from the serialized write task.
+                // On a reverting error (disk state known unchanged → the
+                // optimistic UI update is now a lie) clear the write cooldown
+                // and force an immediate SSH data refresh so disk truth
+                // overwrites the stale in-memory state right away instead of
+                // waiting out the 5s cooldown. On a transient error, just
+                // surface the message (the cooldown reconciles it).
+                Some(err) = self.ssh_error_rx.recv() => {
                     if matches!(self.nav.current(), Screen::Dashboard) {
-                        self.dashboard.push_ssh_error(msg);
+                        self.dashboard.push_ssh_error(err.message);
+                        if err.revert_optimistic {
+                            // Disk is unchanged: abandon the cooldown and pull
+                            // fresh data immediately to revert the lie.
+                            self.ssh_write_cooldown = None;
+                            self.ssh_collector.start();
+                        }
                         self.needs_redraw = true;
                     }
                 }
