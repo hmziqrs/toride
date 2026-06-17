@@ -241,6 +241,17 @@ impl DashboardScreen {
         self.ssh_content.drain_pending_ops()
     }
 
+    /// Re-queue SSH write operations at the front of the pending queue.
+    ///
+    /// Used by the app's serialized write loop to hold ops that were drained
+    /// while a batch was already in-flight (so a second task is never spawned
+    /// concurrently). The held ops are drained again once the in-flight batch
+    /// completes. They are placed ahead of any ops the UI may queue in the
+    /// meantime to preserve the user's original ordering.
+    pub fn queue_ssh_ops_front(&mut self, ops: Vec<crate::ssh_data::SshOp>) {
+        self.ssh_content.queue_ops_front(ops);
+    }
+
     /// Push an SSH write error to be shown as a notification.
     pub fn push_ssh_error(&mut self, msg: String) {
         self.ssh_content.push_error(msg);

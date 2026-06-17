@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyEventKind};
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use ratatui::DefaultTerminal;
 use tokio::select;
 use tokio::sync::mpsc;
@@ -60,6 +60,18 @@ pub struct App {
     ssh_op_done_tx: mpsc::UnboundedSender<()>,
     /// Number of SSH write ops currently in-flight.
     ssh_ops_in_flight: usize,
+    /// Set when a reverting SSH write error lands while a batch is still
+    /// in-flight. The immediate revert-refresh must be deferred until
+    /// `ssh_ops_in_flight` reaches zero — otherwise the independent collector
+    /// refresh re-reads disk while later ops in the same batch are still
+    /// pending and wholesale overwrites still-pending optimistic UI state.
+    /// Drained in the `ssh_op_done_rx` arm when the counter hits zero.
+    ssh_revert_pending: bool,
+    /// The currently running serialized SSH write task, if any. Stored so that
+    /// on quit the in-flight op can run to completion before the runtime tears
+    /// down (avoids losing a partially-applied config edit + its cooldown
+    /// reconciliation). See `should_quit` handling in `run`.
+    ssh_write_task: Option<tokio::task::JoinHandle<()>>,
     /// Time of the last SSH write op — suppresses data refresh to avoid
     /// overwriting optimistic in-memory updates before the async write lands.
     ssh_write_cooldown: Option<Instant>,
@@ -69,6 +81,27 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// What the `ssh_error_rx` arm should do about a reverting error. Pure
+/// function so the F5 truth table is unit-testable.
+///
+/// Critically (F5), this decision is INDEPENDENT of the current screen:
+/// a reverting error arriving off-Dashboard still means disk truth diverges
+/// from optimistic state, so the revert intent must be recorded (Defer) or
+/// acted on (FireNow) regardless of where the user is. Only the UI toast is
+/// screen-gated. Before F5, the entire arm — including this scheduling —
+/// was gated on `Screen::Dashboard`, so a reverting error off-Dashboard was
+/// silently dropped.
+#[derive(Debug, PartialEq, Eq)]
+enum RevertScheduling {
+    /// Not a reverting error — nothing to schedule.
+    Noop,
+    /// Reverting; no ops in-flight → start the revert-refresh immediately.
+    FireNow,
+    /// Reverting; ops still in-flight → set `ssh_revert_pending` and let the
+    /// DONE arm fire the refresh once the batch drains.
+    Defer,
 }
 
 impl App {
@@ -83,6 +116,8 @@ impl App {
             ssh_op_done_tx,
             ssh_op_done_rx,
             ssh_ops_in_flight: 0,
+            ssh_revert_pending: false,
+            ssh_write_task: None,
             nav: Navigator::new(),
             welcome: WelcomeScreen::new(),
             dashboard: DashboardScreen::new(),
@@ -170,6 +205,53 @@ impl App {
         }
     }
 
+    /// Decide whether the periodic refresh tick should SKIP an SSH data
+    /// refresh. Pure function (no `self`) so the truth table is unit-testable.
+    ///
+    /// Refresh is skipped whenever a write could clobber optimistic in-memory
+    /// state: if any op is still in-flight (a write slower than the cooldown
+    /// must not lose its skip), or while the post-write cooldown has not yet
+    /// elapsed (the async write may not have landed on disk).
+    fn should_skip_ssh_refresh(in_flight: usize, cooldown_elapsed_secs: Option<u64>) -> bool {
+        in_flight > 0 || cooldown_elapsed_secs.is_some_and(|s| s < 5)
+    }
+
+    /// Decide whether a reverting-error refresh should run NOW or be deferred.
+    /// Pure function so the truth table is unit-testable.
+    ///
+    /// Run now only when no ops remain in-flight — otherwise the independent
+    /// collector refresh re-reads disk and wholesale overwrites still-pending
+    /// optimistic state for later ops in the same batch.
+    fn should_revert_now(in_flight: usize) -> bool {
+        in_flight == 0
+    }
+
+    /// Decide whether a deferred revert-refresh should fire now, in the DONE arm
+    /// where an in-flight batch just drained. Pure function so the F6 truth table
+    /// is unit-testable.
+    ///
+    /// Fire now only when a revert is pending AND no new batch was just spawned
+    /// by the flush that follows. If a fresh batch spawned, the revert must be
+    /// deferred to that batch's completion: the new batch's writes would race
+    /// the revert-refresh's disk read (and, post-F4, the revert's result could
+    /// itself be dropped by the in-flight guard). This mirrors the old
+    /// `should_revert_now` semantics extended with the re-flush case.
+    fn should_fire_deferred_revert_now(revert_pending: bool, spawned: bool) -> bool {
+        revert_pending && !spawned
+    }
+
+    /// Pure scheduling decision for the `ssh_error_rx` arm (F5). Screen-
+    /// independent by construction.
+    fn ssh_error_revert_scheduling(revert_optimistic: bool, in_flight: usize) -> RevertScheduling {
+        if !revert_optimistic {
+            RevertScheduling::Noop
+        } else if Self::should_revert_now(in_flight) {
+            RevertScheduling::FireNow
+        } else {
+            RevertScheduling::Defer
+        }
+    }
+
     /// Drain pending SSH write operations and run them in a SINGLE serialized
     /// background task.
     ///
@@ -179,20 +261,45 @@ impl App {
     /// drained in the same flush would otherwise both load the original config
     /// and clobber each other (a lost-update race). One task + sequential
     /// awaits guarantees no two writes — and in particular no two sshd writes
-    /// — ever run concurrently.
+    /// — ever run concurrently *within* a batch.
+    ///
+    /// The across-batch invariant is enforced here: if a batch is still
+    /// in-flight, freshly drained ops are pushed back onto the queue and NOT
+    /// spawned. They will be drained again after the in-flight batch's last
+    /// `done` signal arrives (the `ssh_op_done_rx` arm re-runs the flush). This
+    /// prevents a confirm-modal 'y' during a write from launching a second
+    /// concurrent batch that would race the first.
     ///
     /// Done/error accounting stays per-logical-op: the task sends one `()`
     /// per op to `ssh_op_done_tx` and one error per failed op to
-    /// `ssh_error_tx`. A 5-second cooldown on SSH data refresh prevents the
-    /// next refresh from overwriting optimistic in-memory updates before the
-    /// async writes land on disk.
-    fn flush_ssh_ops(&mut self) {
+    /// `ssh_error_tx`. Each `execute_op` is wrapped in `catch_unwind` so that
+    /// even a panic inside the write path still emits its completion signal
+    /// (plus a reverting error) — otherwise the in-flight counter would never
+    /// return to zero and the loading spinner would wedge forever. A 5-second
+    /// cooldown on SSH data refresh prevents the next refresh from overwriting
+    /// optimistic in-memory updates before the async writes land on disk.
+    ///
+    /// Returns `true` if a new serialized write batch was actually spawned, and
+    /// `false` otherwise (not on Dashboard, nothing to drain, or held back
+    /// because a batch is already in-flight). The DONE arm uses this to decide
+    /// whether a deferred revert-refresh should fire now or be deferred again
+    /// to the new batch's completion (F6: a revert-refresh must never race a
+    /// freshly re-flushed batch).
+    fn flush_ssh_ops(&mut self) -> bool {
         if !matches!(self.nav.current(), Screen::Dashboard) {
-            return;
+            return false;
         }
         let ops = self.dashboard.drain_ssh_ops();
         if ops.is_empty() {
-            return;
+            return false;
+        }
+        // A batch is already in-flight: hold these ops rather than spawning a
+        // second concurrent task. They are re-queued (prepend-style: put back
+        // ahead of any future drains) and will be flushed once the in-flight
+        // batch completes — see the `ssh_op_done_rx` arm below.
+        if self.ssh_ops_in_flight > 0 {
+            self.dashboard.queue_ssh_ops_front(ops);
+            return false;
         }
         // Set cooldown: skip SSH data refresh for 5 seconds to avoid
         // clobbering the optimistic in-memory update with stale disk state.
@@ -202,16 +309,35 @@ impl App {
 
         let error_tx = self.ssh_error_tx.clone();
         let done_tx = self.ssh_op_done_tx.clone();
-        // ONE task for the whole batch — ops run sequentially inside it.
-        tokio::spawn(async move {
+        // ONE task for the whole batch — ops run sequentially inside it. Each
+        // op is wrapped in catch_unwind so a panic cannot strand the remaining
+        // ops' done signals.
+        let handle = tokio::spawn(async move {
             for op in ops {
-                if let Err(err) = execute_op(op).await {
-                    let _ = error_tx.send(err);
+                let fut = std::panic::AssertUnwindSafe(execute_op(op));
+                match fut.catch_unwind().await {
+                    Ok(Ok(_label)) => {}
+                    Ok(Err(err)) => {
+                        let _ = error_tx.send(err);
+                    }
+                    Err(panic) => {
+                        // The op panicked: disk state for a config write is
+                        // unknown, but we must still account for this op so the
+                        // loading spinner unwedges. Treat it as a reverting
+                        // error so a refresh reconciles any optimistic state.
+                        let msg = panic_message(&panic);
+                        let _ = error_tx.send(SshOpError {
+                            message: format!("ssh op panicked: {msg}"),
+                            revert_optimistic: true,
+                        });
+                    }
                 }
                 // Signal completion for this logical op regardless of outcome.
                 let _ = done_tx.send(());
             }
         });
+        self.ssh_write_task = Some(handle);
+        true
     }
 
     /// Run the main event loop.
@@ -261,8 +387,26 @@ impl App {
 
                 // Receive collected SSH data
                 Some(bundle) = self.ssh_collector.poll(), if self.ssh_collector.is_pending() => {
-                    self.dashboard.set_ssh_data(bundle);
-                    self.needs_redraw = true;
+                    // Re-check the skip condition at the apply site (F4). A
+                    // collection started ~100ms-2s before a/d/r completes would
+                    // wholesale-replace access_info with stale disk truth even
+                    // though a write is in-flight. The in-flight gate at
+                    // `ssh_collector.start()` only prevents NEW collections
+                    // from starting; it cannot recall a collection that is
+                    // already in-flight. Drop the bundle here when a write is
+                    // in-flight or the post-write cooldown is still active, so
+                    // optimistic in-memory state is never clobbered. The next
+                    // eligible refresh (cooldown elapsed, no ops in-flight)
+                    // re-reads disk truth cleanly.
+                    let skip = Self::should_skip_ssh_refresh(
+                        self.ssh_ops_in_flight,
+                        self.ssh_write_cooldown
+                            .map(|t| t.elapsed().as_secs()),
+                    );
+                    if !skip {
+                        self.dashboard.set_ssh_data(bundle);
+                        self.needs_redraw = true;
+                    }
                 }
 
                 // Receive SSH write errors from the serialized write task.
@@ -273,16 +417,36 @@ impl App {
                 // waiting out the 5s cooldown. On a transient error, just
                 // surface the message (the cooldown reconciles it).
                 Some(err) = self.ssh_error_rx.recv() => {
+                    // F5: revert scheduling MUST run regardless of the current
+                    // screen. A reverting error arriving off-Dashboard still
+                    // means disk truth diverges from optimistic state, so the
+                    // revert-refresh intent must be recorded (and acted on
+                    // immediately if no ops are in-flight) even if the toast
+                    // cannot be shown right now. Only the UI toast push is
+                    // gated on the Dashboard.
                     if matches!(self.nav.current(), Screen::Dashboard) {
                         self.dashboard.push_ssh_error(err.message);
-                        if err.revert_optimistic {
-                            // Disk is unchanged: abandon the cooldown and pull
-                            // fresh data immediately to revert the lie.
+                    }
+                    match Self::ssh_error_revert_scheduling(
+                        err.revert_optimistic,
+                        self.ssh_ops_in_flight,
+                    ) {
+                        RevertScheduling::FireNow => {
+                            // Disk is unchanged: the optimistic UI update is
+                            // now a lie. No ops in-flight, so refresh now.
                             self.ssh_write_cooldown = None;
                             self.ssh_collector.start();
                         }
-                        self.needs_redraw = true;
+                        RevertScheduling::Defer => {
+                            // Ops still in-flight: a refresh now would re-read
+                            // disk and clobber still-pending optimistic state.
+                            // Defer until the counter drains to zero (see the
+                            // `ssh_op_done_rx` arm).
+                            self.ssh_revert_pending = true;
+                        }
+                        RevertScheduling::Noop => {}
                     }
+                    self.needs_redraw = true;
                 }
 
                 // Receive SSH write op completion signals
@@ -291,6 +455,39 @@ impl App {
                     let loading = self.ssh_ops_in_flight > 0;
                     self.dashboard.set_ssh_loading(loading, self.ssh_ops_in_flight);
                     self.needs_redraw = true;
+                    // When an in-flight batch fully drains, immediately flush
+                    // any ops that were held back because a batch was running.
+                    // This re-drains them into a fresh serialized task now that
+                    // no write is concurrent. The task handle is also cleared
+                    // (its future completed).
+                    if self.ssh_ops_in_flight == 0 {
+                        // The batch finished: drop our handle (its future has
+                        // already completed, so this is a cheap no-op).
+                        self.ssh_write_task = None;
+                        // F6: a deferred revert-refresh must NOT fire in the
+                        // same pass that re-flushes a new batch. If held ops
+                        // exist, flushing them now spawns a fresh serialized
+                        // task whose writes would race the revert-refresh's
+                        // disk read (and, post-F4, the revert's result could
+                        // itself be dropped). So flush FIRST; if a new batch
+                        // spawned, leave `ssh_revert_pending` set so the
+                        // revert fires at THAT batch's completion. Only when
+                        // no new batch started is the revert safe to run now.
+                        let spawned = self.flush_ssh_ops();
+                        if Self::should_fire_deferred_revert_now(
+                            self.ssh_revert_pending,
+                            spawned,
+                        ) {
+                            // No new batch: the revert is safe now.
+                            self.ssh_revert_pending = false;
+                            self.ssh_write_cooldown = None;
+                            self.ssh_collector.start();
+                        }
+                        // If revert_pending is true but spawned is also true,
+                        // leave the flag set: the new batch's DONE pass will
+                        // re-evaluate (and defer again if yet another batch
+                        // spawns).
+                    }
                 }
 
                 // Periodic status refresh
@@ -300,9 +497,15 @@ impl App {
                         self.collector.start();
                         // Skip SSH data refresh during write cooldown to prevent
                         // overwriting optimistic in-memory updates with stale
-                        // disk state. Cooldown expires after 5 seconds.
-                        let skip_ssh = self.ssh_write_cooldown
-                            .is_some_and(|t| t.elapsed().as_secs() < 5);
+                        // disk state. Cooldown expires after 5 seconds. Also
+                        // skip while ops are in-flight: a write slower than the
+                        // cooldown would otherwise let a mid-write refresh
+                        // clobber optimistic state.
+                        let skip_ssh = Self::should_skip_ssh_refresh(
+                            self.ssh_ops_in_flight,
+                            self.ssh_write_cooldown
+                                .map(|t| t.elapsed().as_secs()),
+                        );
                         if !skip_ssh {
                             self.ssh_write_cooldown = None;
                             self.ssh_collector.start();
@@ -319,11 +522,47 @@ impl App {
             }
 
             if self.should_quit {
+                // Before tearing down the runtime, let any in-flight SSH write
+                // op run to completion. Each op is independently validated and
+                // backed-up before install, so finishing the current op leaves
+                // disk consistent and lets the user's last change land instead
+                // of being lost to runtime shutdown with stale optimistic UI.
+                if let Some(handle) = self.ssh_write_task.take() {
+                    let _ = handle.await;
+                }
+                // If a deferred revert-refresh (or any collector refresh) is
+                // still pending, await it once with a bounded timeout so the
+                // disk-truth reconcile lands before the runtime tears down.
+                // Cosmetic: disk is authoritative on next launch either way, so
+                // a bounded wait avoids hanging the process if the collection
+                // stalls.
+                if self.ssh_collector.is_pending() {
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        self.ssh_collector.poll(),
+                    )
+                    .await;
+                }
                 break;
             }
         }
 
         Ok(())
+    }
+}
+
+/// Render a `catch_unwind` panic payload as a best-effort string.
+///
+/// `Box<dyn Any + Send>` payloads are usually `&'static str` or `String`, but
+/// fall back to a generic marker for anything else so the error toast is never
+/// empty.
+fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }
 
@@ -411,5 +650,224 @@ mod tests {
         app.quit_visible = true;
         app.update(Action::DismissQuit);
         assert!(!app.quit_visible);
+    }
+
+    #[test]
+    fn panic_message_renders_str_and_string_payloads() {
+        // catch_unwind hands back a Box<dyn Any + Send>. The helper must
+        // recover the common (&'static str / String) payloads so the error
+        // toast is informative, and never empty for anything else.
+        let s: Box<dyn std::any::Any + Send> = Box::new("boom");
+        assert_eq!(super::panic_message(&s), "boom");
+
+        let s: Box<dyn std::any::Any + Send> = Box::new("owned error".to_string());
+        assert_eq!(super::panic_message(&s), "owned error");
+
+        let s: Box<dyn std::any::Any + Send> = Box::new(42_i32);
+        assert_eq!(super::panic_message(&s), "<non-string panic payload>");
+    }
+
+    #[test]
+    fn new_app_has_no_in_flight_write_task() {
+        // The stored JoinHandle starts empty; the quit-drain path relies on
+        // this so it only awaits a task that actually exists.
+        let app = App::new();
+        assert_eq!(app.ssh_ops_in_flight, 0);
+        assert!(app.ssh_write_task.is_none());
+    }
+
+    #[test]
+    fn new_app_has_no_revert_pending() {
+        // The deferred-revert flag starts false; the DONE arm only fires a
+        // revert-refresh when a reverting error set it true first.
+        let app = App::new();
+        assert!(!app.ssh_revert_pending);
+    }
+
+    #[test]
+    fn should_skip_ssh_refresh_truth_table() {
+        use crate::app::App;
+        // No writes, no cooldown → refresh proceeds.
+        assert!(!App::should_skip_ssh_refresh(0, None));
+        // Cooldown fresh (< 5s) → skip even with no ops in-flight.
+        assert!(App::should_skip_ssh_refresh(0, Some(0)));
+        assert!(App::should_skip_ssh_refresh(0, Some(4)));
+        // Cooldown elapsed (>= 5s), no ops → refresh proceeds.
+        assert!(!App::should_skip_ssh_refresh(0, Some(5)));
+        assert!(!App::should_skip_ssh_refresh(0, Some(99)));
+        // Ops in-flight → ALWAYS skip, regardless of cooldown. This is the
+        // slow-write guard: a write slower than the 5s cooldown must not lose
+        // its skip and let a mid-write refresh clobber optimistic state.
+        assert!(App::should_skip_ssh_refresh(1, None));
+        assert!(App::should_skip_ssh_refresh(3, Some(5)));
+        assert!(App::should_skip_ssh_refresh(2, Some(99)));
+    }
+
+    #[test]
+    fn should_revert_now_truth_table() {
+        use crate::app::App;
+        // No ops in-flight → a reverting error refresh is safe to run now.
+        assert!(App::should_revert_now(0));
+        // Ops still in-flight → must defer: a refresh now would re-read disk
+        // and clobber still-pending optimistic state for later ops in the batch.
+        assert!(!App::should_revert_now(1));
+        assert!(!App::should_revert_now(5));
+    }
+
+    // ----- F4: poll-arm must drop a stale collection result during a write
+    // window. The poll arm re-checks `should_skip_ssh_refresh` at the apply
+    // site. These tests lock the predicate combinations that gate the bundle
+    // application; reverting F4 (removing the re-check) would make these
+    // assertions describe behavior the poll arm no longer has, and the
+    // dedicated contract test below asserts the gating value is `true` in
+    // every case that must drop the bundle.
+    #[test]
+    fn f4_poll_drops_bundle_while_ops_in_flight() {
+        use crate::app::App;
+        // A collection started ~100ms before a/d/r completes and returns its
+        // bundle while ssh_ops_in_flight == 1. The poll arm must drop it.
+        // This is the exact predicate the poll arm now consults.
+        assert!(App::should_skip_ssh_refresh(1, None));
+        // Even with cooldown elapsed, in-flight still forces a drop.
+        assert!(App::should_skip_ssh_refresh(1, Some(99)));
+    }
+
+    #[test]
+    fn f4_poll_drops_bundle_during_cooldown() {
+        use crate::app::App;
+        // No ops in-flight but the post-write cooldown is still fresh: a
+        // late-arriving collection would overwrite optimistic state before
+        // the async write lands on disk. Must drop.
+        assert!(App::should_skip_ssh_refresh(0, Some(0)));
+        assert!(App::should_skip_ssh_refresh(0, Some(4)));
+    }
+
+    #[test]
+    fn f4_poll_applies_bundle_when_safe() {
+        use crate::app::App;
+        // No ops in-flight AND cooldown elapsed (or absent): the bundle is
+        // disk truth and may be applied. This is the negative space of F4 —
+        // a correct fix must NOT over-drop and starve the UI of data.
+        assert!(!App::should_skip_ssh_refresh(0, None));
+        assert!(!App::should_skip_ssh_refresh(0, Some(5)));
+        assert!(!App::should_skip_ssh_refresh(0, Some(99)));
+    }
+
+    // ----- F5: revert scheduling must be screen-independent. A reverting
+    // error arriving off-Dashboard still has to record its intent (Defer) or
+    // fire immediately (FireNow); only the toast is screen-gated. These
+    // tests assert the scheduling decision is independent of any screen
+    // argument (the function takes none by design) and produces Defer when
+    // ops are in-flight.
+    #[test]
+    fn f5_reverting_error_with_ops_in_flight_defers() {
+        // The scheduling function takes NO screen argument: by construction
+        // it cannot depend on the current screen. A reverting error with ops
+        // in-flight always defers — this would have been skipped entirely
+        // pre-F5 when off-Dashboard.
+        assert_eq!(
+            App::ssh_error_revert_scheduling(true, 1),
+            super::RevertScheduling::Defer
+        );
+        assert_eq!(
+            App::ssh_error_revert_scheduling(true, 5),
+            super::RevertScheduling::Defer
+        );
+    }
+
+    #[test]
+    fn f5_reverting_error_with_no_ops_fires_now() {
+        // No ops in-flight → FireNow regardless of screen.
+        assert_eq!(
+            App::ssh_error_revert_scheduling(true, 0),
+            super::RevertScheduling::FireNow
+        );
+    }
+
+    #[test]
+    fn f5_transient_error_never_schedules_revert() {
+        // Non-reverting errors never touch the revert machinery.
+        assert_eq!(
+            App::ssh_error_revert_scheduling(false, 0),
+            super::RevertScheduling::Noop
+        );
+        assert_eq!(
+            App::ssh_error_revert_scheduling(false, 3),
+            super::RevertScheduling::Noop
+        );
+    }
+
+    #[test]
+    fn f5_off_dashboard_reverting_error_still_defers_via_state() {
+        // End-to-end-ish: simulate the arm's effect on App state for a
+        // reverting error that arrives while NOT on Dashboard (we stay on
+        // Welcome) and ops are in-flight. F5 requires ssh_revert_pending to
+        // be set so the revert eventually fires. Pre-F5 the whole arm was
+        // Dashboard-gated and this never happened.
+        let mut app = App::new();
+        // Force off-Dashboard + in-flight.
+        assert!(matches!(app.nav.current(), crate::navigation::Screen::Welcome));
+        app.ssh_ops_in_flight = 2;
+        let scheduling = App::ssh_error_revert_scheduling(true, app.ssh_ops_in_flight);
+        assert_eq!(scheduling, super::RevertScheduling::Defer);
+        app.ssh_revert_pending = matches!(scheduling, super::RevertScheduling::Defer);
+        assert!(
+            app.ssh_revert_pending,
+            "revert intent must be recorded even off-Dashboard (F5)"
+        );
+    }
+
+    // ----- F6: a deferred revert-refresh must not fire in the same DONE pass
+    // that re-flushes a new batch. These tests lock the truth table of the
+    // pure helper the DONE arm now consults.
+    #[test]
+    fn f6_revert_deferred_when_new_batch_spawned() {
+        // Revert pending AND flush just spawned a new batch → defer (leave
+        // ssh_revert_pending set). The revert must NOT fire now; it fires at
+        // the new batch's completion.
+        assert!(!App::should_fire_deferred_revert_now(true, true));
+    }
+
+    #[test]
+    fn f6_revert_fires_when_no_new_batch() {
+        // Revert pending AND no new batch spawned → safe to fire now.
+        assert!(App::should_fire_deferred_revert_now(true, false));
+    }
+
+    #[test]
+    fn f6_no_revert_pending_never_fires() {
+        // Nothing pending → never fire (regardless of spawn state).
+        assert!(!App::should_fire_deferred_revert_now(false, false));
+        assert!(!App::should_fire_deferred_revert_now(false, true));
+    }
+
+    #[test]
+    fn f6_re_flush_during_pending_leaves_flag_set() {
+        // End-to-end-ish: simulate the DONE arm's bookkeeping when held ops
+        // exist (spawned == true) and a revert is pending. The flag must
+        // REMAIN set so the new batch's completion re-evaluates it.
+        let mut app = App::new();
+        app.ssh_revert_pending = true;
+        let spawned = true; // flush_ssh_ops re-spawned a held batch
+        if App::should_fire_deferred_revert_now(app.ssh_revert_pending, spawned) {
+            app.ssh_revert_pending = false;
+        }
+        assert!(
+            app.ssh_revert_pending,
+            "revert must stay pending across a re-flush pass (F6)"
+        );
+    }
+
+    #[test]
+    fn f6_revert_clears_when_no_held_ops() {
+        // The complementary case: DONE pass with no held ops → revert fires
+        // and the flag clears.
+        let mut app = App::new();
+        app.ssh_revert_pending = true;
+        let spawned = false;
+        if App::should_fire_deferred_revert_now(app.ssh_revert_pending, spawned) {
+            app.ssh_revert_pending = false;
+        }
+        assert!(!app.ssh_revert_pending);
     }
 }

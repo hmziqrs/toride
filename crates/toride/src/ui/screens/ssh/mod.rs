@@ -143,6 +143,18 @@ impl SshContent {
         std::mem::take(&mut self.pending_ops)
     }
 
+    /// Re-queue write operations at the FRONT of the pending queue.
+    ///
+    /// The app's serialized write loop drains ops into a background task and,
+    /// while that task is in-flight, may drain again (e.g. a confirm-modal 'y'
+    /// lands during a write). To avoid spawning a second concurrent task, it
+    /// calls this to hand the ops back. Placing them ahead of any ops the UI
+    /// queues in the meantime keeps the user's original ordering intact.
+    pub fn queue_ops_front(&mut self, mut ops: Vec<SshOp>) {
+        ops.append(&mut self.pending_ops);
+        self.pending_ops = ops;
+    }
+
     /// Drain ops from the active tab and forward them to our pending_ops.
     fn collect_ops(&mut self) {
         let ops = self.active_tab_mut().drain_ops();
@@ -905,6 +917,43 @@ mod tests {
                 .draw(|f| content.view(f, f.area(), CHARM))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn queue_ops_front_preserves_held_order_ahead_of_new() {
+        // The serialized write loop hands ops back to the front of the queue
+        // when a batch is already in-flight. The held ops must come back out
+        // FIRST (preserving the user's original ordering), ahead of anything
+        // the UI queued in the meantime.
+        let mut content = SshContent::new();
+        content.push_op(SshOp::SshdAllowUser {
+            username: "held-first".into(),
+        });
+
+        let drained = content.drain_pending_ops();
+        assert_eq!(drained.len(), 1);
+        // Simulate the UI queuing a new op while the batch is in-flight.
+        content.push_op(SshOp::SshdDenyUser {
+            username: "queued-later".into(),
+        });
+
+        // App hands the held ops back to the front.
+        content.queue_ops_front(drained);
+
+        let order = content
+            .drain_pending_ops()
+            .into_iter()
+            .map(|op| match op {
+                SshOp::SshdAllowUser { username } => username,
+                SshOp::SshdDenyUser { username } => username,
+                other => format!("unexpected:{other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec!["held-first".to_string(), "queued-later".to_string()],
+            "held ops must drain ahead of newly-queued ops"
+        );
     }
 }
 

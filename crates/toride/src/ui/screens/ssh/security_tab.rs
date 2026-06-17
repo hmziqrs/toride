@@ -70,8 +70,12 @@ pub struct SecurityTab {
     selected_user: usize,
     /// Which row is hovered by the mouse (user-list index).
     hovered_row: Option<usize>,
-    /// Index of the user shown in the detail modal (if open).
-    detail_user_idx: Option<usize>,
+    /// Username shown in the detail modal (if open). Tracked by name rather
+    /// than positional index so a mid-modal refresh that reshapes the user
+    /// list cannot silently flip the modal (and the a/d/r targets) onto a
+    /// different user. Each frame the name is re-resolved to the current
+    /// index in `data.system_users`; if the name is gone the modal closes.
+    detail_user: Option<String>,
     /// Interactive detail modal (display-only; action keys are intercepted in
     /// `handle_key` so `a`/`d`/`r`/`Esc` get direct handling).
     detail_modal: InteractiveModal<UserAction>,
@@ -95,7 +99,7 @@ impl SecurityTab {
             row_hitboxes: Vec::new(),
             selected_user: 0,
             hovered_row: None,
-            detail_user_idx: None,
+            detail_user: None,
             detail_modal: InteractiveModal::display("User Access").dimensions(56, 18),
             confirm: ConfirmModal::new(""),
             pending_confirm: None,
@@ -116,12 +120,13 @@ impl SecurityTab {
         } else if self.selected_user >= data.system_users.len() {
             self.selected_user = data.system_users.len() - 1;
         }
-        // If the detail modal is open on a user that's gone, close it.
-        if let Some(idx) = self.detail_user_idx
-            && idx >= data.system_users.len()
+        // If the detail modal is open on a username that's gone, close it.
+        // (Tracked by name, not index, so a reorder never flips the modal.)
+        if let Some(name) = &self.detail_user
+            && !data.system_users.iter().any(|u| &u.username == name)
         {
             self.detail_modal.close();
-            self.detail_user_idx = None;
+            self.detail_user = None;
         }
         self.data = Some(data);
         if structurally_changed {
@@ -184,10 +189,25 @@ impl SecurityTab {
 
     /// Open the detail modal for the currently selected user.
     fn open_detail(&mut self) {
-        if self.selectable_count() > 0 {
-            self.detail_user_idx = Some(self.selected_user);
+        if self.selectable_count() > 0
+            && let Some(user) = self
+                .data
+                .as_ref()
+                .and_then(|d| d.system_users.get(self.selected_user))
+        {
+            self.detail_user = Some(user.username.clone());
             self.detail_modal.open();
         }
+    }
+
+    /// Resolve the open detail modal's username to its current index in
+    /// `data.system_users` (the list may have been reshaped by a refresh).
+    /// Returns `None` if the modal isn't open or the user is no longer present.
+    fn detail_index(&self) -> Option<usize> {
+        let name = self.detail_user.as_ref()?;
+        self.data
+            .as_ref()
+            .and_then(|d| d.system_users.iter().position(|u| &u.username == name))
     }
 
     // ── Access actions (optimistic in-memory + push SshOp) ──────────────────
@@ -195,7 +215,16 @@ impl SecurityTab {
     /// Apply a (confirmed) access action to the selected/detail user, updating
     /// `access_info` optimistically and queueing the matching `SshOp`.
     fn apply_action(&mut self, action: UserAction) {
-        let Some(idx) = self.detail_user_idx.or(Some(self.selected_user)) else {
+        // Re-resolve the modal target by username each time: a refresh may
+        // have reordered the user list, so the live index can differ from the
+        // one captured when the modal was opened.
+        let Some(idx) = self.detail_index().or_else(|| {
+            if self.selectable_count() > 0 {
+                Some(self.selected_user)
+            } else {
+                None
+            }
+        }) else {
             return;
         };
         let Some(data) = self.data.as_mut() else {
@@ -219,6 +248,10 @@ impl SecurityTab {
                 if !access.denied_users.iter().any(|u| u == &username) {
                     access.denied_users.push(username.clone());
                 }
+                // Mirror SshdDenyUser's edit() (and ResetAccess): a user being
+                // denied is also removed from the allow list, so the in-memory
+                // state matches the persisted config (no contradictory both-lists).
+                access.allowed_users.retain(|u| u != &username);
                 self.pending_ops
                     .push(SshOp::SshdDenyUser { username });
             }
@@ -238,8 +271,14 @@ impl SecurityTab {
             UserAction::AllowLogin => self.apply_action(UserAction::AllowLogin),
             UserAction::DenyLogin | UserAction::ResetAccess => {
                 let username = self
-                    .detail_user_idx
-                    .or(Some(self.selected_user))
+                    .detail_index()
+                    .or_else(|| {
+                        if self.selectable_count() > 0 {
+                            Some(self.selected_user)
+                        } else {
+                            None
+                        }
+                    })
                     .and_then(|i| self.data.as_ref().and_then(|d| d.system_users.get(i)))
                     .map(|u| u.username.clone())
                     .unwrap_or_default();
@@ -298,7 +337,7 @@ impl SshTab for SecurityTab {
                 _ => {}
             }
             match self.detail_modal.handle_key(code) {
-                ModalEvent::Closed => self.detail_user_idx = None,
+                ModalEvent::Closed => self.detail_user = None,
                 ModalEvent::Consumed | ModalEvent::Button(_) => {}
             }
             return None;
@@ -356,7 +395,7 @@ impl SshTab for SecurityTab {
         // Detail modal open: delegate for click-outside-to-close.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
-                self.detail_user_idx = None;
+                self.detail_user = None;
             }
             return None;
         }
@@ -368,8 +407,14 @@ impl SshTab for SecurityTab {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(idx) = self.row_at(mouse.column, mouse.row) {
                     self.selected_user = idx;
-                    self.detail_user_idx = Some(idx);
-                    self.detail_modal.open();
+                    if let Some(user) = self
+                        .data
+                        .as_ref()
+                        .and_then(|d| d.system_users.get(idx))
+                    {
+                        self.detail_user = Some(user.username.clone());
+                        self.detail_modal.open();
+                    }
                 }
             }
             MouseEventKind::ScrollUp => {
@@ -460,8 +505,10 @@ impl SshTab for SecurityTab {
 
         self.row_hitboxes = new_hitboxes;
 
-        // Render the detail modal on top.
-        if let Some(idx) = self.detail_user_idx
+        // Render the detail modal on top. Re-resolve the tracked username to
+        // its current index; if the user disappeared (handled in set_data, but
+        // guard again here for the no-refresh edge case) the modal is skipped.
+        if let Some(idx) = self.detail_index()
             && let Some(user) = self.data.as_ref().and_then(|d| d.system_users.get(idx)).cloned()
         {
             let access = self
@@ -485,7 +532,7 @@ impl SshTab for SecurityTab {
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
-        self.detail_user_idx = None;
+        self.detail_user = None;
         self.pending_confirm = None;
     }
 
@@ -1281,7 +1328,7 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut data = sample_data();
+        let data = sample_data();
         // Default mock config scores A.
         let mut tab = SecurityTab::new();
         tab.set_data(data);
@@ -1668,7 +1715,7 @@ mod tests {
     fn enter_opens_detail_modal() {
         let (tab, _) = open_modal(0);
         assert!(tab.has_modal(), "Enter should open the detail modal");
-        assert_eq!(tab.detail_user_idx, Some(0));
+        assert_eq!(tab.detail_user.as_deref(), Some("alice"));
     }
 
     #[test]
@@ -1677,7 +1724,7 @@ mod tests {
         assert!(tab.has_modal());
         tab.handle_key(KeyCode::Esc);
         assert!(!tab.has_modal(), "Esc closes the detail modal");
-        assert!(tab.detail_user_idx.is_none());
+        assert!(tab.detail_user.is_none());
     }
 
     #[test]
@@ -1722,7 +1769,20 @@ mod tests {
 
     #[test]
     fn deny_action_requires_confirm_then_applies() {
-        let (mut tab, _) = open_modal(1); // bob
+        // bob must START in the allow list so the L5 both-lists mirror
+        // (`allowed_users.retain(|u| u != &username)`) has real work to do.
+        // With allowed_users empty the retain is a no-op and deleting the
+        // mirror line would still pass — exactly the false confidence F15 flags.
+        let mut data = sample_data();
+        data.access_info.allowed_users = vec!["bob".into()];
+        let mut tab = SecurityTab::new();
+        tab.set_data(data);
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        tab.selected_user = 1; // bob
+        tab.handle_key(KeyCode::Enter);
 
         // 'd' opens a confirm modal, does NOT apply yet.
         tab.handle_key(KeyCode::Char('d'));
@@ -1740,7 +1800,15 @@ mod tests {
             other => panic!("expected SshdDenyUser, got {other:?}"),
         }
         let access = &tab.data.as_ref().unwrap().access_info;
-        assert!(access.denied_users.iter().any(|u| u == "bob"));
+        assert!(
+            access.denied_users.iter().any(|u| u == "bob"),
+            "deny should add bob to denied_users"
+        );
+        assert!(
+            !access.allowed_users.iter().any(|u| u == "bob"),
+            "deny must also remove bob from allowed_users (both-lists mirror); \
+             this assertion fails if the retain on line ~225 is dropped"
+        );
     }
 
     #[test]
@@ -1890,7 +1958,102 @@ mod tests {
         let mut data = sample_data();
         data.system_users.truncate(1);
         tab.set_data(data);
-        assert!(tab.selected_user <= 0, "selection clamps into new list");
+        assert!(tab.selected_user == 0, "selection clamps into new list");
         assert!(!tab.has_modal(), "stale modal closed");
+    }
+
+    #[test]
+    fn detail_modal_tracks_user_by_name_across_reorder() {
+        // Open the detail modal on "bob" (index 1 in sample_data). A
+        // mid-modal refresh that reshapes the user list must NOT silently flip
+        // the modal target onto a different user.
+        let (mut tab, _) = open_modal(1); // bob
+        assert_eq!(tab.detail_user.as_deref(), Some("bob"));
+
+        // Re-resolve now, before the reorder, to confirm the index is 1.
+        assert_eq!(tab.detail_index(), Some(1));
+
+        // Reorder: move bob from index 1 to index 0, push a new user after.
+        // (Same length as before, so the old length-based guard in set_data
+        // would NOT have caught this — the bug is precisely that a same-length
+        // reorder flipped the index.)
+        let mut data = sample_data();
+        // Original order: alice(0), bob(1), root(2). Clone the keepers out so
+        // we don't borrow `data.system_users` while reassigning it.
+        let alice = data.system_users[0].clone();
+        let root = data.system_users[2].clone();
+        // New order: bob(0), alice(1), root(2), carol(3).
+        data.system_users = vec![
+            SystemUserInfo {
+                username: "bob".into(),
+                shell: "/bin/zsh".into(),
+                home_dir: "/home/bob".into(),
+                ssh_key_count: 1,
+                authorized_key_count: 1,
+                authorized_keys_preview: Vec::new(),
+            },
+            alice,
+            root,
+            SystemUserInfo {
+                username: "carol".into(),
+                shell: "/bin/bash".into(),
+                home_dir: "/home/carol".into(),
+                ssh_key_count: 0,
+                authorized_key_count: 0,
+                authorized_keys_preview: Vec::new(),
+            },
+        ];
+        tab.set_data(data);
+
+        // The modal is still open and STILL targets bob (by name), now at index 0.
+        assert!(tab.has_modal(), "modal stays open across a reorder");
+        assert_eq!(
+            tab.detail_user.as_deref(),
+            Some("bob"),
+            "modal target is tracked by name, not position"
+        );
+        assert_eq!(
+            tab.detail_index(),
+            Some(0),
+            "bob re-resolved to its new index 0 after the reorder"
+        );
+
+        // And a/d/r resolution follows bob, not the stale index 1 (which is now
+        // alice). Deny must target bob, never alice.
+        tab.handle_key(KeyCode::Char('d'));
+        assert!(tab.pending_confirm.is_some());
+        tab.handle_key(KeyCode::Char('y'));
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::SshdDenyUser { username } => assert_eq!(username, "bob"),
+            other => panic!("reorder must not flip the target; expected bob, got {other:?}"),
+        }
+        // The in-memory mirror also applied to bob, not alice.
+        let access = &tab.data.as_ref().unwrap().access_info;
+        assert!(access.denied_users.iter().any(|u| u == "bob"));
+        assert!(!access.denied_users.iter().any(|u| u == "alice"));
+    }
+
+    #[test]
+    fn detail_modal_closes_when_user_removed_not_just_reordered() {
+        // Open on bob, then remove bob entirely. The modal must close.
+        let (mut tab, _) = open_modal(1); // bob
+        assert_eq!(tab.detail_user.as_deref(), Some("bob"));
+
+        let mut data = sample_data();
+        // Same length as before (3), so the length guard never fires: bob is
+        // replaced by an unrelated user to force the name to be gone.
+        data.system_users[1] = SystemUserInfo {
+            username: "mallory".into(),
+            shell: "/bin/bash".into(),
+            home_dir: "/home/mallory".into(),
+            ssh_key_count: 0,
+            authorized_key_count: 0,
+            authorized_keys_preview: Vec::new(),
+        };
+        tab.set_data(data);
+        assert!(!tab.has_modal(), "modal closes when the tracked user is gone");
+        assert!(tab.detail_user.is_none());
     }
 }

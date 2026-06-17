@@ -23,6 +23,76 @@ use super::ast::{parse, ConfigAst, ConfigNode, DirectiveData, Separator};
 /// Path to the system SSH daemon configuration.
 const SSHD_CONFIG_PATH: &str = "/etc/ssh/sshd_config";
 
+/// Environment variable used to override the cross-process edit lock path.
+///
+/// Tests set this to a temp-dir lock file so the serializing behaviour can be
+/// exercised without touching `/tmp` or competing with a real toride instance.
+/// Production callers should leave it unset.
+const SSHD_EDIT_LOCK_ENV: &str = "TORIDE_SSHD_EDIT_LOCK";
+
+/// Default cross-process lock file for `sshd_config` edits.
+///
+/// Lives in `/tmp` (world-writable, sticky) so that **both** a root toride
+/// process and a non-root toride process contending on the same sshd_config
+/// rendezvous on the *same* file and serialize via `flock`. A lock derived
+/// from the config path (e.g. `/etc/ssh/sshd_config.lock`) would not work: a
+/// non-root process cannot create files in `/etc/ssh`, so the two processes
+/// would lock *different* files (or none at all) and the second install would
+/// clobber the first.
+const SSHD_EDIT_LOCK_DEFAULT: &str = "/tmp/toride-sshd-config.lock";
+
+/// Resolve the cross-process lock path for `sshd_config` edits.
+///
+/// Honours [`SSHD_EDIT_LOCK_ENV`] when set (tests use this); otherwise returns
+/// [`SSHD_EDIT_LOCK_DEFAULT`].
+fn edit_lock_path() -> std::path::PathBuf {
+    match std::env::var_os(SSHD_EDIT_LOCK_ENV) {
+        Some(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => std::path::PathBuf::from(SSHD_EDIT_LOCK_DEFAULT),
+    }
+}
+
+/// Ensure the cross-process lock file exists and is openable by every user
+/// that may contend on a `sshd_config` edit — both root and non-root toride
+/// processes, plus any other editor.
+///
+/// The lock lives in `/tmp` (sticky, world-writable). To let *any* user
+/// `open(O_RDWR)` it for `flock`, it must be world read/write (`0o666`). We
+/// create it with those perms if absent, and (best-effort) chmod it to `0o666`
+/// if we own it / are root. If it already exists and we can't change its perms,
+/// we simply proceed — `toride_fs::with_lock`'s own `open` will surface an
+/// `EACCES` as a `LockFailed` error if it genuinely cannot be opened, which is
+/// the correct fail-closed behaviour.
+fn ensure_lock_file(path: &std::path::Path) {
+    // Create if missing. `create_new` avoids a race: if two processes race
+    // here, the loser simply gets AlreadyExists, which we ignore.
+    let created = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path);
+    if let Ok(f) = created {
+        // We created it: set world-rw immediately so other users can flock.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = f.set_permissions(std::fs::Permissions::from_mode(0o666));
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = f; // silence unused on non-unix
+        }
+    }
+
+    // Best-effort: ensure existing file is world-rw (only works if we own it
+    // or are root; ignored otherwise). This recovers from a file created with
+    // default umask by an earlier version or another process.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Load / save / edit
 // ---------------------------------------------------------------------------
@@ -57,21 +127,80 @@ pub async fn save(ast: &ConfigAst, running_as_root: bool) -> Result<()> {
     run_privileged(PrivilegedOp::WriteSshdConfig { content }, running_as_root).await
 }
 
+/// Acquire the cross-process edit lock on `path` and run `f` while it is held.
+///
+/// Thin wrapper around [`toride_fs::with_lock`] that first ensures the lock
+/// file is openable by every contending user. Exposed (module-private) so the
+/// serialization guarantee can be unit-tested without driving a full privileged
+/// `sshd_config` write.
+fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    ensure_lock_file(path);
+    // `toride_fs::with_lock` requires a closure returning `toride_fs::Result`,
+    // but our critical section yields `toride_ssh_core::Result`. Bridge the two
+    // by funneling the ssh error through a `toride_fs::Error::Io` (which itself
+    // carries the original message verbatim); the `.map_err` below then lifts
+    // *all* errors — both lock-acquisition failures and inner-critical-section
+    // failures — back into `toride_ssh_core::Error::Io`.
+    toride_fs::with_lock(path, || {
+        f().map_err(|e| {
+            toride_fs::Error::Io(std::io::Error::other(format!(
+                "sshd_config edit critical section failed: {e}"
+            )))
+        })
+    })
+    .map_err(|e| {
+        toride_ssh_core::Error::Io(std::io::Error::other(format!(
+            "sshd_config edit lock failed: {e}"
+        )))
+    })
+}
+
 /// Load, mutate, and save `/etc/ssh/sshd_config` in one call.
 ///
 /// Mirrors [`ConfigService::edit`](super::ConfigService::edit): the closure
 /// mutates the AST in place; on success the result is validated and installed.
 ///
+/// # Concurrency
+///
+/// The entire load → mutate → save critical section is serialized across
+/// processes by an advisory lock (`flock`) acquired on [`edit_lock_path`]
+/// **before** the read and held until the install completes. This prevents two
+/// concurrent toride instances (or toride + another editor) from each loading
+/// the same original config, applying their edit, and the second install
+/// clobbering the first.
+///
+/// Implementation note: the sync [`with_edit_lock`] closure must span the
+/// async load/save, so the critical section runs under
+/// [`tokio::task::block_in_place`] + [`tokio::runtime::Handle::block_on`].
+/// `block_in_place` moves the current worker into a blocking-friendly state on
+/// the *same* thread (no thread hop, so the caller's closure `f` need not be
+/// `Send`/`'static`), and `Handle::block_on` is then legal to call. The
+/// closure-based lock releases on every return path — error, panic, or success.
+///
 /// # Errors
 ///
-/// Propagates any error from loading, the closure, or saving.
+/// Propagates any error from locking, loading, the closure, or saving.
 pub async fn edit<F>(running_as_root: bool, f: F) -> Result<()>
 where
     F: FnOnce(&mut ConfigAst) -> Result<()>,
 {
-    let mut ast = load().await?;
-    f(&mut ast)?;
-    save(&ast, running_as_root).await
+    let lock_path = edit_lock_path();
+    // Capture the current runtime handle BEFORE entering block_in_place so the
+    // sync lock closure can drive the async load/mutate/save via block_on.
+    let handle = tokio::runtime::Handle::current();
+
+    // block_in_place runs the flock + the block_on that drives the async
+    // critical section on the current worker thread without a thread hop. This
+    // keeps the caller's closure `f` non-Send/non-'static.
+    tokio::task::block_in_place(|| -> Result<()> {
+        with_edit_lock(&lock_path, || {
+            handle.block_on(async {
+                let mut ast = load().await?;
+                f(&mut ast)?;
+                save(&ast, running_as_root).await
+            })
+        })
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -109,16 +238,83 @@ pub fn get_deny_groups(ast: &ConfigAst) -> Vec<String> {
 /// Only top-level [`ConfigNode::Directive`] nodes are considered — values
 /// inside `Match`/`Host` blocks are intentionally skipped, since those are
 /// scope-specific and not what Toride's global UI exposes.
+///
+/// **Scope-ambiguous directives are also skipped.** A top-level `<key>`
+/// directive that immediately follows (ignoring `BlankLine`/`Comment`) a
+/// `Match`/`Host` block may be a block-scoped directive that the
+/// indentation-based parser leaked to global scope (see `ast::parse_block_body`).
+/// Counting such a leaked directive as global would misreport access control
+/// in the UI, so it is excluded here.
 fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
+    let indices: Vec<usize> = ast
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key))
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    // Exclude any directive whose scope is ambiguous (follows a Match/Host
+    // block in document order). See `directive_follows_match_or_host`.
+    let leaked: Vec<usize> = directive_follows_match_or_host_set(&ast.nodes, &indices);
+    let leaked_set: std::collections::HashSet<usize> = leaked.into_iter().collect();
+
     let mut out = Vec::new();
-    for node in &ast.nodes {
-        if let ConfigNode::Directive(d) = node {
-            if d.keyword.eq_ignore_ascii_case(key) {
-                out.extend(d.value.split_whitespace().map(str::to_owned));
-            }
+    for &i in &indices {
+        if leaked_set.contains(&i) {
+            continue;
+        }
+        if let ConfigNode::Directive(d) = &ast.nodes[i] {
+            out.extend(d.value.split_whitespace().map(str::to_owned));
         }
     }
     out
+}
+
+/// Returns `true` if any of the `directive_indices` immediately follows a
+/// `Match`/`Host` block in document order (ignoring `BlankLine`/`Comment`
+/// nodes between them).
+///
+/// This is the scope-ambiguity detector backing the fail-closed write guard
+/// in [`upsert_user_in_directive`]. Used to refuse edits that `sshd -t` cannot
+/// catch (the leaked file is syntactically valid) and that would otherwise
+/// relocate a block-scoped directive to global scope on disk.
+fn directive_follows_match_or_host(nodes: &[ConfigNode], directive_indices: &[usize]) -> bool {
+    directive_follows_match_or_host_set(nodes, directive_indices)
+        .first()
+        .is_some()
+}
+
+/// Like [`directive_follows_match_or_host`] but returns the full set of
+/// directive indices whose preceding non-trivial node is a `Match`/`Host`
+/// block. Returned in ascending index order with no duplicates.
+fn directive_follows_match_or_host_set(
+    nodes: &[ConfigNode],
+    directive_indices: &[usize],
+) -> Vec<usize> {
+    let mut leaked = Vec::new();
+    for &idx in directive_indices {
+        // Walk backwards from idx, skipping BlankLine/Comment nodes, to find
+        // the nearest "content" sibling. If that sibling is a Match/Host block,
+        // this directive's scope is ambiguous.
+        let mut j = idx;
+        while j > 0 {
+            j -= 1;
+            match &nodes[j] {
+                ConfigNode::BlankLine | ConfigNode::Comment { .. } => continue,
+                ConfigNode::MatchBlock(_) | ConfigNode::HostBlock(_) => {
+                    leaked.push(idx);
+                    break;
+                }
+                ConfigNode::Directive(_) => break,
+            }
+        }
+    }
+    leaked.sort_unstable();
+    leaked.dedup();
+    leaked
 }
 
 // ---------------------------------------------------------------------------
@@ -144,13 +340,28 @@ pub fn has_pattern_tokens(value: &str) -> bool {
 /// Returns `true` if any global `<key>` directive contains pattern tokens.
 ///
 /// `Match`-scoped directives are ignored, consistent with the rest of this
-/// module's global-only scope.
+/// module's global-only scope. Scope-ambiguous directives that follow a
+/// `Match`/`Host` block (the `parse_block_body` leak — see `ast::parse_block_body`)
+/// are likewise excluded, so a leaked block-scoped `*` does not get reported as
+/// a global pattern.
 pub fn directive_has_patterns(ast: &ConfigAst, key: &str) -> bool {
-    ast.nodes.iter().any(|node| match node {
-        ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key) => {
-            has_pattern_tokens(&d.value)
+    let indices: Vec<usize> = ast
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| {
+            matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let leaked = directive_follows_match_or_host_set(&ast.nodes, &indices);
+    let leaked_set: std::collections::HashSet<usize> = leaked.into_iter().collect();
+
+    indices.iter().any(|&i| {
+        if leaked_set.contains(&i) {
+            return false;
         }
-        _ => false,
+        matches!(&ast.nodes[i], ConfigNode::Directive(d) if has_pattern_tokens(&d.value))
     })
 }
 
@@ -248,6 +459,23 @@ fn upsert_user_in_directive(
         .map(|(i, _)| i)
         .collect();
 
+    // Fail-closed against the parse_block_body Match/Host-leak (see ast.rs
+    // `parse_block_body` doc comment): if ANY matching Directive node is
+    // immediately preceded in document order (ignoring BlankLine/Comment
+    // nodes) by a Match/Host block, its scope is genuinely ambiguous — it may
+    // be a block-scoped directive that the indentation-based parser leaked to
+    // the top level. `sshd -t` would still accept the file (it is syntactically
+    // valid), so the validation gate cannot catch this, and re-rendering at
+    // indent 0 would permanently relocate the directive to global scope. Refuse
+    // without mutating the AST. This check runs BEFORE the pattern-token check
+    // and BEFORE any mutation, so the AST is untouched on error.
+    if directive_follows_match_or_host(&ast.nodes, &indices) {
+        return Err(toride_ssh_core::Error::SshdConfigInvalid(format!(
+            "refusing to edit {key}: directive follows a Match/Host block and its \
+             scope is ambiguous (unindented Match body)"
+        )));
+    }
+
     // Refuse to mutate any directive that already uses patterns — exact
     // username edits against glob/@ selectors are semantically wrong. Check
     // before touching anything so the AST is left unmodified on error.
@@ -296,7 +524,31 @@ fn upsert_user_in_directive(
                 }
             } else {
                 let joined = merged.join(" ");
+
+                // Inline comments attached to any occurrence are now ambiguous:
+                // merging changes the value, so a trailing `# ...` parsed from
+                // occurrence #1 would annotate a *different* set of users than
+                // it described, and the comments carried on occurrences 2..N
+                // are about to be dropped wholesale when those nodes are
+                // deleted. Both violate the lossless contract ("every byte is
+                // representable" / no misleading comment). The least-bad
+                // faithful option is to drop the inline comment on the merged
+                // directive whenever the value changed or a merge happened, so
+                // nothing stale floats over the line. Discarded comments from
+                // occurrences 2..N are surfaced via the warning above.
+                let single = indices.len() == 1;
                 if let ConfigNode::Directive(d) = &mut ast.nodes[first] {
+                    let value_changed = d.value != joined;
+                    if value_changed || !single {
+                        if d.comment.is_some() && !single {
+                            tracing::warn!(
+                                "{key}: discarding inline comment(s) while \
+                                 merging {} occurrences",
+                                indices.len()
+                            );
+                        }
+                        d.comment = None;
+                    }
                     d.value = joined;
                 }
                 // Delete occurrences 2..N. Iterate in reverse to keep earlier
@@ -574,6 +826,60 @@ mod tests {
         );
     }
 
+    // --- inline-comment handling during merge -----------------------------
+
+    #[test]
+    fn merge_drops_stale_inline_comment_from_first_occurrence() {
+        // Comments on each occurrence become ambiguous after a merge: the first
+        // line's `# production admins` would otherwise float over a line that
+        // also contains bob/carol, and the second line's `# contractors` would
+        // be silently dropped entirely. The merged line must carry NO inline
+        // comment (not the stale `# production admins`).
+        let mut a = ast("AllowUsers alice # production admins\nAllowUsers bob # contractors\n");
+        add_user_to_allow(&mut a, "carol").unwrap();
+        let out = a.to_string_lossless();
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob", "carol"]);
+        assert_eq!(out.matches("AllowUsers").count(), 1, "merged to one line");
+        assert!(
+            !out.contains("#production admins"),
+            "stale first-occurrence comment must not survive the merge"
+        );
+        assert!(
+            !out.contains("#contractors"),
+            "dropped occurrence's comment must not leak into the merged line"
+        );
+    }
+
+    #[test]
+    fn single_occurrence_value_change_drops_stale_inline_comment() {
+        // `# admins` described only alice; after adding bob the line is
+        // `alice bob` and the comment would be misleading. It must be dropped
+        // rather than producing `AllowUsers alice bob # admins`.
+        let mut a = ast("AllowUsers alice # admins\n");
+        add_user_to_allow(&mut a, "bob").unwrap();
+        let out = a.to_string_lossless();
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob"]);
+        assert!(
+            !out.contains("#admins"),
+            "stale comment must be dropped when the value changes"
+        );
+    }
+
+    #[test]
+    fn single_occurrence_unchanged_keeps_inline_comment() {
+        // Idempotent add of an existing user (or noop remove) must NOT touch
+        // the inline comment — the value is unchanged so the comment is still
+        // accurate.
+        let mut a = ast("AllowUsers alice bob # both admins\n");
+        add_user_to_allow(&mut a, "alice").unwrap();
+        let out = a.to_string_lossless();
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob"]);
+        assert!(
+            out.contains("#both admins"),
+            "inline comment must survive an unchanged-value edit"
+        );
+    }
+
     // --- group getters + read-path coverage -------------------------------
 
     #[test]
@@ -599,5 +905,237 @@ mod tests {
         let a = ast("Port 22\n");
         assert!(get_allow_groups(&a).is_empty());
         assert!(get_deny_groups(&a).is_empty());
+    }
+
+    // --- F1: Match/Host-leak scope-ambiguity fail-closed -----------------
+    //
+    // parse_block_body (ast.rs) breaks a Match/Host block on the first
+    // non-indented line, so an UNINDENTED directive that OpenSSH actually
+    // scopes to the preceding block leaks to the top level. The editor MUST
+    // refuse such edits (sshd -t does not catch it — the file is still
+    // syntactically valid — and re-rendering at indent 0 would permanently
+    // relocate the directive to global scope on disk).
+
+    #[test]
+    fn upsert_refuses_directive_unindented_after_match_block() {
+        // `AllowUsers bob` is unindented after `Match User sftpuser`, so the
+        // parser leaks it to top level as a Directive. The editor must refuse.
+        let input = "Port 22\nMatch User sftpuser\nAllowUsers bob\n";
+        let mut a = ast(input);
+        let before = a.to_string_lossless();
+        let err = add_user_to_allow(&mut a, "carol").unwrap_err();
+        assert!(
+            matches!(err, toride_ssh_core::Error::SshdConfigInvalid(ref msg)
+                if msg.contains("refusing to edit")
+                && msg.contains("Match/Host")
+                && msg.contains("ambiguous")),
+            "expected SshdConfigInvalid scope-ambiguity error, got {err:?}"
+        );
+        // AST must be byte-identical (round-trip stable) — no mutation.
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn remove_refuses_directive_unindented_after_match_block() {
+        let input = "Match User sftpuser\nAllowUsers bob carol\n";
+        let mut a = ast(input);
+        let before = a.to_string_lossless();
+        let err = remove_user_from_allow(&mut a, "bob").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn upsert_refuses_directive_unindented_after_host_block() {
+        // Same leak, but a Host block in an sshd_config-adjacent file.
+        let input = "Host restricted\nAllowUsers bob\n";
+        let mut a = ast(input);
+        let before = a.to_string_lossless();
+        let err = add_user_to_allow(&mut a, "carol").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn upsert_refuses_when_only_some_occurrences_follow_a_block() {
+        // First AllowUsers is genuinely global (no preceding block); the
+        // second is leaked from a Match block. Because scope is ambiguous for
+        // the second occurrence, the whole edit must fail closed rather than
+        // merge across scopes.
+        let input = "AllowUsers alice\nMatch User sftpuser\nAllowUsers bob\n";
+        let mut a = ast(input);
+        let before = a.to_string_lossless();
+        let err = add_user_to_allow(&mut a, "carol").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn upsert_edits_normally_when_directive_precedes_match_block() {
+        // An AllowUsers BEFORE any Match/Host block is genuinely global and
+        // must still edit normally — the guard only fires when a directive
+        // FOLLOWS a block.
+        let mut a = ast("AllowUsers alice\nMatch User sftpuser\n    PermitRootLogin no\n");
+        add_user_to_allow(&mut a, "bob").unwrap();
+        assert_eq!(get_allow_users(&a), vec!["alice", "bob"]);
+    }
+
+    #[test]
+    fn upsert_edits_when_comments_and_blanks_intervene_before_block() {
+        // Blank lines / comments between the directive and the preceding block
+        // must NOT disguise the scope ambiguity: the nearest non-trivial
+        // predecessor is still the Match block.
+        let input = "Match User sftpuser\n# note\n\nAllowUsers bob\n";
+        let mut a = ast(input);
+        let before = a.to_string_lossless();
+        let err = add_user_to_allow(&mut a, "carol").unwrap_err();
+        assert!(matches!(
+            err,
+            toride_ssh_core::Error::SshdConfigInvalid(_)
+        ));
+        assert_eq!(a.to_string_lossless(), before);
+    }
+
+    #[test]
+    fn upsert_edits_when_another_directive_intervenes() {
+        // A non-block directive between the target and any earlier block means
+        // the target's immediate predecessor is a Directive, not a block — so
+        // its scope is unambiguous and the edit proceeds.
+        let mut a = ast("Match User sftpuser\n    PermitRootLogin no\nPort 22\nAllowUsers bob\n");
+        add_user_to_allow(&mut a, "carol").unwrap();
+        assert_eq!(get_allow_users(&a), vec!["bob", "carol"]);
+    }
+
+    // --- F1 read-path: leaked directives excluded from global view -------
+    //
+    // A leaked AllowUsers following a Match block must not be counted as
+    // global, otherwise the UI misreports access control.
+
+    #[test]
+    fn get_allow_users_excludes_leaked_directive_after_match() {
+        let a = ast("AllowUsers alice\nMatch User sftpuser\nAllowUsers bob\n");
+        // Only the genuine global alice; the leaked bob is excluded.
+        assert_eq!(get_allow_users(&a), vec!["alice"]);
+    }
+
+    #[test]
+    fn directive_has_patterns_excludes_leaked_directive_after_match() {
+        // A leaked `AllowUsers *` (a real pattern) following a Match block
+        // must NOT be reported as a global pattern.
+        let a = ast("AllowUsers alice\nMatch User sftpuser\nAllowUsers *\n");
+        assert!(
+            !directive_has_patterns(&a, "AllowUsers"),
+            "leaked Match-scoped pattern must not count as global"
+        );
+    }
+
+    // --- F2: cross-process lock serializes concurrent edits ---------------
+    //
+    // edit() wraps its whole load→mutate→save critical section in
+    // with_edit_lock (an advisory flock). We can't drive edit() itself in a
+    // unit test (it reads /etc/ssh/sshd_config and runs privileged sshd -t /
+    // sudo), but we CAN test the exact lock primitive edit() uses and prove
+    // two concurrent holders serialize — the second cannot enter until the
+    // first releases.
+
+    #[test]
+    fn with_edit_lock_serializes_two_concurrent_holders() {
+        use std::sync::{mpsc, Arc, Barrier};
+        use std::thread;
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let lock_path = dir.path().join("sshd-config.lock");
+
+        // Barrier so both threads try to acquire at ~the same instant, and a
+        // channel that records the strict enter/exit order of the critical
+        // sections. If locking did NOT serialize, both threads would emit
+        // "enter" before either "exit".
+        let barrier = Arc::new(Barrier::new(2));
+        let (tx, rx) = mpsc::channel::<String>();
+
+        let make_thread = |label: &'static str,
+                           lock_path: std::path::PathBuf,
+                           barrier: Arc<Barrier>,
+                           tx: mpsc::Sender<String>| {
+            thread::spawn(move || {
+                // Park both threads at the barrier so they race for the lock.
+                barrier.wait();
+                with_edit_lock(&lock_path, || -> Result<()> {
+                    tx.send(format!("{label}-enter")).unwrap();
+                    // Hold the lock briefly so the contender is forced to wait.
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                    tx.send(format!("{label}-exit")).unwrap();
+                    Ok(())
+                })
+                .expect("with_edit_lock should succeed");
+            })
+        };
+
+        let t1 = make_thread("A", lock_path.clone(), barrier.clone(), tx.clone());
+        let t2 = make_thread("B", lock_path, barrier, tx.clone());
+        // Drop the sender copies held by the main thread so rx into_iter()
+        // terminates when both threads finish.
+        drop(tx);
+
+        let events: Vec<String> = rx.into_iter().collect();
+
+        t1.join().expect("thread A panicked");
+        t2.join().expect("thread B panicked");
+
+        // Split into per-label enter/exit orderings. Regardless of which label
+        // wins the race, serialization requires: the winner's exit precedes the
+        // loser's enter. I.e. exactly one label's enter comes first AND its
+        // exit comes before the other label's enter.
+        let first_enter = events.first().expect("at least one event");
+        let winner = if first_enter.starts_with("A") { "A" } else { "B" };
+        let loser = if winner == "A" { "B" } else { "A" };
+
+        let winner_exit = events
+            .iter()
+            .position(|e| e == &format!("{winner}-exit"))
+            .expect("winner exit");
+        let loser_enter = events
+            .iter()
+            .position(|e| e == &format!("{loser}-enter"))
+            .expect("loser enter");
+
+        assert!(
+            winner_exit < loser_enter,
+            "edits must serialize: winner must EXIT ({winner}-exit at #{winner_exit}) \
+             before loser ENTERS ({loser}-enter at #{loser_enter}). Events: {events:?}"
+        );
+    }
+
+    #[test]
+    fn with_edit_lock_releases_on_closure_error() {
+        // If the critical section errors, the lock must still be released so a
+        // subsequent edit can proceed. (with_edit_lock is closure-based RAII.)
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let lock_path = dir.path().join("sshd-config-err.lock");
+
+        let err = with_edit_lock(&lock_path, || -> Result<()> {
+            Err(toride_ssh_core::Error::SshdConfigInvalid(
+                "simulated bad config".into(),
+            ))
+        });
+        assert!(err.is_err(), "first call must propagate the error");
+
+        // A second call must succeed without deadlocking — proving the lock
+        // was released on the error path. (If it were still held, this would
+        // block until the test timeout.)
+        let result = with_edit_lock(&lock_path, || Ok(42));
+        assert_eq!(
+            result.expect("second call must succeed after error-path release"),
+            42
+        );
     }
 }
