@@ -24,12 +24,14 @@ ratatui-interact = "0.5.3"
 toride-ssh = { path = "../toride-ssh", features = ["full"] }
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tracing-appender = "0.2"
 chrono = { workspace = true }
 serde_json = { workspace = true }
 toride-status = { path = "../toride-status" }
 rattles = "0.3.1"
 libc = "0.2"
+dirs = { workspace = true }
 
 # ── Live-data backend crates (read-only Phase 1 integrations) ────────────────
 # Feature sets chosen for live read data + doctor diagnostics; write-paths land
