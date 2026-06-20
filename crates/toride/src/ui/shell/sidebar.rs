@@ -16,7 +16,6 @@ use ratatui::{
 use crate::data::SidebarItem;
 use crate::ui::helpers::anim::AnimatedFloats;
 use crate::ui::helpers::color::lerp_color;
-use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 
 /// Expanded sidebar width.
@@ -203,7 +202,6 @@ impl Sidebar {
         _active: usize,
         focused: bool,
         collapsed: bool,
-        ssh_target: &str,
     ) {
         let block = Block::default()
             .borders(Borders::RIGHT)
@@ -230,8 +228,8 @@ impl Sidebar {
             list_top = inner.y + 2;
         }
 
-        // Reserve two rows at the bottom for the SSH footer.
-        let footer_h: u16 = if collapsed { 1 } else { 2 };
+        // No footer reserved at the bottom (the SSH-connected indicator was removed).
+        let footer_h: u16 = 0;
         let list_bottom = inner.bottom().saturating_sub(footer_h + 1);
         let foot_y = inner.bottom().saturating_sub(footer_h);
 
@@ -287,32 +285,6 @@ impl Sidebar {
                     Rect::new(inner.x, y, 1, 1),
                 );
             }
-        }
-
-        // ── SSH footer ──────────────────────────────────────────────────────
-        let dot = Span::styled(" ● ", Style::new().fg(p.ok));
-        if collapsed {
-            frame.render_widget(
-                Paragraph::new(Line::from(dot)),
-                Rect::new(inner.x, foot_y, inner.width, 1),
-            );
-        } else {
-            let status = Line::from(vec![
-                dot,
-                Span::styled("SSH connected", Style::new().fg(p.text_dim)),
-            ]);
-            let target = Line::from(Span::styled(
-                format!("   {}", truncate_str(ssh_target, inner.width.saturating_sub(3) as usize)),
-                Style::new().fg(p.text_muted),
-            ));
-            frame.render_widget(
-                Paragraph::new(status),
-                Rect::new(inner.x, foot_y, inner.width, 1),
-            );
-            frame.render_widget(
-                Paragraph::new(target),
-                Rect::new(inner.x, foot_y + 1, inner.width, 1),
-            );
         }
     }
 

@@ -347,8 +347,6 @@ pub struct DashboardData {
     pub activity: Vec<ActivityEntry>,
     /// Host summary.
     pub host: HostInfo,
-    /// Connected SSH user@host shown at the bottom of the sidebar.
-    pub ssh_target: String,
 }
 
 impl DashboardData {
@@ -482,7 +480,6 @@ impl DashboardData {
             updates,
             activity,
             host,
-            ssh_target: "kaito@shimokita-edge".into(),
         }
     }
 }

@@ -936,7 +936,6 @@ impl DashboardScreen {
             self.active,
             self.focus.is_focused(&ShellFocus::Sidebar),
             collapsed,
-            &self.data.ssh_target,
         );
 
         render_footer(
