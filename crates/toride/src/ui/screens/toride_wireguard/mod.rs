@@ -164,6 +164,14 @@ impl WireguardContent {
         false
     }
 
+    /// Live interface count for the sidebar badge. `None` when the backend is
+    /// unavailable so the badge stays honestly empty at cold start rather than
+    /// flashing a fabricated number.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.interfaces.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace the interfaces list and clamp scroll.

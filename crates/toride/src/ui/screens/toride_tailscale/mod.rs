@@ -179,6 +179,13 @@ impl TailscaleContent {
         false
     }
 
+    /// Live peer count for the sidebar badge. `None` when the backend is
+    /// unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.peers.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace the local-node status fields (drives the status panel).

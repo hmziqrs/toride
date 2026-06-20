@@ -161,6 +161,13 @@ impl UsersContent {
         false
     }
 
+    /// Live user count for the sidebar badge. `None` when the backend is
+    /// unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.users.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace the users list and clamp scroll.

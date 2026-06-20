@@ -1,10 +1,11 @@
-//! Dashboard domain models and mock seed data.
+//! Dashboard domain models and honest empty seed data.
 //!
 //! These are lightweight presentation models that drive the dashboard screen.
-//! The first iteration is seeded with static mock data via [`DashboardData::mock`]
-//! that mirrors the design mockup; live [`TorideStatus`](crate::status::TorideStatus)
-//! data is layered on top by the screen where available (header gauges, system
-//! info card).
+//! [`DashboardData::empty`] seeds an honest cold-start skeleton (no fabricated
+//! host info, modules, updates, activity, or sidebar badges); live
+//! [`TorideStatus`](crate::status::TorideStatus) data is layered on top by the
+//! screen where available (header gauges, system info card) via the
+//! `DashboardScreen::set_*` setters as collectors report.
 
 use crate::ui::theme::Palette;
 use ratatui::style::Color;
@@ -75,69 +76,6 @@ pub struct Module {
     pub summary: String,
     /// Secondary detail line (e.g. `· port 2202 · 2 keys`).
     pub detail: String,
-}
-
-// ── Update ───────────────────────────────────────────────────────────────────
-
-/// An available package/module update listed in the "Updates Available" panel.
-#[derive(Clone, Debug)]
-pub struct ModuleUpdate {
-    /// Package / module name.
-    pub name: String,
-    /// Current version, if known (`None` renders as `—`).
-    pub from: Option<String>,
-    /// Target version to upgrade to.
-    pub to: String,
-    /// Source/tag badge (e.g. `apt`, `curl`, `compose`).
-    pub badge: String,
-}
-
-// ── Activity ─────────────────────────────────────────────────────────────────
-
-/// Outcome kind of a [`ActivityEntry`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ActivityKind {
-    /// Succeeded.
-    Ok,
-    /// Warning / advisory.
-    Warn,
-    /// In-progress / process action.
-    Process,
-}
-
-impl ActivityKind {
-    /// Leading glyph for the entry.
-    #[must_use]
-    pub fn glyph(self) -> &'static str {
-        match self {
-            ActivityKind::Ok => "✓",
-            ActivityKind::Warn => "!",
-            ActivityKind::Process => "↻",
-        }
-    }
-
-    /// Palette colour for the glyph.
-    #[must_use]
-    pub fn color(self, p: Palette) -> Color {
-        match self {
-            ActivityKind::Ok => p.ok,
-            ActivityKind::Warn => p.warn,
-            ActivityKind::Process => p.accent3,
-        }
-    }
-}
-
-/// A timestamped entry in the "Recently Installed" activity log.
-#[derive(Clone, Debug)]
-pub struct ActivityEntry {
-    /// Wall-clock time label (e.g. `14:32`).
-    pub time: String,
-    /// Outcome kind.
-    pub kind: ActivityKind,
-    /// Message describing what happened.
-    pub message: String,
-    /// Duration label (e.g. `2.1s`).
-    pub duration: String,
 }
 
 // ── Sidebar ──────────────────────────────────────────────────────────────────
@@ -304,8 +242,9 @@ pub struct SidebarItem {
 
 // ── Host info ────────────────────────────────────────────────────────────────
 
-/// Host summary shown in the top-right system info card. Mock values are used
-/// until live [`TorideStatus`](crate::status::TorideStatus) data is available.
+/// Host summary shown in the top-right system info card. All fields default to
+/// the honest placeholder `—` until live [`TorideStatus`](crate::status::TorideStatus)
+/// data is available, so nothing fabricated flashes before the first poll.
 #[derive(Clone, Debug)]
 pub struct HostInfo {
     /// Hostname.
@@ -326,47 +265,66 @@ pub struct HostInfo {
     pub load: String,
 }
 
+impl HostInfo {
+    /// Honest empty host info: every field is the `—` placeholder so the system
+    /// card never shows fabricated hostname / OS / CPU / memory values at cold
+    /// start. [`DashboardScreen::set_status`] overlays live values once the
+    /// first [`TorideStatus`](crate::status::TorideStatus) lands.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            hostname: "—".into(),
+            os: "—".into(),
+            cpu: "—".into(),
+            vcpu: "—".into(),
+            mem_used: "—".into(),
+            mem_total: "—".into(),
+            uptime: "—".into(),
+            load: "—".into(),
+        }
+    }
+}
+
 // ── Aggregate ────────────────────────────────────────────────────────────────
 
 /// All data backing the dashboard screen.
 #[derive(Clone, Debug)]
 pub struct DashboardData {
-    /// Number of installed modules (numerator of the stat card).
-    pub modules_installed: usize,
-    /// Total number of modules (denominator of the stat card).
-    pub modules_total: usize,
-    /// Number of staged changes.
-    pub staged: usize,
     /// Sidebar navigation items.
     pub sidebar: Vec<SidebarItem>,
     /// Module cards.
     pub modules: Vec<Module>,
-    /// Available updates.
-    pub updates: Vec<ModuleUpdate>,
-    /// Recent activity log.
-    pub activity: Vec<ActivityEntry>,
     /// Host summary.
     pub host: HostInfo,
 }
 
 impl DashboardData {
-    /// Number of available updates (drives the `· N` label).
+    /// Honest empty/skeleton default for cold start.
+    ///
+    /// Every field is empty or a placeholder: NO fabricated host info, module
+    /// cards, or sidebar badges. Collectors overlay live values as they report
+    /// (see `DashboardScreen::set_*`); until then the dashboard renders honest
+    /// `—` / "collecting…" / empty states rather than mock data that flashes
+    /// for ~2s and could be mistaken for real host state.
+    ///
+    /// The single "collecting system status…" sentinel module gives the empty
+    /// grid a non-blank first card so keyboard navigation has a valid bound
+    /// before the live managed-services snapshot lands.
+    ///
+    /// NOTE: the old `modules_installed` / `modules_total` / `staged` /
+    /// `updates` / `activity` fields were removed — they were never populated
+    /// with real data (all live data lives in the per-section content structs)
+    /// and were pure dead public-API surface. The two dashboard reads that
+    /// referenced them now use literal `0` / the live `pending_total` Option.
     #[must_use]
-    pub fn updates_count(&self) -> usize {
-        self.updates.len()
-    }
-
-    /// Seed the dashboard with static mock data mirroring the design mockup.
-    #[must_use]
-    #[expect(clippy::too_many_lines, reason = "static seed data is verbose but flat")]
-    pub fn mock() -> Self {
+    pub fn empty() -> Self {
         let sidebar = vec![
             SidebarItem { icon: "◑", section: Section::Dashboard, badge: None },
-            SidebarItem { icon: "▣", section: Section::Tools, badge: Some("78".into()) },
+            SidebarItem { icon: "▣", section: Section::Tools, badge: None },
             SidebarItem { icon: "▲", section: Section::Templates, badge: None },
             SidebarItem { icon: "◆", section: Section::Ssh, badge: None },
-            SidebarItem { icon: "▦", section: Section::Firewall, badge: Some("active".into()) },
-            SidebarItem { icon: "✦", section: Section::Fail2ban, badge: Some("12".into()) },
+            SidebarItem { icon: "▦", section: Section::Firewall, badge: None },
+            SidebarItem { icon: "✦", section: Section::Fail2ban, badge: None },
             SidebarItem { icon: "⛓", section: Section::Tailscale, badge: None },
             SidebarItem { icon: "⚙", section: Section::Harden, badge: None },
             SidebarItem { icon: "◇", section: Section::WireGuard, badge: None },
@@ -383,110 +341,25 @@ impl DashboardData {
             SidebarItem { icon: "⚙", section: Section::Settings, badge: None },
         ];
 
-        let modules = vec![
-            Module {
-                icon: "◆",
-                name: "ssh hardening".into(),
-                status: ModuleStatus::Installed,
-                summary: "PermitRootLogin no · PasswordAuth no.".into(),
-                detail: "· port 2202 · 2 keys".into(),
-            },
-            Module {
-                icon: "▦",
-                name: "ufw firewall".into(),
-                status: ModuleStatus::Active,
-                summary: "Default deny in, only HTTP(S) + SSH open.".into(),
-                detail: "· 6 rules".into(),
-            },
-            Module {
-                icon: "✦",
-                name: "fail2ban".into(),
-                status: ModuleStatus::Active,
-                summary: "sshd + traefik-auth jails, 1h ban.".into(),
-                detail: "· 12 bans/24h".into(),
-            },
-            Module {
-                icon: "›",
-                name: "traefik".into(),
-                status: ModuleStatus::Ready,
-                summary: "Cloudflare-only mode · DNS-01 cert.".into(),
-                detail: "· v3.2 · CF-only".into(),
-            },
-            Module {
-                icon: "◉",
-                name: "dokploy".into(),
-                status: ModuleStatus::Active,
-                summary: "panel.kaito.dev · 8 containers.".into(),
-                detail: "· v0.18.2".into(),
-            },
-            Module {
-                icon: "▶",
-                name: "system packages".into(),
-                status: ModuleStatus::Installed,
-                summary: "tmux, neovim, btop, fzf, ripgrep, bat…".into(),
-                detail: "· 28 pkgs".into(),
-            },
-            Module {
-                icon: "◆",
-                name: "bun runtime".into(),
-                status: ModuleStatus::Installed,
-                summary: "Bun JS runtime + package manager.".into(),
-                detail: "· 1.1.34".into(),
-            },
-            Module {
-                icon: "◆",
-                name: "docker engine".into(),
-                status: ModuleStatus::Active,
-                summary: "Docker CE + compose plugin.".into(),
-                detail: "· 27.4.1".into(),
-            },
-        ];
-
-        let updates = vec![
-            ModuleUpdate { name: "bun".into(), from: Some("1.1.34".into()), to: "1.2.0".into(), badge: "curl".into() },
-            ModuleUpdate { name: "dokploy".into(), from: Some("0.18.2".into()), to: "0.19.0".into(), badge: "compose".into() },
-            ModuleUpdate { name: "neovim".into(), from: Some("0.10.0".into()), to: "0.10.2".into(), badge: "apt".into() },
-            ModuleUpdate { name: "docker-ce".into(), from: Some("27.4.1".into()), to: "27.4.2".into(), badge: "apt".into() },
-            ModuleUpdate { name: "ripgrep".into(), from: None, to: "14.1.1".into(), badge: "apt".into() },
-        ];
-
-        let activity = vec![
-            ActivityEntry { time: "14:32".into(), kind: ActivityKind::Ok, message: "fail2ban: jail [sshd] active".into(), duration: "2.1s".into() },
-            ActivityEntry { time: "14:31".into(), kind: ActivityKind::Ok, message: "ufw: enabled with 6 rules".into(), duration: "0.4s".into() },
-            ActivityEntry { time: "14:30".into(), kind: ActivityKind::Warn, message: "ssh: rotated host keys — old fp purged".into(), duration: "1.8s".into() },
-            ActivityEntry { time: "14:28".into(), kind: ActivityKind::Process, message: "apt-get update && dist-upgrade".into(), duration: "31s".into() },
-            ActivityEntry { time: "14:24".into(), kind: ActivityKind::Ok, message: "docker-ce 27.4.1 + compose plugin".into(), duration: "44s".into() },
-            ActivityEntry { time: "13:52".into(), kind: ActivityKind::Ok, message: "bun 1.1.34 → /home/kaito/.bun".into(), duration: "12s".into() },
-            ActivityEntry { time: "13:49".into(), kind: ActivityKind::Ok, message: "apt: tmux neovim btop fzf ripgrep bat".into(), duration: "8.2s".into() },
-        ];
-
-        let host = HostInfo {
-            hostname: "shimokita-edge".into(),
-            os: "Ubuntu 24.04.1 LTS".into(),
-            cpu: "Intel Xeon E5-2680 v4".into(),
-            vcpu: "4 vCPU".into(),
-            mem_used: "8 GB".into(),
-            mem_total: "80 GB".into(),
-            uptime: "12d 4h 17m".into(),
-            load: "0.93 0.87 1.22".into(),
-        };
+        let modules = vec![Module {
+            icon: "·",
+            name: "collecting system status…".into(),
+            status: ModuleStatus::Offline,
+            summary: "live sections appear once backends report.".into(),
+            detail: "· waiting for collectors".into(),
+        }];
 
         Self {
-            modules_installed: 8,
-            modules_total: 8,
-            staged: 0,
             sidebar,
             modules,
-            updates,
-            activity,
-            host,
+            host: HostInfo::empty(),
         }
     }
 }
 
 impl Default for DashboardData {
     fn default() -> Self {
-        Self::mock()
+        Self::empty()
     }
 }
 
@@ -495,35 +368,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mock_has_expected_counts() {
-        let d = DashboardData::mock();
-        assert_eq!(d.modules.len(), d.modules_installed);
-        assert_eq!(d.modules_installed, 8);
-        assert_eq!(d.modules_total, 8);
-        assert_eq!(d.updates_count(), 5);
-        assert_eq!(d.staged, 0);
+    fn empty_has_honest_defaults() {
+        let d = DashboardData::empty();
+        // A single honest sentinel module (so the grid is not blank and
+        // keyboard navigation has a valid bound before collectors report).
+        assert_eq!(d.modules.len(), 1, "exactly one collecting-sentinel module");
+        // Host info is the honest `—` placeholder everywhere.
+        assert_eq!(d.host.hostname, "—");
+        assert_eq!(d.host.os, "—");
+        assert_eq!(d.host.uptime, "—");
     }
 
     #[test]
     fn sidebar_starts_with_dashboard() {
-        let d = DashboardData::mock();
+        let d = DashboardData::empty();
         assert_eq!(d.sidebar[0].section, Section::Dashboard);
         assert_eq!(d.sidebar.len(), 20);
     }
 
     #[test]
-    fn first_update_without_from_renders_dash_intent() {
-        let d = DashboardData::mock();
-        // ripgrep has no current version.
-        let rg = d.updates.iter().find(|u| u.name == "ripgrep").unwrap();
-        assert!(rg.from.is_none());
+    fn sidebar_has_no_fabricated_badges() {
+        // No hardcoded badge strings at cold start — every badge is None until
+        // a live collector reports. (The previous mock seeded "78"/"active"/"12".)
+        let d = DashboardData::empty();
+        for item in &d.sidebar {
+            assert!(
+                item.badge.is_none(),
+                "section {:?} must not carry a fabricated badge at cold start",
+                item.section,
+            );
+        }
     }
 
     #[test]
     fn status_colors_differ_by_variant() {
         let p = Palette::default();
         assert_ne!(ModuleStatus::Installed.color(p), ModuleStatus::Active.color(p));
-        assert_ne!(ActivityKind::Ok.color(p), ActivityKind::Warn.color(p));
     }
 
     /// Regression for the green-✓-on-offline bug: `offline` must not share the

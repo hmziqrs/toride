@@ -65,6 +65,12 @@ pub struct BackupDataBundle {
     /// Whether the systemd timer for the default `toride-backup` job is active
     /// (best-effort; backend currently stubs this to `false`).
     pub timer_active: Option<bool>,
+    /// Informational note explaining a negative schedule reading (e.g.
+    /// `"systemd not detected"` on a host without systemd). Populated by the
+    /// backend's `ScheduleManager::schedule_note()` so the UI can surface WHY
+    /// the schedule read as false, distinguishing "no schedule configured"
+    /// from "systemd absent". `None` when the note is empty or unavailable.
+    pub schedule_note: Option<String>,
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
@@ -270,14 +276,24 @@ async fn collect_real_backup(
         // here so the UI lights up automatically once the systemd plumbing
         // lands. A failure degrades that field to None (unknown) rather than
         // failing the whole collection.
+        //
+        // `schedule_note` is captured from the SAME ScheduleManager instance so
+        // the UI can surface WHY a negative reading occurred (e.g. "systemd
+        // not detected" on macOS / non-systemd hosts), distinguishing "no
+        // schedule configured" from "systemd absent". Empty note → None.
+        let schedule_mgr = toride_backup::schedule::ScheduleManager::new();
         let schedule_installed =
-            match toride_backup::schedule::ScheduleManager::new().is_installed(DEFAULT_JOB_NAME) {
+            match schedule_mgr.is_installed(DEFAULT_JOB_NAME) {
                 Ok(b) => Some(b),
                 Err(e) => {
                     tracing::debug!("backup schedule is_installed: {e}");
                     None
                 }
             };
+        let schedule_note = {
+            let note = schedule_mgr.schedule_note();
+            if note.is_empty() { None } else { Some(note) }
+        };
         let timer_active =
             match toride_backup::service::BackupServiceManager::new().is_timer_active(DEFAULT_JOB_NAME) {
                 Ok(b) => Some(b),
@@ -306,6 +322,7 @@ async fn collect_real_backup(
             borg_available,
             schedule_installed,
             timer_active,
+            schedule_note,
             findings,
             unavailable_reason: None,
         }
@@ -340,6 +357,7 @@ fn empty_bundle() -> BackupDataBundle {
         borg_available: None,
         schedule_installed: None,
         timer_active: None,
+        schedule_note: None,
         findings: Vec::new(),
         unavailable_reason: None,
     }
@@ -523,6 +541,7 @@ mod tests {
             borg_available: None,
             schedule_installed: None,
             timer_active: None,
+            schedule_note: None,
             findings: vec![FindingEntry {
                 id: "binary.restic.found".into(),
                 severity: "ok".into(),

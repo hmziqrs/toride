@@ -185,6 +185,13 @@ impl MonitorContent {
         false
     }
 
+    /// Live connection count for the sidebar badge. `None` when the backend
+    /// is unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.connections.len()) } else { None }
+    }
+
     /// Current scroll offset (used by dashboard tests).
     #[cfg(test)]
     pub fn scroll(&self) -> usize {

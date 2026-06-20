@@ -69,6 +69,11 @@ pub struct BackupContent {
     schedule_installed: Option<bool>,
     /// Whether the default timer is active.
     timer_active: Option<bool>,
+    /// Informational note explaining a negative schedule reading (e.g.
+    /// "systemd not detected" on a non-systemd host). Rendered as a dim hint
+    /// line under the schedule panel so the operator can tell "systemd absent"
+    /// apart from "no schedule configured".
+    schedule_note: Option<String>,
     /// Doctor findings.
     findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, surfaced in the
@@ -98,6 +103,7 @@ impl BackupContent {
             borg_available: None,
             schedule_installed: None,
             timer_active: None,
+            schedule_note: None,
             findings: Vec::new(),
             unavailable_reason: None,
             scroll: 0,
@@ -108,6 +114,20 @@ impl BackupContent {
     #[must_use]
     pub fn has_modal(&self) -> bool {
         false
+    }
+
+    /// Live timer status for the sidebar badge. The Backup section has no
+    /// natural "item count" (it surfaces scalar booleans), so the badge
+    /// reflects the timer state: `Some("active")` / `Some("inactive")` when
+    /// the backend is available and a timer reading exists, `None` otherwise.
+    /// Never fabricates a status — `None` stays empty at cold start.
+    #[must_use]
+    pub fn badge_status(&self) -> Option<&'static str> {
+        if self.available {
+            self.timer_active.map(|active| if active { "active" } else { "inactive" })
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -133,9 +153,15 @@ impl BackupContent {
     }
 
     /// Replace schedule/timer status.
-    pub fn set_schedule(&mut self, installed: Option<bool>, active: Option<bool>) {
+    pub fn set_schedule(
+        &mut self,
+        installed: Option<bool>,
+        active: Option<bool>,
+        note: Option<String>,
+    ) {
         self.schedule_installed = installed;
         self.timer_active = active;
+        self.schedule_note = note;
     }
 
     /// Replace the findings list and clamp scroll.
@@ -422,6 +448,20 @@ impl BackupContent {
             Span::styled("  timer    ", Style::new().fg(p.text_muted)),
             Span::styled(format!("{tmr_icon} {tmr_text}"), Style::new().fg(tmr_color)),
         ]));
+
+        // Informational note explaining a negative reading (e.g. "systemd not
+        // detected" on macOS / non-systemd hosts). Rendered as a dim hint so
+        // the operator can tell "systemd absent" apart from "no schedule
+        // configured" — previously this note was computed by the backend but
+        // never surfaced, so a false reading was ambiguous.
+        if let Some(note) = &self.schedule_note
+            && !note.is_empty()
+        {
+            lines.push(Line::from(Span::styled(
+                format!("  note     {note}"),
+                Style::new().fg(p.text_dim),
+            )));
+        }
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
@@ -639,7 +679,7 @@ mod tests {
     fn render_schedule_card() {
         let mut c = BackupContent::new();
         c.set_available(true);
-        c.set_schedule(Some(true), Some(false));
+        c.set_schedule(Some(true), Some(false), None);
         let out = render_to_string(&mut c, 100, 30);
         assert!(out.contains("Schedule"), "schedule header: {out}");
         assert!(out.contains("installed"), "installed text: {out}");

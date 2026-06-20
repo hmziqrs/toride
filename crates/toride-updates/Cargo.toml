@@ -36,6 +36,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+toride-runner = { path = "../toride-runner", features = ["fake"] }
 
 [lints]
 workspace = true

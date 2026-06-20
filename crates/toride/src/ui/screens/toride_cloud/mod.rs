@@ -157,6 +157,13 @@ impl CloudContent {
         false
     }
 
+    /// Live security-group count for the sidebar badge. `None` when the
+    /// backend is unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.security_groups.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace the provider summary (drives the provider panel).

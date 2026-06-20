@@ -1,10 +1,15 @@
+pub mod about;
 pub mod base;
 pub mod dashboard;
 pub mod fail2ban;
 pub mod help;
+pub mod logs;
 pub mod quit;
 pub mod section_overview;
+pub mod settings;
 pub mod ssh;
+pub mod templates;
+pub mod tools;
 pub mod toride_audit;
 pub mod toride_backup;
 pub mod toride_cloud;
@@ -190,11 +195,18 @@ mod tests {
     fn dashboard_screen_has_chrome_and_content() {
         let mut screen = super::dashboard::DashboardScreen::new();
         let output = render_to_string(&mut screen, 160, 44);
+        // Real chrome: header logo, sidebar, and the three panel titles. The
+        // dashboard no longer carries fabricated module cards ("ssh hardening")
+        // or a "RECENTLY INSTALLED" panel at cold start — those were mock data.
         assert!(output.contains("toride"), "header logo: {output}");
-        assert!(output.contains("MODULES"), "sidebar/panel label");
-        assert!(output.contains("UPDATES AVAILABLE"), "updates panel");
-        assert!(output.contains("RECENTLY INSTALLED"), "activity panel");
-        assert!(output.contains("ssh hardening"), "module card");
+        assert!(output.contains("MODULES"), "modules panel title/label");
+        assert!(output.contains("STORAGE & NETWORK"), "updates->storage panel");
+        assert!(output.contains("TOP PROCESSES"), "activity->top processes panel");
+        // Honest cold-start sentinel (replaces the fabricated "ssh hardening" card).
+        assert!(
+            output.contains("collecting system status"),
+            "cold-start sentinel module: {output}"
+        );
     }
 
     #[test]

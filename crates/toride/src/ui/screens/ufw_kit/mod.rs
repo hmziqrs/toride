@@ -163,6 +163,14 @@ impl FirewallContent {
         self.available = available;
     }
 
+    /// Whether UFW is active (running), surfaced as the sidebar badge for the
+    /// Firewall section. `None` when the backend is unreachable
+    /// (`available == false`) so the badge stays honestly empty.
+    #[must_use]
+    pub fn is_active(&self) -> Option<bool> {
+        if self.available { Some(self.active) } else { None }
+    }
+
     /// Set the human-readable reason the backend was unreachable. Cleared
     /// (`None`) whenever availability flips back to `true` so a stale panic
     /// message can't linger after recovery.

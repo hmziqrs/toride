@@ -150,6 +150,16 @@ impl HardenContent {
         false
     }
 
+    /// Live shared-memory mount count for the sidebar badge. `None` when the
+    /// backend is unavailable so the badge stays honestly empty. (Sysctl param
+    /// counts are profile-dependent and already surfaced via the Managed
+    /// Services grid's findings_count, so the badge uses the distinct mounts
+    /// count to avoid redundancy.)
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.mounts.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace the available profiles list and clamp the selection.

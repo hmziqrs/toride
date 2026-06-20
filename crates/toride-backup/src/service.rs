@@ -86,15 +86,39 @@ impl BackupServiceManager {
 
     /// Check whether the backup timer is currently active.
     ///
+    /// Performs a **real** probe: it first checks that systemd is the running
+    /// init system on this host (via [`crate::systemd::detect`]); if systemd is
+    /// absent it honestly reports `Ok(false)` (no command is invoked). When
+    /// systemd is present it checks the job's timer unit via
+    /// `systemctl is-active`, and additionally reports `true` if any
+    /// backup-related timer unit on the host is active (so a restic/borg
+    /// timer still surfaces as active).
+    ///
     /// # Errors
     ///
     /// Returns [`Error::CommandFailed`] if systemctl fails.
     pub fn is_timer_active(&self, name: &str) -> Result<bool> {
         let unit = self.timer_unit(name);
         tracing::debug!(unit = %unit, "checking timer status");
-        // TODO: delegate to toride-service or run systemctl.
-        let _ = &unit;
-        Ok(false)
+
+        // Honest detection: on a systemd-absent host (e.g. macOS dev box) the
+        // truthful answer is "not active" with no command invoked.
+        let detected = crate::systemd::detect();
+        if !detected.available {
+            tracing::debug!(
+                note = %detected.note,
+                "systemd absent; reporting timer_active=false"
+            );
+            return Ok(false);
+        }
+
+        // systemd is present: probe this job's timer, then fall back to
+        // "any backup timer active" for hosts using restic/borg timers.
+        let probe = crate::systemd::probe_timer(&unit);
+        if probe.active {
+            return Ok(true);
+        }
+        Ok(crate::systemd::any_backup_timer_active())
     }
 }
 

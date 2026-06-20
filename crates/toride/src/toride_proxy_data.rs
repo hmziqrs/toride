@@ -54,8 +54,10 @@
 //! [`tokio::task::spawn_blocking`] so the tokio worker is never stalled.
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use tokio::sync::oneshot;
+use toride_runner::Runner;
 
 use crate::toride_proxy_convert;
 use crate::ui::screens::toride_proxy::{CertEntry, FindingEntry, ServerBlockEntry};
@@ -381,10 +383,17 @@ async fn collect_real_proxy(
         // are appended. A missing directory is not fatal — it simply yields no
         // extra certs (and the doctor surfaces `cert.no-certbot-dir`).
         //
-        // This runs every tick (even on a cache hit): it is a cheap filesystem
-        // readdir with no shell-out, so it does not defeat the doctor cache and
-        // keeps the certs table current between 60s doctor runs.
-        scan_certbot_live_dir(&mut certificates);
+        // For each discovered fullchain.pem we shell out once to `openssl x509
+        // -enddate` (via the same DuctRunner the doctor uses) to obtain the REAL
+        // not_after / days_remaining / is_valid. This is cheap relative to the
+        // doctor suite (one fast openssl per cert, not nginx -t / systemctl),
+        // so it still runs every tick to keep expiry current between 60s doctor
+        // runs. On any failure (openssl absent, parse error, expired cert) the
+        // cert degrades to `CertExpiry::unknown()` — `is_valid = false`, empty
+        // not_after — which the UI renders as `?` (unverified) or red (expired),
+        // never the misleading `is_valid = true` placeholder.
+        let runner = client.runner();
+        scan_certbot_live_dir(&mut certificates, runner, SystemTime::now());
 
         // ── has_expired_certs derivation ─────────────────────────────────
         // Compute the flag ONCE, from the ACTUAL rendered CertEntry list
@@ -452,21 +461,30 @@ async fn collect_real_proxy(
 /// [`CertEntry`] per domain that is not already present.
 ///
 /// The `certs` feature is OFF, so the `CertManager` facade is unavailable.
-/// This pure-filesystem scan needs no binary and degrades cleanly when the
-/// directory does not exist (macOS, hosts without certbot). Expiry / days
-/// remaining are left as defaults (0 days / not-valid) because computing them
-/// would require parsing PEM — the operator still sees which domains HAVE
-/// certs, and the doctor's `cert.missing-cert` findings catch broken ones.
+/// This pure-filesystem scan needs no binary to enumerate domains and degrades
+/// cleanly when the directory does not exist (macOS, hosts without certbot).
+/// For each discovered `fullchain.pem`, the real expiry is resolved by shelling
+/// out to `openssl x509 -enddate` via [`toride_proxy::certs_parse::read_cert_expiry`]
+/// using the supplied `runner`. On any failure (openssl absent, parse error,
+/// expired cert) the cert degrades to the unknown expiry state (`is_valid =
+/// false`, empty `not_after`) — never the previous misleading `is_valid = true`
+/// placeholder. The doctor's `cert.missing-cert` findings still catch broken
+/// certs independently of this scan.
 ///
-/// Any I/O error is swallowed with a `tracing::debug!` so a permissions failure
-/// on one entry never blanks the whole table.
-fn scan_certbot_live_dir(certs: &mut Vec<CertEntry>) {
-    scan_certbot_live_dir_at(Path::new("/etc/letsencrypt/live"), certs);
+/// Any I/O error on the directory read is swallowed with a `tracing::debug!`
+/// so a permissions failure on one entry never blanks the whole table.
+fn scan_certbot_live_dir(certs: &mut Vec<CertEntry>, runner: &dyn Runner, now: SystemTime) {
+    scan_certbot_live_dir_at(Path::new("/etc/letsencrypt/live"), certs, runner, now);
 }
 
 /// Path-injected core of [`scan_certbot_live_dir`] so the dedup / fullchain /
-/// default-fields logic can be exercised host-independently against a temp dir.
-fn scan_certbot_live_dir_at(live_dir: &Path, certs: &mut Vec<CertEntry>) {
+/// expiry-resolution logic can be exercised host-independently against a temp dir.
+fn scan_certbot_live_dir_at(
+    live_dir: &Path,
+    certs: &mut Vec<CertEntry>,
+    runner: &dyn Runner,
+    now: SystemTime,
+) {
     let entries = match std::fs::read_dir(live_dir) {
         Ok(e) => e,
         Err(_) => {
@@ -492,19 +510,32 @@ fn scan_certbot_live_dir_at(live_dir: &Path, certs: &mut Vec<CertEntry>) {
             );
             continue;
         }
-        tracing::warn!(
-            "proxy certbot live dir: appended domain {domain} without expiry (certs feature off)"
+        // Resolve the REAL expiry via openssl. On any failure read_cert_expiry
+        // degrades to CertExpiry::unknown() (is_valid=false, empty not_after),
+        // which the UI renders as '?' (expiry unknown) — strictly safer than
+        // the previous is_valid=true placeholder. It never returns Err in
+        // practice (the Result shape is forward-compat), but we swallow any
+        // internal error to the same unknown state to keep the read-only
+        // contract that this scan never crashes the collector.
+        let expiry = toride_proxy::certs_parse::read_cert_expiry(&fullchain, runner, now)
+            .unwrap_or_else(|e| {
+                tracing::debug!(
+                    "proxy certbot live dir: read_cert_expiry internal error for {domain}: {e}"
+                );
+                toride_proxy::certs_parse::CertExpiry::unknown()
+            });
+        tracing::debug!(
+            "proxy certbot live dir: appended domain {domain} with expiry {:?} (valid={}, days={})",
+            expiry.not_after,
+            expiry.is_valid,
+            expiry.days_remaining
         );
         certs.push(CertEntry {
             domain,
             issuer: "(unknown)".into(),
-            not_after: String::new(),
-            days_remaining: 0,
-            // is_valid=true lets the row pass the CertEntry validity gate, but
-            // the empty `not_after` is what the UI keys on: it renders such a
-            // cert as '?' (expiry unknown) rather than a green ✓, so a present
-            // fullchain is NOT mistaken for a verified-healthy certificate.
-            is_valid: true,
+            not_after: expiry.not_after,
+            days_remaining: expiry.days_remaining,
+            is_valid: expiry.is_valid,
         });
     }
 }
@@ -732,15 +763,19 @@ mod tests {
         // /etc/letsencrypt/live does not exist on macOS / CI hosts. The scan
         // must be a no-op (not panic) and leave the certs vec untouched.
         let mut certs = Vec::new();
-        scan_certbot_live_dir(&mut certs);
+        let runner = toride_runner::duct_runner::DuctRunner;
+        scan_certbot_live_dir(&mut certs, &runner, SystemTime::now());
         // No assertion on contents — only that it didn't panic.
     }
 
     /// Dedup path: a domain already present in `certs` is NOT re-added.
     /// Uses the path-injected core so the test is host-independent (the real
-    /// entry point hard-codes /etc/letsencrypt/live).
+    /// entry point hard-codes /etc/letsencrypt/live). The strict FakeRunner
+    /// errors on any unmatched call, so the appended `other.com` cert degrades
+    /// to CertExpiry::unknown() (empty not_after, is_valid=false).
     #[test]
     fn scan_certbot_live_dir_dedups_known_domains() {
+        use toride_runner::fake::FakeRunner;
         let tmp = tempfile::tempdir().expect("tempdir");
         let live = tmp.path();
         std::fs::create_dir_all(live.join("example.com")).unwrap();
@@ -755,7 +790,8 @@ mod tests {
             days_remaining: 1000,
             is_valid: true,
         }];
-        scan_certbot_live_dir_at(live, &mut certs);
+        let runner = FakeRunner::new().strict();
+        scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
 
         // example.com is NOT re-added; only other.com is appended.
         let example: Vec<&CertEntry> =
@@ -775,6 +811,7 @@ mod tests {
     /// so the certs table only lists domains whose chain is actually present.
     #[test]
     fn scan_certbot_live_dir_skips_entries_without_fullchain() {
+        use toride_runner::fake::FakeRunner;
         let tmp = tempfile::tempdir().expect("tempdir");
         let live = tmp.path();
         // present.com has the chain → kept.
@@ -784,7 +821,8 @@ mod tests {
         std::fs::create_dir_all(live.join("bare.com")).unwrap();
 
         let mut certs = Vec::new();
-        scan_certbot_live_dir_at(live, &mut certs);
+        let runner = FakeRunner::new().strict();
+        scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
 
         let domains: Vec<&str> = certs.iter().map(|c| c.domain.as_str()).collect();
         assert!(domains.contains(&"present.com"), "present.com must be listed");
@@ -794,26 +832,82 @@ mod tests {
         );
     }
 
-    /// Appended CertEntry defaults: a scan-discovered cert is pushed with the
-    /// documented placeholder fields — empty not_after, 0 days_remaining,
-    /// is_valid=true. The empty not_after is what the UI keys on to render '?'
-    /// rather than a green ✓.
+    /// Appended CertEntry state when expiry cannot be resolved: a strict
+    /// FakeRunner returns Err for the openssl probe (no canned response), so
+    /// read_cert_expiry degrades to CertExpiry::unknown() — empty not_after,
+    /// days_remaining=0, is_valid=false. This is the HONEST degradation: the
+    /// cert is surfaced as unverified, NEVER the misleading is_valid=true
+    /// placeholder that previously rendered as a healthy-looking row.
     #[test]
-    fn scan_certbot_live_dir_appended_cert_defaults() {
+    fn scan_certbot_live_dir_appended_cert_degrades_to_unknown() {
+        use toride_runner::fake::FakeRunner;
         let tmp = tempfile::tempdir().expect("tempdir");
         let live = tmp.path();
         std::fs::create_dir_all(live.join("example.com")).unwrap();
         std::fs::write(live.join("example.com/fullchain.pem"), b"pem").unwrap();
 
         let mut certs = Vec::new();
-        scan_certbot_live_dir_at(live, &mut certs);
+        // A strict runner has no canned openssl response, so the probe fails
+        // (or the which-guard short-circuits when openssl is absent) and the
+        // cert degrades to the unknown-expiry state.
+        let runner = FakeRunner::new().strict();
+        scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
 
         assert_eq!(certs.len(), 1);
         let c = &certs[0];
         assert_eq!(c.domain, "example.com");
-        assert!(c.not_after.is_empty(), "not_after must be empty (no PEM parse)");
-        assert_eq!(c.days_remaining, 0, "days_remaining must be 0 (unknown)");
-        assert!(c.is_valid, "is_valid defaults to true");
         assert_eq!(c.issuer, "(unknown)");
+        // Degraded expiry: never the misleading is_valid=true placeholder.
+        assert!(
+            !c.is_valid,
+            "degraded cert must be is_valid=false (got days={}, not_after={:?})",
+            c.days_remaining,
+            c.not_after
+        );
+        assert_eq!(c.days_remaining, 0, "unknown expiry has 0 days_remaining");
+        // not_after is empty when openssl is absent (the which-guard path) or
+        // non-empty when the strict runner errored after the which-guard —
+        // either is an honest "unverified" state. Assert only that is_valid
+        // is false, which is the contract that matters.
+    }
+
+    /// Real expiry is surfaced when the runner reports a known future expiry.
+    /// Uses an exact-match FakeRunner response so the test is deterministic
+    /// and host-independent (canned openssl stdout). When openssl is absent
+    /// from the host the which-guard short-circuits and the cert degrades to
+    /// unknown — still honest, just unverified.
+    #[test]
+    fn scan_certbot_live_dir_appended_cert_surfaces_real_expiry() {
+        use toride_runner::fake::FakeRunner;
+        use toride_runner::{CommandOutput, CommandSpec};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let live = tmp.path();
+        std::fs::create_dir_all(live.join("example.com")).unwrap();
+        let fullchain = live.join("example.com/fullchain.pem");
+        std::fs::write(&fullchain, b"pem").unwrap();
+
+        let spec = CommandSpec::new("openssl")
+            .args(["x509", "-enddate", "-noout", "-in"])
+            .arg(fullchain.to_str().unwrap());
+        let runner = FakeRunner::new().respond(
+            spec,
+            CommandOutput::from_stdout("notAfter=Jan  1 00:00:00 2099 GMT\n"),
+        );
+
+        let mut certs = Vec::new();
+        scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
+
+        assert_eq!(certs.len(), 1);
+        let c = &certs[0];
+        assert_eq!(c.domain, "example.com");
+        if which::which("openssl").is_ok() {
+            // openssl present: real future expiry surfaces as valid.
+            assert!(c.is_valid, "future expiry must be valid");
+            assert!(c.days_remaining > 0);
+            assert_eq!(c.not_after, "Jan  1 00:00:00 2099 GMT");
+        } else {
+            // No openssl on the host: which-guard degraded to unknown.
+            assert!(!c.is_valid, "absent openssl must degrade to unknown");
+        }
     }
 }

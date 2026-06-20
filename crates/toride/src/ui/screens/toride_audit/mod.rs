@@ -149,6 +149,13 @@ impl AuditContent {
         false
     }
 
+    /// Live audit rule-file count for the sidebar badge. `None` when the
+    /// backend is unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.rules.len()) } else { None }
+    }
+
     // ── Data setters ─────────────────────────────────────────────────────────
 
     /// Replace auditd status fields (drives the auditd card).
@@ -414,51 +421,60 @@ impl AuditContent {
             Span::styled(init_label, Style::new().fg(init_color)),
         ]));
 
-        // The backend `IntegrityManager::status()` currently hardcodes
-        // `file_count`, `last_check_passed`, and `last_check_output` to `None`
-        // (it only probes AIDE-db existence). Rendering those as
-        // "(unknown)" / "? unknown" misleads the operator into thinking a
-        // probe failed mid-flight when the field is in fact unimplemented. So:
-        //   - when BOTH secondary fields are `None` (the real-backend output on
-        //     every host today), collapse them to a single honest "AIDE check:
-        //     not implemented" line; and
-        //   - when either field is populated (future backend work, or the
-        //     synthetic sample used by the snapshot test), render both rows
-        //     verbatim so no real data is hidden.
-        if self.integrity.file_count.is_none()
-            && self.integrity.last_check_passed.is_none()
-        {
-            lines.push(Line::from(vec![
-                Span::styled("  check    ", Style::new().fg(p.text_muted)),
-                Span::styled(
-                    "AIDE check: not implemented",
-                    Style::new().fg(p.text_dim),
-                ),
-            ]));
-            return;
-        }
-
-        // File count.
-        let files = self
+        // The backend `IntegrityManager::status()` ALWAYS produces a one-line
+        // human-readable status (`last_check_output`) covering install state,
+        // database state, and change count (e.g. "AIDE not installed",
+        // "AIDE 0.18.8 · db not initialized", "0 changes", "7 changes"). Render
+        // it as the primary, authoritative "check" signal — it is the honest,
+        // complete picture and never a stale "not implemented" placeholder.
+        let status_line = self
             .integrity
-            .file_count
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "(unknown)".into());
-        lines.push(Line::from(vec![
-            Span::styled("  files    ", Style::new().fg(p.text_muted)),
-            Span::styled(files, Style::new().fg(p.text)),
-        ]));
-
-        // Last check status.
-        let (check_label, check_color) = match self.integrity.last_check_passed {
-            Some(true) => ("✓ passed", p.ok),
-            Some(false) => ("✗ failed", p.err),
-            None => ("? unknown", p.text_dim),
+            .last_check_output
+            .clone()
+            .unwrap_or_else(|| "no status available".to_string());
+        // Colour by the strength of evidence: changes detected (file_count > 0)
+        // is an error; a clean check (last_check_passed) is green; anything
+        // without a real check (not installed, no database) is a neutral warn.
+        let status_color = if self.integrity.file_count.is_some_and(|n| n > 0) {
+            p.err
+        } else if self.integrity.last_check_passed == Some(true) {
+            p.ok
+        } else {
+            p.warn
         };
         lines.push(Line::from(vec![
-            Span::styled("  last     ", Style::new().fg(p.text_muted)),
-            Span::styled(check_label, Style::new().fg(check_color)),
+            Span::styled("  check    ", Style::new().fg(p.text_muted)),
+            Span::styled(status_line, Style::new().fg(status_color)),
         ]));
+
+        // Numeric detail (files + verdict) ONLY when a real `aide --check`
+        // actually ran: a passed check, or a check that found changes. When
+        // AIDE is not installed / no database exists, the status line above is
+        // the complete and honest picture — extra rows would only mislead (e.g.
+        // a spurious "✗ failed" for a check that never ran).
+        let show_numeric = self.integrity.last_check_passed == Some(true)
+            || self.integrity.file_count.is_some_and(|n| n > 0);
+        if show_numeric {
+            let files = self
+                .integrity
+                .file_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "(unknown)".into());
+            lines.push(Line::from(vec![
+                Span::styled("  files    ", Style::new().fg(p.text_muted)),
+                Span::styled(files, Style::new().fg(p.text)),
+            ]));
+
+            let (check_label, check_color) = match self.integrity.last_check_passed {
+                Some(true) => ("✓ passed", p.ok),
+                Some(false) => ("✗ failed", p.err),
+                None => ("? unknown", p.text_dim),
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  last     ", Style::new().fg(p.text_muted)),
+                Span::styled(check_label, Style::new().fg(check_color)),
+            ]));
+        }
     }
 
     fn push_rules_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
@@ -655,11 +671,14 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_integrity() -> IntegrityStateEntry {
+        // Coherent degraded demo state: a real `aide --check` ran and detected
+        // 42 133 changed files (so the check did not pass). `last_check_output`
+        // is the one-line human-readable summary the backend always produces.
         IntegrityStateEntry {
             database_initialized: true,
             file_count: Some(42_133),
-            last_check_passed: Some(true),
-            last_check_output: None,
+            last_check_passed: Some(false),
+            last_check_output: Some("42133 changes".into()),
         }
     }
 
@@ -750,35 +769,34 @@ mod tests {
         c.set_integrity(sample_integrity());
         let out = render_to_string(&mut c, 110, 30);
         assert!(out.contains("initialized"), "db init badge: {out}");
+        assert!(out.contains("42133 changes"), "honest status line: {out}");
         assert!(out.contains("42133"), "file count: {out}");
-        assert!(out.contains("passed"), "last check: {out}");
+        assert!(out.contains("failed"), "last check verdict: {out}");
     }
 
-    /// Regression guard for the misleading-rendering finding: the backend
+    /// Regression guard for the misleading-rendering finding. The backend
     /// [`toride_audit::integrity::IntegrityManager::status()`] is the SOLE
-    /// producer of `IntegrityStatus` in production, and it hardcodes
-    /// `file_count` / `last_check_passed` / `last_check_output` to `None`
-    /// (it only probes AIDE-db existence). `sample_integrity()` above feeds
-    /// the panel `Some(42133)` / `Some(true)` — data the real backend can
-    /// NEVER produce today — so `render_integrity_card` alone does not catch a
-    /// regression where the real-backend path renders perpetual "(unknown)" /
-    /// "? unknown" rows. This test runs the REAL backend output through the
-    /// exact integration pipeline the data layer uses
+    /// producer of `IntegrityStatus` in production and now ALWAYS populates
+    /// `last_check_passed` and `last_check_output` (a one-line human-readable
+    /// status) — it never hands the panel a bare `None` that would render as a
+    /// perpetual "(unknown)" / "? unknown" placeholder. Because the backend is
+    /// the source of truth, `sample_integrity()` alone cannot catch a regression
+    /// on the real-backend path. This test runs the REAL backend output through
+    /// the exact integration pipeline the data layer uses
     /// (`Audit::with_paths(...)` → `.integrity().status()` →
-    /// `convert_integrity` → renderer) and asserts the panel surfaces an
-    /// honest "not implemented" line instead of misleading unknown rows.
+    /// `convert_integrity` → renderer) and asserts the panel surfaces the
+    /// honest status line verbatim and never a misleading placeholder row.
     #[test]
     fn render_integrity_real_backend_output_is_not_misleading() {
         use crate::toride_audit_convert::convert_integrity;
 
-        // `Audit::with_paths` wires its own runner; `status()` never invokes
-        // it (it only stat()s the AIDE db path), so this is safe on any host.
-        // Use the real default system paths — on the test host (and CI) the
-        // AIDE db at /var/lib/aide/aide.db.gz does not exist, so the real
-        // backend returns: { initialized: false, file_count: None,
-        // last_check_passed: None, last_check_output: None } — the same shape
-        // it returns on EVERY host today regardless of AIDE state, because the
-        // three secondary fields are hardcoded to `None`.
+        // `Audit::with_paths` wires its own runner; `status()` only probes the
+        // `aide` binary + config/db paths (and best-effort shells out to
+        // `aide --version`/`--check`), so this is safe on any host. On the test
+        // host (and CI) the `aide` binary is not installed, so the real backend
+        // returns the honest `not_installed()` shape: { initialized: false,
+        // file_count: Some(0), last_check_passed: Some(false),
+        // last_check_output: Some("AIDE not installed") } — never `None`.
         let audit = toride_audit::Audit::with_paths(
             toride_audit::AuditPaths::default_system(),
         )
@@ -788,16 +806,21 @@ mod tests {
             .status()
             .expect("status() only stats a path and cannot fail on a readable fs");
 
-        // Pin the backend's current contract: the secondary fields are always
-        // `None`. If a future change populates them, this test must be updated
-        // in lockstep (and the misleading-render branch it guards can retire).
+        // Pin the backend's honest contract: status() ALWAYS populates
+        // `last_check_passed` and `last_check_output` (a human-readable status
+        // line). `file_count` is `Some(0)` when AIDE is not installed, `Some(n)`
+        // after a real `aide --check`. None of the secondary fields are
+        // hardcoded `None` anymore — the old "not implemented" render branch
+        // has retired in favour of rendering the status line verbatim.
         assert!(
-            real_status.file_count.is_none()
-                && real_status.last_check_passed.is_none()
-                && real_status.last_check_output.is_none(),
-            "backend IntegrityManager::status() stopped hardcoding None; \
-             update this guard and the not-implemented render branch",
+            real_status.last_check_passed.is_some(),
+            "backend status() must always populate last_check_passed, got: {:?}",
+            real_status.last_check_passed,
         );
+        let status_line = real_status
+            .last_check_output
+            .clone()
+            .expect("backend status() must always populate last_check_output");
 
         // Drive the real-backend output through the same converter the data
         // layer uses, then render — exactly the production integration path.
@@ -820,18 +843,22 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // The honest state must be surfaced, not the perpetual "unknown" rows.
+        // The honest status line must be surfaced verbatim — not a placeholder.
         assert!(
-            integrity_card.contains("AIDE check: not implemented"),
-            "real-backend output must render the not-implemented line, got: {integrity_card}",
+            integrity_card.contains(status_line.as_str()),
+            "real-backend output must render the status line {status_line:?}, got: {integrity_card}",
         );
         assert!(
             !integrity_card.contains("(unknown)"),
-            "real-backend output must NOT render the misleading files row, got: {integrity_card}",
+            "real-backend output must NOT render the misleading '(unknown)' placeholder, got: {integrity_card}",
         );
         assert!(
             !integrity_card.contains("? unknown"),
-            "real-backend output must NOT render the misleading last row, got: {integrity_card}",
+            "real-backend output must NOT render the misleading '? unknown' row, got: {integrity_card}",
+        );
+        assert!(
+            !integrity_card.contains("not implemented"),
+            "the retired 'not implemented' placeholder must not render, got: {integrity_card}",
         );
     }
 

@@ -61,6 +61,7 @@ pub mod restic;
 pub mod restore;
 pub mod schedule;
 pub mod spec;
+pub mod systemd;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated

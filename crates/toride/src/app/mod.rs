@@ -32,6 +32,11 @@ use crate::toride_users_data::UsersCollector;
 use crate::toride_wireguard_data::WireguardCollector;
 use crate::toride_tailscale_data::TailscaleCollector;
 use crate::toride_mise_data::MiseCollector;
+use crate::about_data::AboutCollector;
+use crate::logs_data::LogsCollector;
+use crate::settings_data::SettingsCollector;
+use crate::templates_data::TemplatesCollector;
+use crate::tools_data::ToolsCollector;
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
@@ -101,6 +106,27 @@ pub struct App {
     /// each command is timeout-bounded so an absent mise degrades to
     /// `available == false` rather than hanging the collector task.
     toride_mise_collector: MiseCollector,
+    /// About-toride read-only data collector (system + app identity). No write
+    /// path, no cooldown, no findings cache — reuses TorideStatus::collect via
+    /// spawn_blocking exactly like StatusCollector.
+    about_collector: AboutCollector,
+    /// System log sources read-only data collector (no write path, no cooldown,
+    /// no findings cache — simple oneshot that probes journald/syslog/presence).
+    logs_collector: LogsCollector,
+    /// Settings (app config + theme + runtime env) read-only data collector
+    /// (no write path, no cooldown, no findings cache — the simple variant like
+    /// StatusCollector, since the section has no doctor/findings concept).
+    settings_collector: SettingsCollector,
+    /// Hardening-recipes catalogue read-only data collector (no write path,
+    /// no cooldown). Sweeps the constant recipe catalogue via `which::which`
+    /// in a single spawn_blocking; findings (missing-target recipes) are
+    /// cached for 60s for consistency with the other read-only sections.
+    templates_collector: TemplatesCollector,
+    /// Installed-tools catalogue (PATH scan of a curated CLI tool list)
+    /// read-only data collector (no write path, no cooldown). Treats the
+    /// catalogue scan as the doctor; findings (one tools.missing.<name>
+    /// warning per missing expected tool) are cached for 60s.
+    tools_collector: ToolsCollector,
     /// Receiver for SSH write operation error messages.
     ssh_error_rx: mpsc::UnboundedReceiver<SshOpError>,
     /// Sender clone passed to spawned SSH write tasks.
@@ -196,6 +222,11 @@ impl App {
             toride_cloud_collector: CloudCollector::new(),
             toride_tailscale_collector: TailscaleCollector::new(),
             toride_mise_collector: MiseCollector::new(),
+            about_collector: AboutCollector::new(),
+            logs_collector: LogsCollector::new(),
+            settings_collector: SettingsCollector::new(),
+            templates_collector: TemplatesCollector::new(),
+            tools_collector: ToolsCollector::new(),
             ssh_write_cooldown: None,
         }
     }
@@ -250,6 +281,7 @@ impl App {
                 let next = all[(idx + 1) % all.len()];
                 self.active_theme = next;
                 self.welcome.set_border_color(next.palette().accent);
+                self.dashboard.set_active_theme(next);
                 self.invalidate_all_caches();
             }
             // Scroll actions (and any future screen-local actions) are routed
@@ -590,6 +622,48 @@ impl App {
                     self.needs_redraw = true;
                 }
 
+                // Receive collected About-toride data (read-only: no cooldown,
+                // no optimistic updates — every refresh cleanly overwrites the
+                // previous view). Simple collector: no findings cache.
+                Some(b) = self.about_collector.poll(), if self.about_collector.is_pending() => {
+                    self.dashboard.set_about_data(b);
+                    self.needs_redraw = true;
+                }
+                // Receive collected system log-sources data (read-only: no
+                // cooldown, no optimistic updates — every refresh cleanly
+                // overwrites the previous view). Simple oneshot collector.
+                Some(b) = self.logs_collector.poll(), if self.logs_collector.is_pending() => {
+                    self.dashboard.set_logs_data(b);
+                    self.needs_redraw = true;
+                }
+                // Receive collected settings data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). No findings cache (the simple
+                // variant, like StatusCollector) since the section has no
+                // doctor concept.
+                Some(b) = self.settings_collector.poll(), if self.settings_collector.is_pending() => {
+                    self.dashboard.set_settings_data(b);
+                    self.needs_redraw = true;
+                }
+                // Receive collected hardening-recipes catalogue data
+                // (read-only: no cooldown, no optimistic-update reconciliation
+                // — every refresh cleanly overwrites the previous view). Same
+                // 60s findings cache as the other read-only sections.
+                Some(b) = self.templates_collector.poll(), if self.templates_collector.is_pending() => {
+                    self.dashboard.set_templates_data(b);
+                    self.needs_redraw = true;
+                }
+                // Receive collected installed-tools data (read-only: no
+                // cooldown, no optimistic-update reconciliation — every refresh
+                // cleanly overwrites the previous view). Same 60s findings cache
+                // as the other read-only sections. The PATH scan always runs so
+                // available stays true; only a collection panic flips the panel
+                // to the degraded state.
+                Some(b) = self.tools_collector.poll(), if self.tools_collector.is_pending() => {
+                    self.dashboard.set_tools_data(b);
+                    self.needs_redraw = true;
+                }
+
                 // Receive SSH write errors from the serialized write task.
                 // On a reverting error (disk state known unchanged → the
                 // optimistic UI update is now a lie) clear the write cooldown
@@ -758,6 +832,31 @@ impl App {
                         // async runner; each command is timeout-bounded so an absent
                         // mise degrades to available == false rather than hanging.
                         self.toride_mise_collector.start();
+                        // About-toride is read-only: no cooldown, no optimistic
+                        // updates. No findings cache (identity metadata, not a
+                        // health check). Reuses TorideStatus::collect via
+                        // spawn_blocking like StatusCollector.
+                        self.about_collector.start();
+                        // Logs is read-only: no cooldown, no optimistic updates.
+                        // Simple oneshot collector; re-probes log sources fresh.
+                        self.logs_collector.start();
+                        // Settings is read-only: no cooldown, no optimistic
+                        // updates. No findings cache (simple variant) so every
+                        // refresh re-reads the config file + env fresh.
+                        self.settings_collector.start();
+                        // Templates (hardening-recipes catalogue) is read-only:
+                        // no cooldown, no optimistic updates. Same 60s findings
+                        // cache as the other read-only sections. The recipe
+                        // definitions are constant app data; only the per-recipe
+                        // readiness (which::which sweep) is live.
+                        self.templates_collector.start();
+                        // Tools is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections. The catalogue scan resolves ~30
+                        // binaries on the blocking pool; a missing tool surfaces
+                        // as a tools.missing.<name> warning finding rather than
+                        // degrading the panel.
+                        self.tools_collector.start();
                         self.needs_redraw = true;
                     }
                 }

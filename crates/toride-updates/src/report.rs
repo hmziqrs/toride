@@ -131,3 +131,75 @@ pub fn finding_config_dir_world_writable(path: &str) -> toride_diagnostic_types:
     ))
     .fix_hint("Restrict permissions: chmod 755 {path}")
 }
+
+// ---------------------------------------------------------------------------
+// Auto-update timer findings (honest enabled / disabled / absent reporting)
+// ---------------------------------------------------------------------------
+
+/// Outcome of probing a single auto-update timer unit via systemd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerState {
+    /// The timer is installed and active (running).
+    Active,
+    /// The timer is installed but neither enabled nor active.
+    Disabled,
+    /// The timer unit does not exist on this host.
+    Absent,
+}
+
+/// Create an info finding indicating that no auto-update manager was detected
+/// on the host (no supported package manager and/or no systemd).
+pub fn finding_auto_update_manager_absent() -> toride_diagnostic_types::Finding {
+    toride_diagnostic_types::Finding::info(
+        "auto-update.manager-not-detected",
+        "Auto-update manager not detected",
+    )
+    .detail(
+        "Neither a supported package manager (apt/dnf) nor a systemd timer for \
+         automatic updates was detected on this host. Toride cannot determine \
+         whether security updates are being applied automatically.",
+    )
+    .fix_hint("Install unattended-upgrades (Debian/Ubuntu) or dnf-automatic (Fedora/RHEL)")
+}
+
+/// Create an OK finding reporting that an auto-update timer is active.
+pub fn finding_auto_update_enabled(timer: &str) -> toride_diagnostic_types::Finding {
+    toride_diagnostic_types::Finding::ok(
+        "auto-update.timer-active",
+        format!("Auto-update timer {timer} is active"),
+    )
+    .detail(format!(
+        "The {timer} systemd timer is enabled and active. Automatic security \
+         updates are being applied on schedule."
+    ))
+}
+
+/// Create a warning finding reporting that auto-updates are disabled across all
+/// detected mechanisms (config file and systemd timer).
+pub fn finding_auto_update_disabled() -> toride_diagnostic_types::Finding {
+    toride_diagnostic_types::Finding::warning(
+        "auto-update.disabled",
+        "Automatic updates are disabled",
+    )
+    .detail(
+        "Auto-updates are not enabled: the timer is not active and the \
+         configuration does not enable unattended upgrades. Security patches \
+         will not be applied automatically, leaving the system vulnerable.",
+    )
+    .fix_hint("Enable the auto-update timer: systemctl enable --now <timer>")
+}
+
+/// Create an info finding reporting that the auto-update timer unit is absent
+/// from systemd (not installed), but a config was found.
+pub fn finding_auto_update_timer_absent(timer: &str) -> toride_diagnostic_types::Finding {
+    toride_diagnostic_types::Finding::info(
+        "auto-update.timer-absent",
+        format!("Auto-update timer {timer} is not installed"),
+    )
+    .detail(format!(
+        "The {timer} systemd timer unit does not exist on this host, so \
+         systemd is not driving automatic updates. The configuration file may \
+         still enable updates, but nothing will trigger them without a timer."
+    ))
+    .fix_hint(format!("Install and enable the timer: systemctl enable --now {timer}"))
+}

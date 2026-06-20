@@ -51,12 +51,17 @@ toride-audit = { path = "../toride-audit", features = ["client", "doctor", "audi
 toride-mise = { path = "../toride-mise", features = ["json", "toml", "diagnostics", "tracing"] }
 ufw-kit = { path = "../ufw-kit", features = ["client", "doctor", "tokio"] }
 which = { workspace = true }
+# Direct dep so the proxy cert-expiry wiring can name the `Runner` trait and
+# `DuctRunner`/`FakeRunner` types (the proxy backend takes `&dyn Runner`).
+toride-runner = { path = "../toride-runner" }
 
 [dev-dependencies]
 insta = "1"
 serde_json = { workspace = true }
 tempfile = "3"
 testty = "0.9"
+# `fake` feature for the strict FakeRunner used in proxy cert-scan tests.
+toride-runner = { path = "../toride-runner", features = ["fake"] }
 
 [lints]
 workspace = true

@@ -128,6 +128,13 @@ impl MiseContent {
         false
     }
 
+    /// Live installed-tool count for the sidebar badge. `None` when the
+    /// backend is unavailable so the badge stays honestly empty.
+    #[must_use]
+    pub fn badge_count(&self) -> Option<usize> {
+        if self.available { Some(self.tools.len()) } else { None }
+    }
+
     /// Current scroll offset (used by tests).
     #[cfg(test)]
     pub(crate) fn scroll(&self) -> usize {

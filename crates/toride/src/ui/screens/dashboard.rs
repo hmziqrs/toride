@@ -17,7 +17,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::data::{ActivityEntry, DashboardData, Module, ModuleStatus, ModuleUpdate, Section};
+use crate::data::{DashboardData, Module, ModuleStatus, Section};
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::widgets::{InteractiveModal, ModalEvent};
 use crate::status::TorideStatus;
@@ -25,8 +25,13 @@ use crate::ui::helpers::{format_bytes, format_duration, percent_color};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::section_overview::{OverviewSnapshot, SectionOverview};
+use crate::ui::screens::about::AboutContent;
 use crate::ui::screens::fail2ban::Fail2banContent;
+use crate::ui::screens::logs::LogsContent;
+use crate::ui::screens::settings::SettingsContent;
 use crate::ui::screens::ssh::SshContent;
+use crate::ui::screens::templates::TemplatesContent;
+use crate::ui::screens::tools::ToolsContent;
 use crate::ui::screens::toride_audit::AuditContent;
 use crate::ui::screens::toride_backup::BackupContent;
 use crate::ui::screens::toride_cloud::CloudContent;
@@ -46,7 +51,7 @@ use crate::ui::shell::{
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
     Card, Tooltip, kv, kv_with_suffix,
-    render_panel, render_titled_panel, tag_badge, title_line, title_line_with_detail,
+    render_panel, render_titled_panel, title_line, title_line_with_detail,
 };
 use crate::ui::screens::base::ScreenBase;
 use ratatui_interact::state::FocusManager;
@@ -260,6 +265,23 @@ pub struct DashboardScreen {
     /// doctor) management content (rendered when Section::Mise is active).
     /// READ-ONLY: no write ops, no cooldown.
     toride_mise_content: MiseContent,
+    /// About-toride content (rendered when Section::About is active).
+    /// READ-ONLY: no write ops, no cooldown, no findings.
+    about_content: AboutContent,
+    /// System log-sources content (rendered when Section::Logs is active).
+    /// READ-ONLY: no write ops, no cooldown, no findings.
+    logs_content: LogsContent,
+    /// Settings (app config + theme + runtime env) management content
+    /// (rendered when Section::Settings is active). READ-ONLY: no write ops,
+    /// no cooldown. ALSO carries the live active Theme, kept in sync by
+    /// App::update's Action::CycleTheme arm via set_active_theme.
+    settings_content: SettingsContent,
+    /// Hardening-recipes catalogue management content (rendered when
+    /// Section::Templates is active). READ-ONLY: no write ops, no cooldown.
+    templates_content: TemplatesContent,
+    /// Installed-tools catalogue management content (rendered when
+    /// Section::Tools is active). READ-ONLY: no write ops, no cooldown.
+    tools_content: ToolsContent,
 }
 
 impl Default for DashboardScreen {
@@ -269,14 +291,18 @@ impl Default for DashboardScreen {
 }
 
 impl DashboardScreen {
-    /// Create a new dashboard seeded with mock data.
+    /// Create a new dashboard seeded with an honest empty skeleton (no mock
+    /// host info, modules, updates, or activity). Collectors overlay live data
+    /// as they report via the `set_*` methods.
     #[must_use]
     pub fn new() -> Self {
-        let data = DashboardData::mock();
+        let data = DashboardData::empty();
         let sidebar = Sidebar::new(data.sidebar.len());
         let clock = "09:17 PM".to_string();
-        // Seed the module view with the mock list so keyboard navigation and
-        // the modal lookup have a valid bound before the first render.
+        // Seed the module view with the single honest "collecting system
+        // status…" sentinel so keyboard navigation and the modal lookup have a
+        // valid bound before the first render. The live managed-services grid
+        // (13 cards) replaces this once a status is collected.
         let modules_view = data.modules.clone();
         Self {
             data,
@@ -333,6 +359,11 @@ impl DashboardScreen {
             toride_proxy_content: ProxyContent::new(),
             toride_cloud_content: CloudContent::new(),
             toride_mise_content: MiseContent::new(),
+            about_content: AboutContent::new(),
+            logs_content: LogsContent::new(),
+            settings_content: SettingsContent::new(),
+            templates_content: TemplatesContent::new(),
+            tools_content: ToolsContent::new(),
             toride_tailscale_content: TailscaleContent::new(),
         }
     }
@@ -362,6 +393,66 @@ impl DashboardScreen {
             self.disk_write_rate = Some(dw.max(0.0) / dt);
         }
         self.status = Some(status);
+        self.refresh_sidebar_badges();
+    }
+
+    /// Derive each section's sidebar badge from its LIVE content struct and
+    /// write it into `self.data.sidebar[i].badge`. Called from each `set_*_data`
+    /// setter (and `set_status`) so badges refresh as live data lands.
+    ///
+    /// At cold start (before any collector reports) every badge stays `None` —
+    /// honest "nothing known yet". Never fabricates a count for a section whose
+    /// backend is unreachable or whose content struct doesn't expose a clean
+    /// count.
+    fn refresh_sidebar_badges(&mut self) {
+        // Read the live values out of the content structs first (no &mut self
+        // borrow held) so we can then mutate self.data.sidebar in place. Every
+        // accessor returns None when its backend is unavailable, so the badge
+        // stays honestly empty at cold start — no count is ever fabricated.
+        let tools = self.tools_content.installed_count().map(|n| n.to_string());
+        let fail2ban = self.fail2ban_content.total_bans().map(|n| n.to_string());
+        let firewall = self.ufw_kit_content.is_active().map(|active| {
+            if active { "active" } else { "inactive" }.to_string()
+        });
+        let updates = if self.toride_updates_content.available() {
+            Some(self.toride_updates_content.pending_total().to_string())
+        } else {
+            None
+        };
+        let wireguard = self.toride_wireguard_content.badge_count().map(|n| n.to_string());
+        let proxy = self.toride_proxy_content.badge_count().map(|n| n.to_string());
+        let cloud = self.toride_cloud_content.badge_count().map(|n| n.to_string());
+        let users = self.toride_users_content.badge_count().map(|n| n.to_string());
+        let backup = self.toride_backup_content.badge_status().map(String::from);
+        let tailscale = self.toride_tailscale_content.badge_count().map(|n| n.to_string());
+        let mise = self.toride_mise_content.badge_count().map(|n| n.to_string());
+        let harden = self.toride_harden_content.badge_count().map(|n| n.to_string());
+        let audit = self.toride_audit_content.badge_count().map(|n| n.to_string());
+        let monitor = self.toride_monitor_content.badge_count().map(|n| n.to_string());
+        for item in &mut self.data.sidebar {
+            let badge = match item.section {
+                Section::Tools => tools.clone(),
+                Section::Fail2ban => fail2ban.clone(),
+                Section::Firewall => firewall.clone(),
+                Section::Updates => updates.clone(),
+                Section::WireGuard => wireguard.clone(),
+                Section::Proxy => proxy.clone(),
+                Section::Cloud => cloud.clone(),
+                Section::Users => users.clone(),
+                Section::Backup => backup.clone(),
+                Section::Tailscale => tailscale.clone(),
+                Section::Mise => mise.clone(),
+                Section::Harden => harden.clone(),
+                Section::Audit => audit.clone(),
+                Section::Monitor => monitor.clone(),
+                // Sections without a clean live count (Dashboard, Ssh,
+                // Templates, Logs, About, Settings) and the cold-start case
+                // (backend unavailable): leave the badge honestly empty. Do
+                // NOT fabricate counts.
+                _ => None,
+            };
+            item.badge = badge;
+        }
     }
 
     /// Snapshot of all 13 read-only sections for the live "Managed Services"
@@ -528,6 +619,7 @@ impl DashboardScreen {
         self.fail2ban_content.set_bans(b.bans);
         self.fail2ban_content.set_findings(b.findings);
         self.fail2ban_content.set_firewall(b.fw_nft_available, b.fw_iptables_available);
+        self.refresh_sidebar_badges();
     }
 
     /// Provide live UFW firewall data for the read-only Firewall section
@@ -552,6 +644,7 @@ impl DashboardScreen {
         );
         self.ufw_kit_content.set_rules(b.rules);
         self.ufw_kit_content.set_findings(b.findings);
+        self.refresh_sidebar_badges();
     }
 
     /// Provide live kernel-hardening data for the read-only Harden section
@@ -622,6 +715,7 @@ impl DashboardScreen {
         self.toride_updates_content.set_schedule(b.schedule);
         self.toride_updates_content.set_timer_active(b.timer_active);
         self.toride_updates_content.set_findings(b.findings);
+        self.refresh_sidebar_badges();
     }
 
     /// Provide live user & access-control data for the read-only Users section
@@ -706,7 +800,8 @@ impl DashboardScreen {
             b.schedule_dir,
         );
         self.toride_backup_content.set_binaries(b.restic_available, b.borg_available);
-        self.toride_backup_content.set_schedule(b.schedule_installed, b.timer_active);
+        self.toride_backup_content
+            .set_schedule(b.schedule_installed, b.timer_active, b.schedule_note);
         self.toride_backup_content.set_findings(b.findings);
     }
 
@@ -797,6 +892,84 @@ impl DashboardScreen {
         self.toride_mise_content.set_outdated(b.outdated);
         self.toride_mise_content.set_config_files(b.config_files);
         self.toride_mise_content.set_findings(b.findings);
+    }
+
+    /// Provide live About-toride data for the read-only About section (called
+    /// from the [`AboutCollector`](crate::about_data::AboutCollector)).
+    ///
+    /// Fans the bundle out to the content setters. No cooldown or optimistic
+    /// updates — the section is strictly read-only identity metadata.
+    pub fn set_about_data(&mut self, b: crate::about_data::AboutDataBundle) {
+        self.about_content.set_available(b.available);
+        self.about_content.set_unavailable_reason(b.unavailable_reason);
+        self.about_content.set_system(b.system);
+        self.about_content.set_app(b.app);
+        self.about_content.set_runtime(b.runtime);
+    }
+
+    /// Provide live system log-sources data for the read-only Logs section
+    /// (called from the [`LogsCollector`](crate::logs_data::LogsCollector)).
+    pub fn set_logs_data(&mut self, b: crate::logs_data::LogsDataBundle) {
+        self.logs_content.set_available(b.available);
+        self.logs_content.set_unavailable_reason(b.unavailable_reason);
+        self.logs_content.set_logs(b.sources);
+    }
+
+    /// Provide live settings data for the read-only Settings section (called
+    /// from the [`SettingsCollector`](crate::settings_data::SettingsCollector)).
+    ///
+    /// Fans the bundle out to the content setters. There is no cooldown or
+    /// optimistic-update reconciliation here — the section is strictly
+    /// read-only, so every refresh cleanly overwrites the previous view.
+    pub fn set_settings_data(&mut self, b: crate::settings_data::SettingsDataBundle) {
+        self.settings_content.set_available(b.available);
+        // Surface the unavailable reason (if any) only when unavailable. Must
+        // be set AFTER set_available so the reason-clearing guard sees the
+        // fresh flag.
+        self.settings_content.set_unavailable_reason(b.unavailable_reason);
+        self.settings_content.set_config(b.config);
+        self.settings_content.set_runtime(b.runtime);
+    }
+
+    /// Push the live active theme into the Settings content so its THEME block
+    /// highlight + swatches track the current palette. Called by App::update's
+    /// Action::CycleTheme arm after it computes the new theme.
+    pub fn set_active_theme(&mut self, theme: crate::ui::theme::Theme) {
+        self.settings_content.set_active_theme(theme);
+    }
+
+    /// Provide live hardening-recipes catalogue data for the read-only
+    /// Templates section (called from the
+    /// [`TemplatesCollector`](crate::templates_data::TemplatesCollector)).
+    ///
+    /// Fans the bundle out to the content setters. There is no cooldown or
+    /// optimistic-update reconciliation here — the section is strictly
+    /// read-only, so every refresh cleanly overwrites the previous view.
+    pub fn set_templates_data(&mut self, b: crate::templates_data::TemplatesDataBundle) {
+        self.templates_content.set_available(b.available);
+        // Surface the unavailable reason (if any) only when unavailable. Must
+        // be set AFTER set_available so the reason-clearing guard sees the
+        // fresh flag.
+        self.templates_content.set_unavailable_reason(b.unavailable_reason);
+        self.templates_content.set_recipes(b.recipes);
+        self.templates_content.set_findings(b.findings);
+    }
+
+    /// Provide live installed-tools data for the read-only Tools section
+    /// (called from the [`ToolsCollector`](crate::tools_data::ToolsCollector)).
+    ///
+    /// Fans the bundle out to the content setters. There is no cooldown or
+    /// optimistic-update reconciliation here — the section is strictly
+    /// read-only, so every refresh cleanly overwrites the previous view.
+    pub fn set_tools_data(&mut self, b: crate::tools_data::ToolsDataBundle) {
+        self.tools_content.set_available(b.available);
+        // Surface the unavailable reason (if any) only when unavailable. Must
+        // be set AFTER set_available so the reason-clearing guard sees the
+        // fresh flag.
+        self.tools_content.set_unavailable_reason(b.unavailable_reason);
+        self.tools_content.set_tools(b.tools);
+        self.tools_content.set_findings(b.findings);
+        self.refresh_sidebar_badges();
     }
 
     /// The currently active section.
@@ -952,39 +1125,34 @@ impl DashboardScreen {
         );
 
         // ── Content ──────────────────────────────────────────────────────────
+        // Exhaustive match over every Section variant — NO wildcard arm. A
+        // future Section variant added without a matching arm is a compile
+        // error, not a silent "coming soon" placeholder. (Previously this was
+        // an if/else-if chain with a trailing `render_placeholder(...)` else
+        // branch that was unreachable today but would have silently rendered
+        // "<section> — coming soon" for any future unwired variant.)
         let content = shell.content;
-        if self.active_section() == Section::Dashboard {
-            self.render_dashboard_content(frame, content, p);
-        } else if self.active_section() == Section::Ssh {
-            self.ssh_content.view(frame, content, p);
-        } else if self.active_section() == Section::Fail2ban {
-            self.fail2ban_content.view(frame, content, p);
-        } else if self.active_section() == Section::Firewall {
-            self.ufw_kit_content.view(frame, content, p);
-        } else if self.active_section() == Section::Harden {
-            self.toride_harden_content.view(frame, content, p);
-        } else if self.active_section() == Section::WireGuard {
-            self.toride_wireguard_content.view(frame, content, p);
-        } else if self.active_section() == Section::Updates {
-            self.toride_updates_content.view(frame, content, p);
-        } else if self.active_section() == Section::Users {
-            self.toride_users_content.view(frame, content, p);
-        } else if self.active_section() == Section::Audit {
-            self.toride_audit_content.view(frame, content, p);
-        } else if self.active_section() == Section::Monitor {
-            self.toride_monitor_content.view(frame, content, p);
-        } else if self.active_section() == Section::Backup {
-            self.toride_backup_content.view(frame, content, p);
-        } else if self.active_section() == Section::Proxy {
-            self.toride_proxy_content.view(frame, content, p);
-        } else if self.active_section() == Section::Cloud {
-            self.toride_cloud_content.view(frame, content, p);
-        } else if self.active_section() == Section::Tailscale {
-            self.toride_tailscale_content.view(frame, content, p);
-        } else if self.active_section() == Section::Mise {
-            self.toride_mise_content.view(frame, content, p);
-        } else {
-            render_placeholder(frame, content, p, self.active_section());
+        match self.active_section() {
+            Section::Dashboard => self.render_dashboard_content(frame, content, p),
+            Section::Ssh => self.ssh_content.view(frame, content, p),
+            Section::Fail2ban => self.fail2ban_content.view(frame, content, p),
+            Section::Firewall => self.ufw_kit_content.view(frame, content, p),
+            Section::Harden => self.toride_harden_content.view(frame, content, p),
+            Section::WireGuard => self.toride_wireguard_content.view(frame, content, p),
+            Section::Updates => self.toride_updates_content.view(frame, content, p),
+            Section::Users => self.toride_users_content.view(frame, content, p),
+            Section::Audit => self.toride_audit_content.view(frame, content, p),
+            Section::Monitor => self.toride_monitor_content.view(frame, content, p),
+            Section::Backup => self.toride_backup_content.view(frame, content, p),
+            Section::Proxy => self.toride_proxy_content.view(frame, content, p),
+            Section::Cloud => self.toride_cloud_content.view(frame, content, p),
+            Section::Tailscale => self.toride_tailscale_content.view(frame, content, p),
+            Section::Mise => self.toride_mise_content.view(frame, content, p),
+            Section::Tools => self.tools_content.view(frame, content, p),
+            Section::Templates => self.templates_content.view(frame, content, p),
+            Section::Logs => self.logs_content.view(frame, content, p),
+            Section::About => self.about_content.view(frame, content, p),
+            Section::Settings => self.settings_content.view(frame, content, p),
         }
 
         // ── Module detail modal ───────────────────────────────────────────────
@@ -1056,7 +1224,7 @@ impl DashboardScreen {
                 disk_label,
                 net_label,
             ),
-            None => (Some(35.0), Some(23.0), None, None),
+            None => (None, None, None, None),
         }
     }
 
@@ -1152,11 +1320,14 @@ impl DashboardScreen {
         .spacing(1)
         .areas(area);
 
-        // MANAGED: live available/13, else mock installed/total.
+        // MANAGED: live available/total, else honest cold-start 0/0 (no live
+        // status yet). The old DashboardData.modules_installed/modules_total
+        // fields were always 0 here (never populated with real data) and have
+        // been removed; the literal 0/0 is the same honest cold-start value.
         let (managed_num, managed_denom) = if live {
             (managed_available, MANAGED_SECTIONS_TOTAL)
         } else {
-            (self.data.modules_installed, self.data.modules_total)
+            (0, 0)
         };
         let managed_color = if !live {
             p.ok
@@ -1180,8 +1351,11 @@ impl DashboardScreen {
         ];
         Card::new(managed_card).render(frame, a, p);
 
-        // UPDATES: live pending_total, else mock count.
-        let updates_num = pending_total.unwrap_or_else(|| self.data.updates_count());
+        // UPDATES: live pending_total, else honest 0 (no live updates data yet).
+        // The old DashboardData.updates_count() always returned 0 (the updates
+        // Vec was never populated with real data) and has been removed; the
+        // literal 0 is the same honest cold-start value.
+        let updates_num = pending_total.unwrap_or(0);
         let updates_color = if updates_num == 0 { p.ok } else { p.warn };
         let updates_card = vec![
             Line::from(Span::styled(updates_num.to_string(), Style::new().fg(updates_color).bold())),
@@ -1338,7 +1512,7 @@ impl DashboardScreen {
         } else if sel_row >= self.module_scroll + usize::from(rows) {
             self.module_scroll = sel_row - usize::from(rows) + 1;
         }
-        let total_rows = (modules.len() + per_row - 1) / per_row;
+        let total_rows = modules.len().div_ceil(per_row);
         let max_scroll = total_rows.saturating_sub(usize::from(rows));
         self.module_scroll = self.module_scroll.min(max_scroll);
 
@@ -1378,24 +1552,27 @@ impl DashboardScreen {
     }
 
     /// STORAGE & NETWORK panel: top disks (usage %) + network rate line, from
-    /// live `TorideStatus`. Falls back to the mock updates list when no status
-    /// has been collected yet (pre-first-poll / snapshot tests).
+    /// live `TorideStatus`. Renders an honest "collecting…" line before the
+    /// first status lands — never the fabricated updates list.
     fn render_updates_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
             && self.dashboard_focus == DashboardFocus::Updates;
 
-        // Build the panel content. Live path uses disks + network; mock falls
-        // back to the updates list so the panel is never blank.
         if let Some(s) = &self.status {
             let inner = render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
             self.render_storage_network(frame, inner, p, s);
         } else {
-            let title = format!(" UPDATES AVAILABLE · {} ", self.data.updates_count());
-            let inner = render_titled_panel(frame, area, p, &title, p.warn, focused);
-            for (i, row) in list_rows(inner, self.updates_scroll, self.data.updates.len()) {
-                render_update_row(frame, row, p, &self.data.updates[i]);
-            }
+            // Honest cold-start state: nothing fabricated. The pending-update
+            // count is shown in the stat card above (0 until the updates
+            // collector reports); this panel shows disk/network once status
+            // arrives, and an honest placeholder until then.
+            let inner = render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
+            let line = Line::from(Span::styled(
+                "  collecting system status…",
+                Style::new().fg(p.text_muted),
+            ));
+            frame.render_widget(Paragraph::new(line), inner);
         }
     }
 
@@ -1472,7 +1649,9 @@ impl DashboardScreen {
     }
 
     /// TOP PROCESSES panel: top 3-5 by CPU then memory, from live `TorideStatus`.
-    /// Falls back to the mock activity log when no status has been collected yet.
+    /// Renders an honest "collecting…" line before the first status lands —
+    /// never the fabricated "RECENTLY INSTALLED" activity log (there is no real
+    /// "recently installed" source on the dashboard; that data was mock).
     fn render_activity_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
@@ -1482,10 +1661,12 @@ impl DashboardScreen {
             let inner = render_titled_panel(frame, area, p, " TOP PROCESSES ", p.accent3, focused);
             render_top_processes(frame, inner, p, s);
         } else {
-            let inner = render_titled_panel(frame, area, p, " RECENTLY INSTALLED ", p.accent3, focused);
-            for (i, row) in list_rows(inner, self.activity_scroll, self.data.activity.len()) {
-                render_activity_row(frame, row, p, &self.data.activity[i]);
-            }
+            let inner = render_titled_panel(frame, area, p, " TOP PROCESSES ", p.accent3, focused);
+            let line = Line::from(Span::styled(
+                "  collecting system status…",
+                Style::new().fg(p.text_muted),
+            ));
+            frame.render_widget(Paragraph::new(line), inner);
         }
     }
 
@@ -1583,6 +1764,11 @@ impl AppScreen for DashboardScreen {
                         Section::Cloud => self.toride_cloud_content.handle_key(code),
                         Section::Tailscale => self.toride_tailscale_content.handle_key(code),
                         Section::Mise => self.toride_mise_content.handle_key(code),
+                        Section::Tools => self.tools_content.handle_key(code),
+                        Section::Templates => self.templates_content.handle_key(code),
+                        Section::Logs => self.logs_content.handle_key(code),
+                        Section::About => self.about_content.handle_key(code),
+                        Section::Settings => self.settings_content.handle_key(code),
                         // Placeholder: Tab is a no-op.
                         _ => None,
                     };
@@ -1608,6 +1794,11 @@ impl AppScreen for DashboardScreen {
                         Section::Cloud => self.toride_cloud_content.handle_key(code),
                         Section::Tailscale => self.toride_tailscale_content.handle_key(code),
                         Section::Mise => self.toride_mise_content.handle_key(code),
+                        Section::Tools => self.tools_content.handle_key(code),
+                        Section::Templates => self.templates_content.handle_key(code),
+                        Section::Logs => self.logs_content.handle_key(code),
+                        Section::About => self.about_content.handle_key(code),
+                        Section::Settings => self.settings_content.handle_key(code),
                         _ => None,
                     };
                 }
@@ -1655,6 +1846,11 @@ impl AppScreen for DashboardScreen {
                 Section::Cloud => self.toride_cloud_content.handle_key(code),
                 Section::Tailscale => self.toride_tailscale_content.handle_key(code),
                 Section::Mise => self.toride_mise_content.handle_key(code),
+                Section::Tools => self.tools_content.handle_key(code),
+                Section::Templates => self.templates_content.handle_key(code),
+                Section::Logs => self.logs_content.handle_key(code),
+                Section::About => self.about_content.handle_key(code),
+                Section::Settings => self.settings_content.handle_key(code),
                 // Placeholder sections have no focusable content.
                 _ => None,
             };
@@ -1739,6 +1935,21 @@ impl AppScreen for DashboardScreen {
                     Section::Mise => {
                         self.toride_mise_content.handle_mouse(mouse);
                     }
+                    Section::Tools => {
+                        self.tools_content.handle_mouse(mouse);
+                    }
+                    Section::Templates => {
+                        self.templates_content.handle_mouse(mouse);
+                    }
+                    Section::Logs => {
+                        self.logs_content.handle_mouse(mouse);
+                    }
+                    Section::About => {
+                        self.about_content.handle_mouse(mouse);
+                    }
+                    Section::Settings => {
+                        self.settings_content.handle_mouse(mouse);
+                    }
                     _ => {}
                 }
             }
@@ -1798,6 +2009,21 @@ impl AppScreen for DashboardScreen {
                 } else if self.active_section() == Section::Mise {
                     self.focus.set(ShellFocus::Content);
                     return self.toride_mise_content.handle_mouse(mouse);
+                } else if self.active_section() == Section::Tools {
+                    self.focus.set(ShellFocus::Content);
+                    return self.tools_content.handle_mouse(mouse);
+                } else if self.active_section() == Section::Templates {
+                    self.focus.set(ShellFocus::Content);
+                    return self.templates_content.handle_mouse(mouse);
+                } else if self.active_section() == Section::Logs {
+                    self.focus.set(ShellFocus::Content);
+                    return self.logs_content.handle_mouse(mouse);
+                } else if self.active_section() == Section::About {
+                    self.focus.set(ShellFocus::Content);
+                    return self.about_content.handle_mouse(mouse);
+                } else if self.active_section() == Section::Settings {
+                    self.focus.set(ShellFocus::Content);
+                    return self.settings_content.handle_mouse(mouse);
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
@@ -1817,6 +2043,11 @@ impl AppScreen for DashboardScreen {
                     Section::Cloud => return self.toride_cloud_content.handle_mouse(mouse),
                     Section::Tailscale => return self.toride_tailscale_content.handle_mouse(mouse),
                     Section::Mise => return self.toride_mise_content.handle_mouse(mouse),
+                    Section::Tools => return self.tools_content.handle_mouse(mouse),
+                    Section::Templates => return self.templates_content.handle_mouse(mouse),
+                    Section::Logs => return self.logs_content.handle_mouse(mouse),
+                    Section::About => return self.about_content.handle_mouse(mouse),
+                    Section::Settings => return self.settings_content.handle_mouse(mouse),
                     _ => self.scroll_focused(down),
                 }
             }
@@ -1836,6 +2067,11 @@ impl AppScreen for DashboardScreen {
                     Section::Cloud => return self.toride_cloud_content.handle_mouse(mouse),
                     Section::Tailscale => return self.toride_tailscale_content.handle_mouse(mouse),
                     Section::Mise => return self.toride_mise_content.handle_mouse(mouse),
+                    Section::Tools => return self.tools_content.handle_mouse(mouse),
+                    Section::Templates => return self.templates_content.handle_mouse(mouse),
+                    Section::Logs => return self.logs_content.handle_mouse(mouse),
+                    Section::About => return self.about_content.handle_mouse(mouse),
+                    Section::Settings => return self.settings_content.handle_mouse(mouse),
                     _ => {}
                 }
             }
@@ -1870,9 +2106,10 @@ impl AppScreen for DashboardScreen {
             }
         }
         // All non-SSH content sections (Fail2ban, Firewall, Harden, WireGuard,
-        // Updates, Users, Audit, Monitor, Backup, Proxy, Cloud, Tailscale, Mise)
-        // are read-only with no modal — has_modal() always returns false for
-        // them, so only SSH needs a branch here.
+        // Updates, Users, Audit, Monitor, Backup, Proxy, Cloud, Tailscale, Mise,
+        // Tools, Templates, Logs, About, Settings) are read-only with no modal
+        // — has_modal() always returns false for them, so only SSH needs a
+        // branch here.
         false
     }
 }
@@ -1905,22 +2142,6 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
 }
 
 /// Compute the visible `(item_index, row_rect)` pairs for a scrollable list.
-fn list_rows(inner: Rect, scroll: usize, len: usize) -> Vec<(usize, Rect)> {    if inner.height == 0 {
-        return Vec::new();
-    }
-    let visible = usize::from(inner.height);
-    let max_scroll = len.saturating_sub(visible);
-    let scroll = scroll.min(max_scroll);
-    (scroll..len)
-        .take(visible)
-        .enumerate()
-        .filter_map(|(row, i)| {
-            let offset = u16::try_from(row).ok()?;
-            Some((i, Rect::new(inner.x, inner.y + offset, inner.width, 1)))
-        })
-        .collect()
-}
-
 fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, focused: bool) {
     let border = if focused { p.border_hi } else { p.border };
     let inner = render_panel(frame, area, None, p.text, border, p.panel);
@@ -1956,38 +2177,6 @@ fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, foc
             Rect::new(inner.x, inner.bottom() - 1, inner.width, 1),
         );
     }
-}
-
-fn render_update_row(frame: &mut Frame, row: Rect, p: Palette, u: &ModuleUpdate) {
-    let name = Line::from(Span::styled(u.name.clone(), Style::new().fg(p.text)));
-    frame.render_widget(Paragraph::new(name), row);
-
-    let mut right = Vec::new();
-    if let Some(from) = &u.from {
-        right.push(Span::styled(from.clone(), Style::new().fg(p.text_muted)));
-        right.push(Span::styled(" → ", Style::new().fg(p.text_dim)));
-    } else {
-        right.push(Span::styled("— → ", Style::new().fg(p.text_muted)));
-    }
-    right.push(Span::styled(u.to.clone(), Style::new().fg(p.accent2).bold()));
-    right.push(Span::raw("  "));
-    right.push(tag_badge(&u.badge, p.info, p));
-    frame.render_widget(Paragraph::new(Line::from(right)).right_aligned(), row);
-}
-
-fn render_activity_row(frame: &mut Frame, row: Rect, p: Palette, e: &ActivityEntry) {
-    let left = Line::from(vec![
-        Span::styled(format!("{} ", e.time), Style::new().fg(p.text_muted)),
-        Span::styled(format!("{} ", e.kind.glyph()), Style::new().fg(e.kind.color(p))),
-        Span::styled(
-            truncate_str(&e.message, row.width.saturating_sub(10) as usize),
-            Style::new().fg(p.text_dim),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(left), row);
-
-    let dur = Line::from(Span::styled(e.duration.clone(), Style::new().fg(p.text_muted)));
-    frame.render_widget(Paragraph::new(dur).right_aligned(), row);
 }
 
 /// Render live top processes (by CPU, then memory) into the TOP PROCESSES panel.
@@ -2040,15 +2229,6 @@ fn render_top_processes(
         ]);
         frame.render_widget(Paragraph::new(left), row);
     }
-}
-
-fn render_placeholder(frame: &mut Frame, area: Rect, p: Palette, section: Section) {
-    let msg = Line::from(vec![
-        Span::styled(section.label(), Style::new().fg(p.accent).bold()),
-        Span::styled(" — coming soon", Style::new().fg(p.text_dim)),
-    ]);
-    let centered = Rect::new(area.x, area.y + area.height / 2, area.width, 1);
-    frame.render_widget(Paragraph::new(msg).centered(), centered);
 }
 
 fn render_module_modal_content(
@@ -2430,6 +2610,19 @@ mod tests {
     #[test]
     fn module_grid_navigation() {
         let mut s = DashboardScreen::new();
+        // Seed a multi-module view so 2D grid navigation (right/down/left) has
+        // more than the single cold-start sentinel to move across. The
+        // cold-start grid is honest: one "collecting system status…" card, so
+        // navigation would be a no-op without seeding.
+        s.modules_view = (0..4)
+            .map(|_| Module {
+                icon: "◆",
+                name: "x".into(),
+                status: ModuleStatus::Installed,
+                summary: String::new(),
+                detail: String::new(),
+            })
+            .collect();
         s.handle_key(KeyCode::Tab); // Content → Modules
         s.handle_key(KeyCode::Right);
         assert_eq!(s.module_sel, 1);

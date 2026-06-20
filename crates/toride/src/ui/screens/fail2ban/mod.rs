@@ -172,6 +172,23 @@ impl Fail2banContent {
         self.available = available;
     }
 
+    /// Total currently-banned IPs across all jails, surfaced as the sidebar
+    /// badge for the fail2ban section. Falls back to the jail count when bans
+    /// are not reported. `None` when the backend is unreachable
+    /// (`available == false`) so the badge stays honestly empty.
+    #[must_use]
+    pub fn total_bans(&self) -> Option<usize> {
+        if !self.available {
+            return None;
+        }
+        let banned = self.bans.iter().map(|b| b.ip.len()).sum::<usize>();
+        if banned > 0 {
+            Some(banned)
+        } else {
+            Some(self.jails.len())
+        }
+    }
+
     /// Set the human-readable reason the backend was unreachable. Cleared
     /// (`None`) whenever availability flips back to `true` so a stale panic
     /// message can't linger after recovery.
