@@ -123,7 +123,10 @@ Completed before this plan-only audit:
 
 ### Error Semantics
 
-- Stdin setup/write failures are not distinguished.
+- Stdin setup/write failures are not distinguished by DuctRunner. It pipes
+  stdin via `cmd.stdin_bytes(...)`, so a write failure surfaces as a wait error
+  rather than `Error::StdinFailed`. TokioRunner already maps `Error::StdinFailed`
+  for its stdin writes, so this gap is Duct-specific.
 - Timeout diagnostics include program, args, and duration, but there is no
   richer structured context such as cwd, output mode, or sanitized env summary.
 
