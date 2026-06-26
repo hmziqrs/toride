@@ -457,12 +457,16 @@ Implementation notes:
   write, so `wait()` never returns and only the timeout saves it). The
   concurrent-draining conversion fixes that deadlock too. Do it as a reviewable
   prerequisite step, ideally in its own commit, before adding the limit.
-- Concrete shape for the non-streaming conversion: wrap
+- Concrete shape, in two steps. For the no-limit deadlock-fix prerequisite, wrap
   `tokio::join!(read_stdout, read_stderr, child.wait())` in the single outer
-  `tokio::time::timeout`. The reads operate on the already-`take()`n
+  `tokio::time::timeout`; the reads operate on the already-`take()`n
   `child.stdout` / `child.stderr` handles, so they do not alias the `&mut child`
-  that `wait()` needs — no `tokio::spawn` + `Arc<Mutex<Child>>` is required. On
-  the timeout or breach arm, kill the child and drop the in-flight reads.
+  that `wait()` needs — no `tokio::spawn` + `Arc<Mutex<Child>>` is required. For
+  the limited path, `join!` is insufficient because it cannot break early on a
+  breach; use `tokio::select!` over the two bounded reads and `child.wait()` with
+  a per-read cap check, so the first read that crosses the cap wins, kills the
+  child, and the other arms are dropped. On the timeout or breach arm, kill the
+  child and drop the in-flight reads.
 - Streaming Tokio execution should count emitted stdout/stderr bytes and return
   `OutputLimitExceeded` as soon as the next chunk would exceed the cap. The
   streaming path currently uses `read_line` for both stdout (inline) and stderr
