@@ -75,6 +75,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn parity_env_remove() {
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${HOME-unset}\""])
+            .env_remove("HOME");
+
+        let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
+        let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
+
+        assert_eq!(sync_output.stdout, async_output.stdout);
+        assert_eq!(sync_output.stdout, "unset");
+    }
+
+    #[tokio::test]
+    async fn parity_clear_env() {
+        let spec = CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s:%s' \"${HOME-unset}\" \"$TORIDE_PARITY_KEEP\"",
+            ])
+            .clear_env(true)
+            .env("TORIDE_PARITY_KEEP", "kept");
+
+        let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
+        let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
+
+        assert_eq!(sync_output.stdout, async_output.stdout);
+        assert_eq!(sync_output.stdout, "unset:kept");
+    }
+
+    #[tokio::test]
     async fn parity_cwd() {
         let spec = CommandSpec::new("pwd").cwd("/tmp");
 

@@ -32,6 +32,16 @@ pub struct CommandSpec {
     pub timeout: Option<Duration>,
     /// Extra environment variables (`(key, value)` pairs).
     pub env: Vec<(String, String)>,
+    /// Environment variables to remove from the child process environment.
+    ///
+    /// Explicit values in [`CommandSpec::env`] are applied after removals, so
+    /// an explicitly-added variable wins if the same key appears in both lists.
+    pub env_remove: Vec<String>,
+    /// Whether the child should start from a clean environment.
+    ///
+    /// When true, runners apply a minimal platform environment where required
+    /// and then apply [`CommandSpec::env`].
+    pub clear_env: bool,
     /// Working directory for the command. Defaults to the current directory.
     pub cwd: Option<PathBuf>,
     /// How stdout and stderr should be handled.
@@ -51,6 +61,8 @@ impl CommandSpec {
             stdin: None,
             timeout: None,
             env: Vec::new(),
+            env_remove: Vec::new(),
+            clear_env: false,
             cwd: None,
             output_mode: OutputMode::Capture,
             redact: false,
@@ -109,6 +121,31 @@ impl CommandSpec {
         self
     }
 
+    /// Remove an environment variable from the child process.
+    #[must_use]
+    pub fn env_remove(mut self, key: impl Into<String>) -> Self {
+        self.env_remove.push(key.into());
+        self
+    }
+
+    /// Remove multiple environment variables from the child process.
+    #[must_use]
+    pub fn env_removes<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.env_remove.extend(keys.into_iter().map(Into::into));
+        self
+    }
+
+    /// Start the child with a clean environment before applying explicit env.
+    #[must_use]
+    pub fn clear_env(mut self, clear: bool) -> Self {
+        self.clear_env = clear;
+        self
+    }
+
     /// Set the working directory for the command.
     #[must_use]
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
@@ -140,12 +177,14 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 8)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 10)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
         s.serialize_field("timeout_nanos", &self.timeout.map(|d| d.as_nanos() as u64))?;
         s.serialize_field("env", &self.env)?;
+        s.serialize_field("env_remove", &self.env_remove)?;
+        s.serialize_field("clear_env", &self.clear_env)?;
         s.serialize_field(
             "cwd",
             &self.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
@@ -171,7 +210,12 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             timeout_nanos: Option<u64>,
             #[serde(default)]
             timeout: Option<u64>,
+            #[serde(default)]
             env: Vec<(String, String)>,
+            #[serde(default)]
+            env_remove: Vec<String>,
+            #[serde(default)]
+            clear_env: bool,
             #[serde(default)]
             cwd: Option<String>,
             #[serde(default)]
@@ -195,6 +239,8 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             stdin: h.stdin,
             timeout,
             env: h.env,
+            env_remove: h.env_remove,
+            clear_env: h.clear_env,
             cwd: h.cwd.map(PathBuf::from),
             output_mode: h.output_mode,
             redact: h.redact,
@@ -259,6 +305,8 @@ mod serde_tests {
         assert_eq!(roundtripped.output_mode, OutputMode::Capture);
         assert!(roundtripped.redact);
         assert_eq!(roundtripped.env, vec![("KEY".into(), "val".into())]);
+        assert!(roundtripped.env_remove.is_empty());
+        assert!(!roundtripped.clear_env);
     }
 
     #[test]
@@ -270,6 +318,8 @@ mod serde_tests {
         assert_eq!(spec.output_mode, OutputMode::Capture);
         assert!(!spec.redact);
         assert!(spec.timeout.is_none());
+        assert!(spec.env_remove.is_empty());
+        assert!(!spec.clear_env);
     }
 
     #[test]
@@ -280,5 +330,20 @@ mod serde_tests {
         let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
 
         assert_eq!(roundtripped.output_mode, OutputMode::Inherit);
+    }
+
+    #[test]
+    fn env_policy_round_trip() {
+        let spec = CommandSpec::new("cmd")
+            .env("KEEP", "1")
+            .env_remove("DROP")
+            .clear_env(true);
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.env, vec![("KEEP".into(), "1".into())]);
+        assert_eq!(roundtripped.env_remove, vec!["DROP"]);
+        assert!(roundtripped.clear_env);
     }
 }

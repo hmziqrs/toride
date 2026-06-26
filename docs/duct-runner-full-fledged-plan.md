@@ -37,8 +37,12 @@ runner abstraction yet.
 - Phase 1 is implemented: Duct spawn/wait errors are mapped to structured error variants, command completion logs include redacted display strings and elapsed time, `run_checked()` uses redacted args when requested, and the Duct test suite now covers cwd, checked failure, redaction, spawn failure, timeout metadata, timeout cleanup, stdout/stderr separation, large output, and exit-code preservation.
 - Phase 2 is implemented: `DuctRunnerOptions`, `DuctRunnerBuilder`, and `ConfiguredDuctRunner` provide configurable fallback timeouts, no-default-timeout mode, and command logging control while preserving `DuctRunner` unit-struct usage.
 - Phase 3 is implemented: `CommandSpec` now carries `OutputMode` with serde backward compatibility, `DuctRunner` honors `Capture` and `Inherit`, `Stream` is explicitly unsupported for sync Duct execution, and `FakeRunner` exact matching includes output mode.
-- Phases 4-7 remain open: environment policy, output limits/raw bytes,
-  process-tree cleanup policy, expanded parity coverage, and docs/examples.
+- Phase 4 is implemented: `CommandSpec` can remove env vars and request a
+  clean environment, DuctRunner and TokioRunner both honor the policy,
+  FakeRunner exact matching includes the new fields, and serde keeps older
+  specs compatible.
+- Phases 5-7 remain open: output limits/raw bytes, process-tree cleanup policy,
+  expanded parity coverage, and docs/examples.
 
 ## Progress Audit
 
@@ -71,6 +75,12 @@ Completed during the current pass:
 - duration and redacted command display in completion logs
 - timeout kill/reap warning logs
 - focused DuctRunner tests for the above behavior
+- `CommandSpec::env_remove`
+- `CommandSpec::clear_env`
+- DuctRunner, TokioRunner, and streaming Tokio execution honor environment
+  policy
+- fake-runner exact matching for environment policy
+- env policy serde compatibility and parity tests
 
 ## Remaining Gaps
 
@@ -82,10 +92,13 @@ Completed during the current pass:
 
 ### Environment Control
 
-- Only additive env vars are supported.
-- No clean environment mode.
-- No env removal support.
-- No documented policy for preserving required platform env vars.
+- Additive env vars, env removal, and clean environment mode are supported.
+- Clean environment preserves only minimal Windows process variables where
+  available; Unix/macOS starts from an empty child environment and then applies
+  explicit env values.
+- If a key appears in both `env_remove` and `env`, the explicit `env` value
+  wins.
+- Crate-level examples still need to document this policy for callers.
 - Fake runner exact-match comparison still ignores timeout and redaction. That
   is currently intentional for timeout because it is a runtime policy concern,
   but it should be re-audited when environment policy and additional
@@ -135,8 +148,7 @@ Completed during the current pass:
 
 - `DuctRunner` remains a unit struct for compatibility, with configured behavior
   available through `ConfiguredDuctRunner`.
-- `CommandSpec` lacks fields for clean env, env removal, byte stdin, output
-  limits, and shell opt-in.
+- `CommandSpec` lacks fields for byte stdin, output limits, and shell opt-in.
 - Adding fields to `CommandSpec` affects serde compatibility and fake-runner exact matching.
 
 ## Target Behavior
@@ -167,8 +179,6 @@ in `ConfiguredDuctRunner`, built through `DuctRunner::builder()` or
 
 Add only when needed, and preserve serde backward compatibility:
 
-- `env_remove: Vec<String>`
-- `clear_env: bool`
 - `stdin_bytes: Option<Vec<u8>>` or a `CommandStdin` enum
 - `timeout_policy: TimeoutPolicy` if `None` must distinguish “use runner default” from “no timeout”
 - `output_limit: Option<usize>`
@@ -282,6 +292,8 @@ Exit criteria:
 
 Add deliberate environment control.
 
+Status: implemented.
+
 - Add `env_remove`.
 - Add `clear_env`.
 - Decide whether `clear_env` preserves minimal platform env vars.
@@ -336,27 +348,26 @@ Exit criteria:
 
 ## Recommended Next PR
 
-Phases 1-3 are implemented. The next highest-value slice is Phase 4:
-environment policy. It is the remaining gap most likely to affect real command
-correctness, reproducibility, and testability.
+Phases 1-4 are implemented. The next highest-value slice is Phase 5: output
+safety. It is the remaining gap most likely to destabilize the app under
+pathological command output.
 
-Suggested files for Phase 4:
+Suggested files for Phase 5:
 
 - `crates/toride-runner/src/duct_runner.rs`
 - `crates/toride-runner/src/spec.rs`
-- `crates/toride-runner/src/fake.rs`
-- `crates/toride-runner/src/parity_tests.rs`
+- `crates/toride-runner/src/output.rs`
+- `crates/toride-runner/src/tokio_runner.rs`
 
 Suggested tests:
 
-- DuctRunner applies additive env vars with existing behavior unchanged.
-- DuctRunner removes selected env vars.
-- DuctRunner can clear the inherited environment.
-- Clean-env behavior preserves or documents required platform variables.
-- FakeRunner exact matching handles any new environment-policy fields.
+- DuctRunner preserves current unlimited capture behavior by default.
+- DuctRunner fails or truncates predictably when an output limit is exceeded.
+- TokioRunner matches the same output-limit behavior.
+- Non-UTF-8 output behavior is explicit and tested.
 - Serde round trips new `CommandSpec` fields and defaults older JSON safely.
 
-Do not combine Phase 4 with raw-byte output or process-tree cleanup. Those are
+Do not combine Phase 5 with process-tree cleanup or shell execution. Those are
 separate risk areas and should be reviewed independently.
 
 ## Definition of Done

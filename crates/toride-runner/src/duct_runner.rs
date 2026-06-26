@@ -142,10 +142,7 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         cmd = cmd.dir(cwd);
     }
 
-    // Apply environment variables.
-    for (key, value) in &spec.env {
-        cmd = cmd.env(key, value);
-    }
+    cmd = apply_env_policy(cmd, spec);
 
     // Pipe stdin data if provided.
     if let Some(ref stdin_data) = spec.stdin {
@@ -232,6 +229,69 @@ fn wait_failed(spec: &CommandSpec, error: std::io::Error) -> Error {
     }
 }
 
+fn apply_env_policy(mut cmd: duct::Expression, spec: &CommandSpec) -> duct::Expression {
+    if spec.clear_env {
+        let mut env = clean_env_values(spec);
+        env.extend(spec.env.iter().cloned());
+        return cmd.full_env(env);
+    }
+
+    for (key, value) in &spec.env {
+        cmd = cmd.env(key, value);
+    }
+
+    for key in &spec.env_remove {
+        if !spec
+            .env
+            .iter()
+            .any(|(env_key, _)| env_key_matches(env_key, key))
+        {
+            cmd = cmd.env_remove(key);
+        }
+    }
+
+    cmd
+}
+
+fn clean_env_values(spec: &CommandSpec) -> Vec<(String, String)> {
+    platform_env_preserved_for_clean_env()
+        .into_iter()
+        .filter(|(key, _)| {
+            !spec
+                .env_remove
+                .iter()
+                .any(|removed| env_key_matches(removed, key))
+                || spec
+                    .env
+                    .iter()
+                    .any(|(env_key, _)| env_key_matches(env_key, key))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
+    ["SystemRoot", "SystemDrive", "WINDIR"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn env_key_matches(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+#[cfg(not(windows))]
+fn env_key_matches(a: &str, b: &str) -> bool {
+    a == b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +339,41 @@ mod tests {
         let spec = CommandSpec::new("env").env("TORIDE_TEST_VAR", "42");
         let output = runner.run(&spec).unwrap();
         assert!(output.stdout.contains("TORIDE_TEST_VAR=42"));
+    }
+
+    #[test]
+    fn env_remove_unsets_inherited_variable() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${HOME-unset}\""])
+            .env_remove("HOME");
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout, "unset");
+    }
+
+    #[test]
+    fn explicit_env_wins_over_env_remove() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${TORIDE_REMOVE_ME-unset}\""])
+            .env_remove("TORIDE_REMOVE_ME")
+            .env("TORIDE_REMOVE_ME", "present");
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout, "present");
+    }
+
+    #[test]
+    fn clear_env_removes_inherited_variables() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s:%s' \"${HOME-unset}\" \"$TORIDE_ONLY\""])
+            .clear_env(true)
+            .env("TORIDE_ONLY", "kept");
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout, "unset:kept");
     }
 
     #[test]

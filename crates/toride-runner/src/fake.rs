@@ -119,7 +119,7 @@ impl FakeRunner {
     ///
     /// When a call matches the spec, this response takes priority over the
     /// FIFO queue. Matching compares `program`, `args`, `stdin`, `env`, and
-    /// `cwd`.
+    /// `env_remove`, `clear_env`, `cwd`, and `output_mode`.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
@@ -243,7 +243,8 @@ impl AsyncRunner for FakeRunner {
 
 /// Check if two specs match on the fields used for exact matching.
 ///
-/// Compares `program`, `args`, `stdin`, `env`, `cwd`, and `output_mode`.
+/// Compares `program`, `args`, `stdin`, `env`, `env_remove`, `clear_env`,
+/// `cwd`, and `output_mode`.
 /// Timeout is ignored by default — it is a runtime concern, not
 /// a command-construction concern.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
@@ -251,6 +252,8 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.args == b.args
         && a.stdin == b.stdin
         && a.env == b.env
+        && a.env_remove == b.env_remove
+        && a.clear_env == b.clear_env
         && a.cwd == b.cwd
         && a.output_mode == b.output_mode
 }
@@ -443,6 +446,30 @@ mod tests {
         let output = run_sync(
             &runner,
             &CommandSpec::new("cmd").output_mode(crate::OutputMode::Inherit),
+        )
+        .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    #[test]
+    fn specs_match_compares_env_policy() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd")
+                .clear_env(true)
+                .env_remove("DROP")
+                .env("KEEP", "1"),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        let result = run_sync(&runner, &CommandSpec::new("cmd").env("KEEP", "1"));
+        assert!(result.is_err(), "different env policy should not match");
+
+        let output = run_sync(
+            &runner,
+            &CommandSpec::new("cmd")
+                .clear_env(true)
+                .env_remove("DROP")
+                .env("KEEP", "1"),
         )
         .unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");

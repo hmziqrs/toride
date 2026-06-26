@@ -82,10 +82,7 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
         cmd.current_dir(cwd);
     }
 
-    // Apply environment variables.
-    for (key, value) in &spec.env {
-        cmd.env(key, value);
-    }
+    apply_env_policy(&mut cmd, spec);
 
     // Pipe stdin data if provided.
     if spec.stdin.is_some() {
@@ -224,9 +221,7 @@ async fn run_streaming_command(
     if let Some(ref cwd) = spec.cwd {
         cmd.current_dir(cwd);
     }
-    for (key, value) in &spec.env {
-        cmd.env(key, value);
-    }
+    apply_env_policy(&mut cmd, spec);
     if spec.stdin.is_some() {
         cmd.stdin(std::process::Stdio::piped());
     }
@@ -262,8 +257,7 @@ async fn run_streaming_command(
     let stderr_reader = child.stderr.take().map(BufReader::new);
 
     // Channel for stderr lines from spawned task.
-    let (stderr_tx, mut stderr_rx) =
-        tokio::sync::mpsc::channel::<(Vec<u8>, String)>(64);
+    let (stderr_tx, mut stderr_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, String)>(64);
 
     // Spawn a task to read stderr lines.
     if let Some(mut reader) = stderr_reader {
@@ -305,10 +299,8 @@ async fn run_streaming_command(
                         let mut chunk = trimmed.as_bytes().to_vec();
                         chunk.push(b'\n');
                         stdout_bytes.extend_from_slice(&chunk);
-                        sink.on_event(CommandEvent::StdoutChunk(chunk))
-                            .await?;
-                        sink.on_event(CommandEvent::StdoutLine(trimmed))
-                            .await?;
+                        sink.on_event(CommandEvent::StdoutChunk(chunk)).await?;
+                        sink.on_event(CommandEvent::StdoutLine(trimmed)).await?;
                     }
                 }
             }
@@ -367,6 +359,58 @@ impl AsyncStreamingRunner for TokioRunner {
     }
 }
 
+fn apply_env_policy(cmd: &mut tokio::process::Command, spec: &CommandSpec) {
+    if spec.clear_env {
+        cmd.env_clear();
+        for (key, value) in clean_env_values(spec) {
+            cmd.env(key, value);
+        }
+    } else {
+        for key in &spec.env_remove {
+            cmd.env_remove(key);
+        }
+    }
+
+    for (key, value) in &spec.env {
+        cmd.env(key, value);
+    }
+}
+
+fn clean_env_values(spec: &CommandSpec) -> Vec<(String, String)> {
+    platform_env_preserved_for_clean_env()
+        .into_iter()
+        .filter(|(key, _)| {
+            !spec
+                .env_remove
+                .iter()
+                .any(|removed| env_key_matches(removed, key))
+        })
+        .collect()
+}
+
+#[cfg(windows)]
+fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
+    ["SystemRoot", "SystemDrive", "WINDIR"]
+        .into_iter()
+        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn env_key_matches(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+#[cfg(not(windows))]
+fn env_key_matches(a: &str, b: &str) -> bool {
+    a == b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +458,41 @@ mod tests {
         let spec = CommandSpec::new("env").env("TORIDE_TEST_ASYNC_VAR", "42");
         let output = runner.run(&spec).await.unwrap();
         assert!(output.stdout.contains("TORIDE_TEST_ASYNC_VAR=42"));
+    }
+
+    #[tokio::test]
+    async fn env_remove_unsets_inherited_variable() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${HOME-unset}\""])
+            .env_remove("HOME");
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout, "unset");
+    }
+
+    #[tokio::test]
+    async fn explicit_env_wins_over_env_remove() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${TORIDE_REMOVE_ME-unset}\""])
+            .env_remove("TORIDE_REMOVE_ME")
+            .env("TORIDE_REMOVE_ME", "present");
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout, "present");
+    }
+
+    #[tokio::test]
+    async fn clear_env_removes_inherited_variables() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s:%s' \"${HOME-unset}\" \"$TORIDE_ONLY\""])
+            .clear_env(true)
+            .env("TORIDE_ONLY", "kept");
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout, "unset:kept");
     }
 
     #[tokio::test]
@@ -521,8 +600,14 @@ mod tests {
         assert!(output.success);
         assert!(output.stdout.contains("OUT"));
         assert!(output.stderr.contains("ERR"));
-        assert!(!output.stdout.contains("ERR"), "stderr should not leak into stdout");
-        assert!(!output.stderr.contains("OUT"), "stdout should not leak into stderr");
+        assert!(
+            !output.stdout.contains("ERR"),
+            "stderr should not leak into stdout"
+        );
+        assert!(
+            !output.stderr.contains("OUT"),
+            "stdout should not leak into stderr"
+        );
     }
 
     /// Verify that stdin write errors surface as StdinFailed.
@@ -547,7 +632,8 @@ mod tests {
     async fn large_output_captured() {
         let runner = TokioRunner;
         // Generate ~100 lines of output.
-        let spec = CommandSpec::new("bash").args(["-c", "for i in $(seq 1 100); do echo \"line $i\"; done"]);
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo \"line $i\"; done"]);
 
         let output = runner.run(&spec).await.unwrap();
         assert!(output.success);

@@ -45,7 +45,10 @@ mod tests {
         ));
         assert!(matches!(&sink.events[1], CommandEvent::StdoutChunk(_)));
         assert!(matches!(&sink.events[2], CommandEvent::StdoutLine(line) if line == "hello"));
-        assert!(matches!(&sink.events[3], CommandEvent::Exited { exit_code: Some(0) }));
+        assert!(matches!(
+            &sink.events[3],
+            CommandEvent::Exited { exit_code: Some(0) }
+        ));
     }
 
     #[tokio::test]
@@ -60,9 +63,10 @@ mod tests {
         assert!(output.stdout.contains("ok"));
         assert!(output.stderr.contains("err"));
 
-        let has_stderr_line = sink.events.iter().any(|e| {
-            matches!(e, CommandEvent::StderrLine(line) if line.contains("err"))
-        });
+        let has_stderr_line = sink
+            .events
+            .iter()
+            .any(|e| matches!(e, CommandEvent::StderrLine(line) if line.contains("err")));
         assert!(has_stderr_line, "should have received stderr line event");
     }
 
@@ -99,7 +103,10 @@ mod tests {
 
         assert!(!output.success);
 
-        let exited = sink.events.iter().find(|e| matches!(e, CommandEvent::Exited { .. }));
+        let exited = sink
+            .events
+            .iter()
+            .find(|e| matches!(e, CommandEvent::Exited { .. }));
         assert!(exited.is_some(), "should have Exited event");
         if let Some(CommandEvent::Exited { exit_code }) = exited {
             assert_eq!(*exit_code, Some(1));
@@ -131,8 +138,14 @@ mod tests {
         let _ = runner.run_streaming(&spec, &mut sink).await.unwrap();
 
         // First event must be Started, last must be Exited.
-        assert!(matches!(sink.events.first(), Some(CommandEvent::Started { .. })));
-        assert!(matches!(sink.events.last(), Some(CommandEvent::Exited { .. })));
+        assert!(matches!(
+            sink.events.first(),
+            Some(CommandEvent::Started { .. })
+        ));
+        assert!(matches!(
+            sink.events.last(),
+            Some(CommandEvent::Exited { .. })
+        ));
     }
 
     #[tokio::test]
@@ -159,6 +172,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_env_remove_unsets_inherited_variable() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${HOME-unset}\""])
+            .env_remove("HOME");
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "unset");
+    }
+
+    #[tokio::test]
+    async fn streaming_clear_env_removes_inherited_variables() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s:%s' \"${HOME-unset}\" \"$TORIDE_STREAM_ONLY\"",
+            ])
+            .clear_env(true)
+            .env("TORIDE_STREAM_ONLY", "kept");
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "unset:kept");
+    }
+
+    #[tokio::test]
     async fn streaming_cwd_applied() {
         let runner = TokioRunner;
         let spec = CommandSpec::new("pwd").cwd("/tmp");
@@ -175,7 +218,10 @@ mod tests {
 
     #[tokio::test]
     async fn output_mode_default_is_capture() {
-        assert_eq!(crate::output_mode::OutputMode::default(), crate::output_mode::OutputMode::Capture);
+        assert_eq!(
+            crate::output_mode::OutputMode::default(),
+            crate::output_mode::OutputMode::Capture
+        );
     }
 
     /// Verify that a timed-out streaming command actually kills the child process.
@@ -190,15 +236,16 @@ mod tests {
         let timeout = Duration::from_millis(100);
 
         // Use a single `sleep` process — no bash subprocess tree.
-        let spec = CommandSpec::new("sleep")
-            .arg("10")
-            .timeout(timeout);
+        let spec = CommandSpec::new("sleep").arg("10").timeout(timeout);
         let mut sink = CollectingSink::default();
 
         let result = runner.run_streaming(&spec, &mut sink).await;
         assert!(result.is_err(), "streaming timeout should produce an error");
         assert!(
-            matches!(result.unwrap_err(), crate::error::Error::CommandTimeout { .. }),
+            matches!(
+                result.unwrap_err(),
+                crate::error::Error::CommandTimeout { .. }
+            ),
             "expected CommandTimeout"
         );
 
@@ -281,12 +328,14 @@ mod tests {
         assert!(!output.stderr.contains("OUT"));
 
         // Events should also be properly separated.
-        let has_stdout_out = sink.events.iter().any(|e| {
-            matches!(e, CommandEvent::StdoutLine(l) if l.contains("OUT"))
-        });
-        let has_stderr_err = sink.events.iter().any(|e| {
-            matches!(e, CommandEvent::StderrLine(l) if l.contains("ERR"))
-        });
+        let has_stdout_out = sink
+            .events
+            .iter()
+            .any(|e| matches!(e, CommandEvent::StdoutLine(l) if l.contains("OUT")));
+        let has_stderr_err = sink
+            .events
+            .iter()
+            .any(|e| matches!(e, CommandEvent::StderrLine(l) if l.contains("ERR")));
         assert!(has_stdout_out);
         assert!(has_stderr_err);
     }
@@ -303,7 +352,9 @@ mod tests {
         async fn on_event(&mut self, event: CommandEvent) -> Result<()> {
             self.events.push(event);
             if self.events.len() > self.fail_after {
-                return Err(crate::error::Error::Other("sink deliberately failed".into()));
+                return Err(crate::error::Error::Other(
+                    "sink deliberately failed".into(),
+                ));
             }
             Ok(())
         }
@@ -312,8 +363,7 @@ mod tests {
     #[tokio::test]
     async fn streaming_sink_error_aborts() {
         let runner = TokioRunner;
-        let spec = CommandSpec::new("bash")
-            .args(["-c", "echo line1; echo line2; echo line3"]);
+        let spec = CommandSpec::new("bash").args(["-c", "echo line1; echo line2; echo line3"]);
         // Fail after 2 events (Started + first StdoutChunk).
         let mut sink = FailingSink {
             events: Vec::new(),
