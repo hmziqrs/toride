@@ -78,6 +78,7 @@ impl Sidebar {
         self.hitboxes
             .iter()
             .position(|r| col >= r.x && col < r.right() && row >= r.y && row < r.bottom())
+            .map(|visible_idx| self.scroll_offset + visible_idx)
     }
 
     /// Advance the per-item highlight animation toward each item's target.
@@ -160,6 +161,14 @@ impl Sidebar {
         let max_offset = self.len - visible;
         let new = self.scroll_offset as i32 + delta;
         self.scroll_offset = new.clamp(0, max_offset as i32) as usize;
+    }
+
+    /// Current viewport scroll offset (index of the topmost visible item).
+    /// Exposed so tests can assert that mouse-wheel routing scrolls the
+    /// sidebar list rather than the focused content pane.
+    #[must_use]
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
     }
 
     /// Clamp scroll offset so the selected item is visible in the viewport.
@@ -417,5 +426,22 @@ mod tests {
         let mut s = Sidebar::new(0);
         s.select_next();
         assert_eq!(s.selected(), 0);
+    }
+
+    #[test]
+    fn item_at_returns_scrolled_item_index() {
+        let mut s = Sidebar::new(20);
+        s.last_visible = 3;
+        s.scroll(5);
+        s.hitboxes = vec![
+            Rect::new(0, 2, 10, 1),
+            Rect::new(0, 3, 10, 1),
+            Rect::new(0, 4, 10, 1),
+        ];
+
+        assert_eq!(s.scroll_offset(), 5);
+        assert_eq!(s.item_at(1, 2), Some(5));
+        assert_eq!(s.item_at(1, 3), Some(6));
+        assert_eq!(s.item_at(1, 4), Some(7));
     }
 }

@@ -198,6 +198,10 @@ pub struct DashboardScreen {
     module_modal: InteractiveModal<Action>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
+    /// Last-rendered sidebar pane rect. Used to route mouse-wheel scroll by
+    /// cursor position (over the sidebar → scroll the sidebar list) rather
+    /// than by the focused shell region.
+    sidebar_area: Rect,
     /// Hitbox rects for module cards (rebuilt each frame).
     module_hitboxes: Vec<Rect>,
     /// Materialized module list for the *current* frame: live modules when a
@@ -334,6 +338,7 @@ impl DashboardScreen {
             .dimensions(54, 10),
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
+            sidebar_area: Rect::default(),
             module_hitboxes: Vec::new(),
             modules_view,
             net_rx_rate: None,
@@ -1080,6 +1085,9 @@ impl DashboardScreen {
         };
 
         let shell = shell_layout(area, sidebar_w);
+        // Stash the sidebar pane rect so mouse-wheel events can be routed by
+        // cursor position (see the ScrollDown/ScrollUp arm in `handle_mouse`).
+        self.sidebar_area = shell.sidebar;
 
         // Header gauges from live status when available.
         let (cpu, ram, disk_label, net_label) = self.gauges();
@@ -2028,6 +2036,21 @@ impl AppScreen for DashboardScreen {
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
+                // Route the wheel by cursor position, not focus: when the
+                // pointer is over the sidebar column, scroll the sidebar list
+                // regardless of which shell region is focused or which section
+                // is active. (Previously the sidebar only scrolled when it was
+                // already focused, so wheeling over it scrolled the focused
+                // content instead.)
+                let s = self.sidebar_area;
+                let over_sidebar = mouse.column >= s.x
+                    && mouse.column < s.x + s.width
+                    && mouse.row >= s.y
+                    && mouse.row < s.y + s.height;
+                if over_sidebar {
+                    self.sidebar.scroll(if down { 1 } else { -1 });
+                    return None;
+                }
                 match self.active_section() {
                     Section::Ssh => return self.ssh_content.handle_mouse(mouse),
                     Section::Fail2ban => return self.fail2ban_content.handle_mouse(mouse),
@@ -2543,6 +2566,56 @@ mod tests {
     fn esc_from_sidebar_goes_back() {
         let mut s = DashboardScreen::new();
         assert_eq!(s.handle_key(KeyCode::Esc), Some(Action::Back));
+    }
+
+    #[test]
+    fn mouse_wheel_over_sidebar_scrolls_sidebar_not_content() {
+        // Regression: the mouse wheel must route by CURSOR POSITION. When the
+        // pointer is over the sidebar column, scrolling must move the sidebar
+        // list — regardless of which shell region is focused or which section
+        // is active. Previously the sidebar only scrolled when it was already
+        // focused, so wheeling over it scrolled the focused content instead.
+        use crossterm::event::KeyModifiers;
+        use crate::ui::theme::CHARM;
+        use ratatui::{backend::TestBackend, Terminal};
+
+        // Short terminal so the 20 sidebar items overflow the pane (scrollable).
+        let mut s = DashboardScreen::new();
+        let mut term = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        term.draw(|f| s.view(f, CHARM)).unwrap();
+
+        // `view` → `render` must populate the sidebar pane rect.
+        let sb = s.sidebar_area;
+        assert!(sb.width > 0 && sb.height > 0, "sidebar_area set by render");
+
+        // Focus the CONTENT pane — the old bug scrolled content here.
+        s.focus.set(ShellFocus::Content);
+        let module_scroll_before = s.module_scroll;
+
+        // Wheel DOWN while the pointer is inside the sidebar pane.
+        s.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: sb.x,
+            row: sb.y + 1,
+            modifiers: KeyModifiers::empty(),
+        });
+        assert_eq!(
+            s.module_scroll, module_scroll_before,
+            "wheel over sidebar must not scroll dashboard content"
+        );
+        assert!(
+            s.sidebar.scroll_offset() > 0,
+            "wheel over sidebar must scroll the sidebar list"
+        );
+
+        // Wheel UP returns the offset to zero.
+        s.handle_mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: sb.x,
+            row: sb.y + 1,
+            modifiers: KeyModifiers::empty(),
+        });
+        assert_eq!(s.sidebar.scroll_offset(), 0, "wheel up resets sidebar scroll");
     }
 
     #[test]
