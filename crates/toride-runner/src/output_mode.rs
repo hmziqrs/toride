@@ -4,6 +4,7 @@
 
 /// How a runner should handle process output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OutputMode {
     /// Capture stdout and stderr into [`CommandOutput`](crate::CommandOutput).
     ///

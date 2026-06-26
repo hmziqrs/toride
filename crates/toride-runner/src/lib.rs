@@ -77,13 +77,13 @@ mod streaming_tests;
 #[cfg(feature = "tokio-runner")]
 pub use async_runner::AsyncRunner;
 #[cfg(feature = "duct-runner")]
-pub use duct_runner::DuctRunner;
+pub use duct_runner::{ConfiguredDuctRunner, DuctRunner, DuctRunnerBuilder, DuctRunnerOptions};
 pub use error::{Error, Result};
 #[cfg(feature = "fake")]
 pub use fake::FakeRunner;
 pub use output::CommandOutput;
 pub use output_mode::OutputMode;
 pub use runner::Runner;
+pub use spec::CommandSpec;
 #[cfg(feature = "stream")]
 pub use streaming::{AsyncStreamingRunner, CommandEvent, CommandEventSink};
-pub use spec::CommandSpec;

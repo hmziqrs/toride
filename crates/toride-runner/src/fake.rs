@@ -243,7 +243,7 @@ impl AsyncRunner for FakeRunner {
 
 /// Check if two specs match on the fields used for exact matching.
 ///
-/// Compares `program`, `args`, `stdin`, `env`, and `cwd`.
+/// Compares `program`, `args`, `stdin`, `env`, `cwd`, and `output_mode`.
 /// Timeout is ignored by default — it is a runtime concern, not
 /// a command-construction concern.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
@@ -252,6 +252,7 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.stdin == b.stdin
         && a.env == b.env
         && a.cwd == b.cwd
+        && a.output_mode == b.output_mode
 }
 
 #[cfg(test)]
@@ -427,6 +428,24 @@ mod tests {
         // With matching cwd, should match.
         let output = run_sync(&runner, &CommandSpec::new("make").cwd("/project")).unwrap();
         assert_eq!(output.stdout_trimmed(), "built");
+    }
+
+    #[test]
+    fn specs_match_compares_output_mode() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").output_mode(crate::OutputMode::Inherit),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        let result = run_sync(&runner, &CommandSpec::new("cmd"));
+        assert!(result.is_err(), "different output mode should not match");
+
+        let output = run_sync(
+            &runner,
+            &CommandSpec::new("cmd").output_mode(crate::OutputMode::Inherit),
+        )
+        .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
     }
 
     #[cfg(feature = "tokio-runner")]

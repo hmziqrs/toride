@@ -6,6 +6,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::OutputMode;
+
 /// A declarative specification of a command to execute.
 ///
 /// # Examples
@@ -32,6 +34,8 @@ pub struct CommandSpec {
     pub env: Vec<(String, String)>,
     /// Working directory for the command. Defaults to the current directory.
     pub cwd: Option<PathBuf>,
+    /// How stdout and stderr should be handled.
+    pub output_mode: OutputMode,
     /// Whether to redact sensitive arguments in display/logging output.
     /// Does **not** affect the actual args passed to the child process.
     pub redact: bool,
@@ -48,6 +52,7 @@ impl CommandSpec {
             timeout: None,
             env: Vec::new(),
             cwd: None,
+            output_mode: OutputMode::Capture,
             redact: false,
         }
     }
@@ -111,6 +116,13 @@ impl CommandSpec {
         self
     }
 
+    /// Set how stdout and stderr should be handled.
+    #[must_use]
+    pub fn output_mode(mut self, output_mode: OutputMode) -> Self {
+        self.output_mode = output_mode;
+        self
+    }
+
     /// Enable redaction of sensitive arguments in display/logging output.
     ///
     /// This does **not** affect the actual arguments passed to the child process.
@@ -128,7 +140,7 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 7)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 8)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
@@ -138,6 +150,7 @@ impl serde::Serialize for CommandSpec {
             "cwd",
             &self.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
         )?;
+        s.serialize_field("output_mode", &self.output_mode)?;
         s.serialize_field("redact", &self.redact)?;
         s.end()
     }
@@ -162,6 +175,8 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             #[serde(default)]
             cwd: Option<String>,
             #[serde(default)]
+            output_mode: OutputMode,
+            #[serde(default)]
             redact: bool,
         }
 
@@ -181,6 +196,7 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             timeout,
             env: h.env,
             cwd: h.cwd.map(PathBuf::from),
+            output_mode: h.output_mode,
             redact: h.redact,
         })
     }
@@ -240,6 +256,7 @@ mod serde_tests {
         let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
 
         assert_eq!(roundtripped.cwd, Some(PathBuf::from("/project")));
+        assert_eq!(roundtripped.output_mode, OutputMode::Capture);
         assert!(roundtripped.redact);
         assert_eq!(roundtripped.env, vec![("KEY".into(), "val".into())]);
     }
@@ -250,7 +267,18 @@ mod serde_tests {
         let spec: CommandSpec = serde_json::from_str(json).unwrap();
 
         assert!(spec.cwd.is_none());
+        assert_eq!(spec.output_mode, OutputMode::Capture);
         assert!(!spec.redact);
         assert!(spec.timeout.is_none());
+    }
+
+    #[test]
+    fn output_mode_round_trip() {
+        let spec = CommandSpec::new("cmd").output_mode(OutputMode::Inherit);
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.output_mode, OutputMode::Inherit);
     }
 }

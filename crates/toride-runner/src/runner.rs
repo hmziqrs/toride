@@ -23,9 +23,14 @@ pub trait Runner: Send + Sync {
     fn run_checked(&self, spec: &CommandSpec) -> Result<CommandOutput> {
         let output = self.run(spec)?;
         if !output.success {
+            let args = if spec.redact {
+                crate::display::display_command(spec, &[])
+            } else {
+                spec.args.join(" ")
+            };
             return Err(crate::error::Error::CommandFailed {
                 program: spec.program.clone(),
-                args: spec.args.join(" "),
+                args,
                 exit_code: output.exit_code,
                 stderr: output.stderr.clone(),
             });
