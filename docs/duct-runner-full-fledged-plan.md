@@ -156,11 +156,26 @@ Completed before this plan-only audit:
 
 ### Diagnostics and Redaction
 
-- Env display redaction exists but is not integrated into runner logs.
+- `display_env` redacts env values by key, but it is dead code: it is referenced
+  only by its own unit tests and wired into no log or error path. There is no
+  sanitized env summary anywhere at runtime, and `redact.rs` handles args only.
 - No tracing span around command execution.
 - Completion logs include redacted command display, program, exit code, and
   duration, but failures do not yet share a common tracing span or sanitized env
   summary.
+- Diagnostics redaction is opt-in per spec: `display_command` redacts only when
+  `spec.redact` is true, which defaults to false, so the Duct completion `debug!`
+  and timeout `warn!` logs print raw args (including any secrets) by default.
+  Consider a runner-level redaction toggle or redact-by-default for logs.
+- `Error::CommandTimeout` stores raw `args: Vec<String>` and the `Error` enum
+  derives `Debug`. Even with `redact(true)`, any `{:?}` / `tracing::?err` of the
+  error prints the secret args verbatim — no path redacts them. Store an
+  already-redacted display (or redact `args` at construction) in both runners.
+- Both runners copy `stderr` raw into `Error::CommandFailed`, and its Display
+  prints it. Failed auth/key commands routinely echo tokens or passphrases to
+  stderr, so checked-failure errors can leak secrets the arg redaction never
+  touches. A stderr-redaction policy (at minimum a length cap and opt-in scrub)
+  is missing.
 
 ### Parity With TokioRunner
 
@@ -173,7 +188,23 @@ Completed before this plan-only audit:
   disable the default or toggle command logging, while `ConfiguredDuctRunner`
   can. Configurable and no-default timeout is currently Duct-only. Resolve
   before claiming full parity: add `TokioRunnerOptions` or document the
-  difference as intentional and test it.
+  difference as intentional and test it. Note the parity suite only ever exercises
+  the unit `DuctRunner` vs unit `TokioRunner`; it never exercises
+  `ConfiguredDuctRunner`, the streaming path, or `FakeRunner`.
+- `AsyncRunner::run_checked` does not redact args: it uses `spec.args.join(" ")`
+  unconditionally, while `Runner::run_checked` redacts when `spec.redact` is set.
+  A `redact(true)` spec that fails under TokioRunner or FakeRunner leaks the raw
+  secret args into `CommandFailed`. Factor the arg-formatting into one shared
+  helper so the two trait defaults cannot drift, then add a parity test. This is
+  a credential-leak parity gap, not cosmetic.
+- TokioRunner ignores `output_mode` entirely — it always pipes and never inspects
+  the spec. `Inherit` therefore captures output (observably divergent from Duct,
+  which returns empty) and `Stream` is silently treated as `Capture` instead of
+  rejected. Honor `Inherit` (use `Stdio::inherit()`, return empty captures) and
+  reject `Stream` with the same error Duct uses, or document the divergence and
+  drop those rows from the parity claim.
+- The parity `failure` test only asserts `exit_code` equality, never a specific
+  code; strengthen it to assert an exact non-zero code (e.g. 42).
 
 ### API Shape
 
@@ -223,13 +254,19 @@ Map errors consistently:
 
 - spawn error -> `Error::SpawnFailed`
 - wait error -> `Error::WaitFailed`
-- stdin setup/write error -> `Error::StdinFailed`
+- stdin setup/write error -> `Error::StdinFailed` (Tokio only today; DuctRunner
+  pipes stdin via `cmd.stdin_bytes()` and never emits `StdinFailed`. To reach
+  parity, DuctRunner must switch to an owned stdin pipe and write so write
+  failures map to `StdinFailed`.)
 - timeout -> `Error::CommandTimeout`
 - non-zero exit from `run()` -> successful `CommandOutput`
 - non-zero exit from `run_checked()` -> `Error::CommandFailed`
 
 `run_checked()` uses redacted display args in error messages when `spec.redact`
-is true.
+is true — for the sync `Runner` only. The async `AsyncRunner::run_checked` does
+not redact yet and must be aligned (see Parity gaps). Both paths also copy
+`stderr` raw into `CommandFailed`; add an stderr-redaction policy so checked
+failures cannot leak secrets echoed to stderr.
 
 ### Output Modes
 
@@ -352,8 +389,17 @@ Decisions:
 - `OutputMode::Stream` remains explicitly unsupported by DuctRunner until a sync
   streaming API exists.
 - Exceeding the limit is an error, not silent truncation.
-- Add a structured error variant such as
-  `Error::OutputLimitExceeded { program, limit }`.
+- Add a structured error variant. Match the context the sibling variants carry
+  (`CommandFailed` and `CommandTimeout` both carry `program` + `args`) rather
+  than a bare `{ program, limit }`: use
+  `Error::OutputLimitExceeded { program, args, limit, observed }`. All fields
+  must be `Clone` (the `Error` enum derives `Clone`) and the variant must have a
+  `#[error("...")]` Display string (thiserror requires it). `Error` is
+  `#[non_exhaustive]`, so adding the variant is non-breaking.
+- `output_limit` is a runtime/safety policy, not command construction, so it is
+  *excluded* from `FakeRunner` exact matching — same reasoning that already
+  excludes `timeout`. Do not add it to `specs_match`. (This supersedes the older
+  "include `output_limit` in exact matching" note.)
 - Keep `CommandOutput` lossy UTF-8 for Phase 5; raw bytes are a separate API
   change and should not be mixed into the first output-limit PR.
 
@@ -362,16 +408,36 @@ Implementation notes:
 - DuctRunner must not use `stdout_capture()` / `stderr_capture()` when
   `output_limit` is set, because that can still allocate unbounded memory before
   the limit is checked.
-- Preferred Duct approach: redirect stdout and stderr to owned pipes, read both
-  pipes with cap-aware reader threads, keep only up to the configured combined
-  byte limit in memory, and kill/reap the handle when the next chunk would
-  exceed the cap. While the main thread is blocked in `wait_timeout`, a reader
-  thread must be able to kill the process, so share the `duct::Handle` across
-  threads (it is `Send + Sync`, `kill()` takes `&self`) and have the reader call
-  `handle.kill()` directly.
-- The combined stdout+stderr cap is shared across two concurrent readers, so use
-  a shared counter (such as `AtomicUsize`) and define which reader wins the
-  breach race and performs the kill.
+- Do not use `Expression::reader()` for the limited path: it exposes only
+  stdout, and routes stderr to an internal duct thread that reads it fully into
+  memory unbounded — which defeats a combined cap. The correct Duct mechanism is
+  to create two OS pipes in the parent (`os_pipe::pipe()`, already a transitive
+  dep via duct), pass the write ends to `cmd.stdout_file(w_out)` and
+  `cmd.stderr_file(w_err)`, then `.unchecked().start()` to get a `duct::Handle`.
+  Because both streams are redirected to caller-owned files/pipes, the handle
+  spawns no internal capture threads and holds no hidden buffer. In this mode the
+  `Output.stdout` / `Output.stderr` from `wait_timeout` are empty; the captured
+  bytes come solely from the parent's reader threads, and a breach latch (not the
+  exit status) is what makes the run return `OutputLimitExceeded`.
+- Spawn two cap-aware reader threads over the read ends. The `duct::Handle` is
+  `Send + Sync` and `kill()` takes `&self`, so share it with the reader threads
+  and have a reader call `handle.kill()` directly while the main thread is
+  blocked in `wait_timeout`.
+- On Apple targets, `pipe2()` is unavailable so caller-opened pipes cannot set
+  `CLOEXEC` atomically; guard pipe creation plus spawn under a process-wide mutex
+  (as duct does internally for its own pipes) to avoid leaking fds into unrelated
+  children. After spawn, the parent must drop its copies of the write ends or the
+  read ends never reach EOF; a surviving grandchild holding an inherited write
+  end has the same effect, so reader-thread joins after `kill()` must be bounded
+  or detached, never an unconditional blocking join.
+- The combined stdout+stderr cap is shared across the two reader threads via a
+  shared `AtomicUsize`. Reserve-then-check with `fetch_add(n)` and inspect the
+  pre/post value before retaining a chunk, so worst-case retained memory is
+  bounded to `cap + 2 * buf_size`. Exactly one thread performs the kill, gated by
+  an `AtomicBool` "killed" latch (the thread that pushes the total past `cap`
+  wins) so `kill()` is never called twice. On breach, unblock and join/abort both
+  readers and the `wait_timeout` main thread and discard partial buffers — do not
+  expose partial output.
 - The cap-aware readers must use bounded reads (fixed-size buffer / `read`),
   never `read_line`/`read_to_end`, because those buffer an unbounded amount
   before the cap can be checked. A single newline-free stream
@@ -391,13 +457,27 @@ Implementation notes:
   write, so `wait()` never returns and only the timeout saves it). The
   concurrent-draining conversion fixes that deadlock too. Do it as a reviewable
   prerequisite step, ideally in its own commit, before adding the limit.
+- Concrete shape for the non-streaming conversion: wrap
+  `tokio::join!(read_stdout, read_stderr, child.wait())` in the single outer
+  `tokio::time::timeout`. The reads operate on the already-`take()`n
+  `child.stdout` / `child.stderr` handles, so they do not alias the `&mut child`
+  that `wait()` needs — no `tokio::spawn` + `Arc<Mutex<Child>>` is required. On
+  the timeout or breach arm, kill the child and drop the in-flight reads.
 - Streaming Tokio execution should count emitted stdout/stderr bytes and return
   `OutputLimitExceeded` as soon as the next chunk would exceed the cap. The
-  streaming path currently uses `read_line`, which buffers a whole line before
-  emitting anything; switch the limited path to bounded reads so a single
-  newline-free line cannot allocate unbounded memory before the cap triggers, and
-  abort/join the detached stderr reader task on the breach path so it stops
-  reading.
+  streaming path currently uses `read_line` for both stdout (inline) and stderr
+  (a detached task), which buffers a whole line before emitting anything. The
+  limited path needs four changes, not just "switch to bounded reads": (1) use
+  bounded `read(&mut [u8; N])` on both streams so a single newline-free line
+  cannot allocate unbounded memory; (2) interleave stdout and stderr with
+  `tokio::select!` rather than draining stdout to EOF before stderr — the current
+  sequencing is itself a latent deadlock (child blocked writing stderr while the
+  parent only reads stdout) and prevents the cap from observing stderr bytes
+  until stdout ends; (3) retain the stderr task's `JoinHandle` (it is currently
+  dropped immediately, so it cannot be aborted) and `abort()` it on the breach
+  path; (4) if a bounded mpsc channel is kept, it must carry fixed-size chunks,
+  not whole lines — a 64-slot channel of unbounded-length lines is still
+  unbounded.
 - If a process exceeds the output limit before exiting, the process should be
   killed immediately and reaped. Allowing it to finish is only acceptable for a
   separately documented discard-drain strategy that proves bounded memory and
@@ -415,8 +495,12 @@ Required tests:
 - DuctRunner returns `OutputLimitExceeded` when stderr alone exceeds the limit.
 - DuctRunner counts stdout plus stderr together.
 - DuctRunner does not allocate unbounded captured output when a limit is set.
-  Use a command that writes substantially more than the limit and assert a fast,
-  bounded error path.
+  Use a command that writes substantially more than the limit (e.g. `cat
+  /dev/zero`, or `yes | tr -d '\n'` for the newline-free case) and assert the
+  result is `Err(OutputLimitExceeded)`. Prove bounded memory by behavior, not
+  wall-clock time: assert via an instrumented/counting sink or a small cap that
+  no buffer exceeded `cap + buf_size` bytes. Do not assert `elapsed() < X`; it is
+  flaky under CI load.
 - DuctRunner kills and reaps a still-running process after output-limit breach.
 - TokioRunner matches DuctRunner limit behavior for stdout, stderr, combined
   output, and default unlimited capture.
@@ -429,12 +513,24 @@ Required tests:
 - Streaming/limited execution bounds memory on a single newline-free stream: a
   command emitting many bytes with no newline under a limit fails fast with
   `OutputLimitExceeded` rather than buffering the whole line.
+- Streaming execution kills and reaps a still-running process after an
+  output-limit breach, and the detached stderr task is aborted (no lingering
+  task or held fd).
+- If a tempfile capture strategy is implemented, a process writing past the disk
+  cap is killed before exceeding it (the disk-cap analogue of the memory test).
 - `OutputMode::Inherit` with an output limit still returns empty captured output
-  and the real exit code.
+  and the real exit code. Scope this test to DuctRunner; TokioRunner does not
+  honor `Inherit` today (it always pipes), so either implement Tokio `Inherit`
+  first or keep this test Duct-only.
 - Serde defaults older specs to `output_limit: None` and round-trips explicit
-  limits.
-- FakeRunner exact matching includes `output_limit` if the field is added to
-  `CommandSpec`.
+  limits. Add the field to *both* hand-written serde halves: bump the
+  `serialize_struct("CommandSpec", N)` count and add the `serialize_field`, and
+  add the field to the `Deserialize` helper with `#[serde(default)]`. Adding it to
+  only one half compiles but silently drops or mis-defaults the value. Back-compat
+  holds for self-describing formats (JSON); binary formats are out of scope.
+- `output_limit` is excluded from `FakeRunner` exact matching (runtime policy,
+  like `timeout`); add a test asserting two specs differing only in
+  `output_limit` still match, and update the `specs_match` doc comments.
 - Non-UTF-8 output under the byte limit remains lossy UTF-8 exactly as today.
   Non-UTF-8 output over the byte limit fails by byte count before decoding.
 
@@ -511,8 +607,25 @@ Output disposition:
 - Suppressing stdout/stderr must avoid unnecessary capture work.
 - File redirection should return empty captured strings for redirected streams
   and document whether output limits apply to redirected file bytes.
-- FakeRunner exact matching must include any new fields that affect command
-  construction.
+- FakeRunner exact matching includes fields that change what command is run, and
+  excludes runtime/safety policy (the same rule that excludes `timeout`). Rulings
+  for the candidate fields: `stdin_bytes` / `CommandStdin` — include (changes
+  process input, like `stdin` already is); `shell` / `ShellSpec` — include
+  (changes how argv is assembled); `timeout_policy` — exclude (runtime policy,
+  like `timeout`); `output_limit` — exclude (already decided in Phase 5).
+- Each new field needs the same dual-impl serde edit as Phase 5: bump the
+  `serialize_struct` count, add the `serialize_field`, and add the field to the
+  `Deserialize` helper with `#[serde(default)]` (its `Default` must mean the
+  back-compat behavior, e.g. `TimeoutPolicy::default()` = "use runner default").
+  Prove back-compat with an "old payload missing the key" JSON test. If raw bytes
+  are added to `CommandOutput`, it has the same hand-written-serde footgun (count
+  literal `4`) and `success` is persisted independently of `exit_code`, so any
+  new constructor must keep them consistent.
+- Prefer additive fields over retyping existing public fields. `stdin_bytes` as a
+  new field is purely additive; replacing `stdin: Option<String>` with a
+  `CommandStdin` enum is a double break (public field type + serde wire shape) and
+  is rejected — if a unified stdin enum is ever wanted it must be a new field, the
+  same way `timeout_policy` is added beside `timeout` rather than replacing it.
 
 Required tests:
 
@@ -562,10 +675,27 @@ If stronger cleanup is needed, add an explicit policy:
 
 Platform plan:
 
-- Unix/macOS: start the child in a new process group/session where practical and
-  signal the group on timeout or output-limit breach.
-- Windows: use job objects if implemented; otherwise keep `DirectChild` and
-  document that process-tree cleanup is unsupported on Windows.
+- Both runners only ever kill the direct child today. duct's `handle.kill()`
+  documents that it kills only the processes duct started directly, never
+  grandchildren — and that remains true even after the child is placed in a new
+  process group. So setting a new group is not enough; the runner must signal the
+  group itself.
+- Unix/macOS: place the child in a new process group/session at spawn —
+  DuctRunner via `Expression::before_spawn(|cmd| { cmd.process_group(0); })`
+  (`CommandExt::process_group`, or `pre_exec` + `setsid`), TokioRunner via
+  `tokio::process::Command::process_group(0)`. Record the pgid (duct exposes it
+  via `Handle::pids()`), and on timeout or output-limit breach signal the group
+  with `nix::sys::signal::killpg` / `libc::killpg` rather than `handle.kill()` /
+  `child.kill()`, then reap.
+- Windows: use job objects (`CreateJobObjectW` + `AssignProcessToJobObject` +
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) if implemented; otherwise keep
+  `DirectChild` and document that process-tree cleanup is unsupported. Note that
+  both duct `before_spawn` and tokio hand you the pre-spawn `Command`, but
+  assigning to the job needs the post-spawn handle.
+- The streaming Tokio path's detached stderr task must be aborted as part of
+  cleanup; otherwise a grandchild inheriting the stderr pipe keeps the read end
+  from reaching EOF and the task (and its fd) leaks even after the direct child is
+  killed.
 - If one platform cannot provide equivalent behavior, expose that difference in
   docs and tests rather than pretending parity exists.
 
@@ -573,13 +703,28 @@ Required tests and evidence:
 
 - A direct child is killed and reaped on timeout under the default policy.
 - Under opt-in process-tree cleanup, a grandchild that would normally survive is
-  terminated on supported platforms.
+  terminated on supported platforms. The current `sleep 10 && echo SURVIVED >
+  marker` timeout tests do NOT prove this: `bash` is the direct child, so killing
+  it means `&& echo` never runs and the marker is never written regardless of
+  whether the `sleep` grandchild survives — they only prove the direct child is
+  killed. A real grandchild test needs a grandchild that writes the marker
+  independently of the parent (e.g. `setsid sh -c "sleep 1; echo SURVIVED >
+  $MARKER" &` with the parent exiting immediately), then assert the marker is
+  absent under `ProcessTree`/`ProcessGroup` and present under `DirectChild`, so
+  the test actually distinguishes the two policies.
 - A command that exits normally is not over-killed.
-- Cleanup after output-limit breach uses the same policy as timeout cleanup.
+- Cleanup after output-limit breach uses the same policy as timeout cleanup, and
+  on the streaming path the detached stderr task is aborted (assert via its
+  `JoinHandle` completing or an fd count, not just absence of the grandchild).
 - Unsupported platforms either skip process-tree tests with an explicit reason
   or assert a documented direct-child-only behavior.
 - Tests must avoid global process-name matching where possible. Prefer marker
-  files, child PIDs, or controlled scripts in temp directories.
+  files, child PIDs, or controlled scripts in temp directories, and use a unique
+  temp path per test (pid + an atomic counter, or `tempfile::TempDir`). The
+  current Tokio timeout test hardcodes `/tmp/toride_runner_timeout_test`, which
+  collides across parallel/CI runs; the Duct one scopes by pid but still appends a
+  constant suffix. Prefer waiting on the child pid/pgid to be gone
+  (`kill(pid, 0)` → `ESRCH`) over a fixed `sleep`.
 - No zombies remain after timeout/output-limit cleanup in the tested paths.
 
 Exit criteria:
@@ -604,6 +749,14 @@ Parity scope:
   sync unsupported streaming.
 - Each shared `CommandSpec` field should have at least one parity test or a
   documented reason why parity is not meaningful.
+- The current suite compares only unit `DuctRunner` vs unit `TokioRunner`. Either
+  extend it to exercise `ConfiguredDuctRunner`, the streaming path, and
+  `FakeRunner`, or document exactly which rows are intentionally excluded (no-
+  default-timeout asymmetry, async streaming vs sync unsupported streaming). Do
+  not claim "parity covers all shared behavior" while those are untested.
+- Two divergences must be fixed (or explicitly documented as intentional) before
+  the parity rows for them are honest: async `run_checked` arg redaction, and
+  TokioRunner honoring `OutputMode::Inherit`/rejecting `Stream`.
 
 Required parity coverage:
 
@@ -679,13 +832,16 @@ Sequence Phase 5 in reviewable steps:
    own commit, no behavior change beyond fixing the latent pipe-buffer deadlock;
    add the >64 KB no-deadlock test.
 2. Add `CommandSpec::output_limit`, the `OutputLimitExceeded` error, and the
-   bounded-read enforcement across Duct, Tokio, and streaming.
-3. Add serde defaults and FakeRunner matching for the new field.
+   bounded-read enforcement across Duct, Tokio, and streaming. For Duct this means
+   owned `os_pipe` write ends into `stdout_file`/`stderr_file` (not `reader()`),
+   with a process-wide spawn lock on Apple targets.
+3. Add serde defaults for the new field (both hand-written halves). `output_limit`
+   is excluded from FakeRunner matching — add a test proving that.
 
 Suggested files for Phase 5:
 
-- `crates/toride-runner/Cargo.toml` if a direct pipe/tempfile dependency is
-  needed for bounded capture
+- `crates/toride-runner/Cargo.toml` to add `os_pipe` (or a tempfile dependency)
+  for bounded capture
 - `crates/toride-runner/src/duct_runner.rs`
 - `crates/toride-runner/src/error.rs`
 - `crates/toride-runner/src/fake.rs`
@@ -714,11 +870,16 @@ The Duct wrapper is full-fledged when:
 - Remaining command intent gaps such as byte stdin, shell opt-in, timeout
   policy, and output disposition are implemented, explicitly rejected, or
   documented as deferred with rationale.
-- errors are structured and consistent with TokioRunner.
-- sensitive args/env are redacted in diagnostics and checked errors.
+- errors are structured and consistent with TokioRunner, including stdin failure
+  mapping and identical `run_checked` redaction across sync and async.
+- sensitive args/env are redacted in diagnostics and checked errors — covering
+  `Debug`/`{:?}` formatting of `CommandTimeout`, stderr in `CommandFailed`, and
+  default (non-opt-in) log output, not just `Display` of redacted args.
 - timeout cleanup behavior is documented and tested.
 - output handling has clear capture, inherit, and streaming/unsupported-stream semantics.
 - captured output limits are bounded in memory and disk use, with explicit
   `OutputLimitExceeded` behavior.
-- parity tests cover all shared Duct/Tokio behavior.
+- parity tests cover the behavior the capability table lists as shared, with
+  intentionally-excluded rows enumerated (rather than an unqualified "all shared
+  behavior" claim the current suite does not back).
 - crate docs explain capability boundaries clearly.
