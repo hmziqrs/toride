@@ -41,8 +41,8 @@ runner abstraction yet.
   clean environment, DuctRunner and TokioRunner both honor the policy,
   FakeRunner exact matching includes the new fields, and serde keeps older
   specs compatible.
-- Phases 5-7 remain open: output limits/raw bytes, process-tree cleanup policy,
-  expanded parity coverage, and docs/examples.
+- Phases 5-8 remain open: output limits, command intent and output policy,
+  process-tree cleanup policy, expanded parity coverage, and docs/examples.
 
 ## Progress Audit
 
@@ -53,7 +53,8 @@ Latest plan-only audit: 2026-06-26.
 Scope guard for plan-only audits:
 
 - These audit passes are documentation-only. Do not implement Phase 5, Phase 6,
-  or Phase 7 code from this audit without a separate implementation request.
+  Phase 7, or Phase 8 code from this audit without a separate implementation
+  request.
 - The plan must be precise enough that a later implementation can be reviewed
   against it without guessing API semantics.
 - Any planned runner behavior must explain how it avoids hidden unbounded memory
@@ -102,6 +103,9 @@ Completed before this plan-only audit:
 - No option to merge stderr into stdout.
 - No option to suppress stdout/stderr.
 - No explicit shell mode. This is good by default, but there is no deliberate escape hatch for shell syntax when a caller truly needs it.
+- Timeout intent is still implicit: `CommandSpec::timeout = None` means “use
+  runner default,” while configured DuctRunner can disable the default globally.
+  There is no per-command “no timeout” policy yet.
 
 ### Environment Control
 
@@ -404,7 +408,84 @@ Exit criteria:
   field and behavior.
 - Cleanup behavior on output-limit breach is documented and tested.
 
-### Phase 6: Process-Tree Cleanup
+### Phase 6: Command Intent And Output Policy
+
+Close the remaining command-spec expressiveness gaps after output safety.
+
+Status: planned. Do not implement as part of a plan-only audit.
+
+Decision rule:
+
+- Keep `CommandSpec` focused on command intent.
+- Keep runner defaults and safety behavior in runner options.
+- Do not add a new field unless at least one Toride caller needs it or the lack
+  of the field forces unsafe ad hoc behavior.
+
+Candidate `CommandSpec` additions:
+
+- `stdin_bytes` or a `CommandStdin` enum so callers can pass non-UTF-8 input
+  without lossy conversion.
+- `timeout_policy` if per-command intent needs to distinguish:
+  - use runner default
+  - no timeout
+  - explicit timeout
+- `shell: Option<ShellSpec>` for deliberate shell execution.
+- output disposition fields only if `OutputMode` is not enough, for example:
+  - merge stderr into stdout
+  - suppress stdout
+  - suppress stderr
+  - redirect stdout/stderr to files
+
+Shell policy:
+
+- Shell execution must be opt-in and visible in code review.
+- Default execution remains direct program plus argv, not shell parsing.
+- `ShellSpec` should avoid a raw free-form shell string where possible. Prefer
+  an explicit shell executable plus command string, or a small enum for platform
+  defaults.
+- Shell mode must integrate with redaction. `display_command()` must not leak
+  secrets from shell command strings when redaction is enabled.
+- Shell mode must document injection risk and should not be used to avoid proper
+  argv construction.
+
+Byte stdin and raw output:
+
+- `stdin_bytes` should be handled before raw output support. It is smaller,
+  easier to test, and does not force `CommandOutput` API changes.
+- Raw output support should not be mixed into Phase 5 output limits. If needed,
+  add it here through a deliberate type such as byte fields on `CommandOutput`
+  or a separate `RawCommandOutput`.
+- Any raw-output design must preserve the existing string API or provide a clear
+  migration path.
+
+Output disposition:
+
+- Merging stderr into stdout must preserve exit code and success semantics.
+- Suppressing stdout/stderr must avoid unnecessary capture work.
+- File redirection should return empty captured strings for redirected streams
+  and document whether output limits apply to redirected file bytes.
+- FakeRunner exact matching must include any new fields that affect command
+  construction.
+
+Required tests:
+
+- Serde defaults older specs for every new field.
+- FakeRunner exact matching includes every new command-construction field.
+- DuctRunner and TokioRunner match shared behavior for byte stdin.
+- Shell mode is opt-in, preserves arguments as documented, and redacts display
+  output when requested.
+- Per-command no-timeout behavior works without changing runner defaults.
+- Merge/suppress/redirect behavior is tested independently for stdout and
+  stderr.
+
+Exit criteria:
+
+- Every remaining `CommandSpec` expressiveness gap is either implemented,
+  explicitly rejected, or deferred with a documented reason.
+- No new field silently changes current defaults.
+- Docs explain when to use direct argv execution versus shell mode.
+
+### Phase 7: Process-Tree Cleanup
 
 Only do this if direct-child cleanup is insufficient for real Toride commands.
 
@@ -464,7 +545,7 @@ Exit criteria:
   cleanup is not supported or not enabled.
 - Crate docs describe Unix/macOS and Windows guarantees separately.
 
-### Phase 7: Full Parity and Documentation
+### Phase 8: Full Parity and Documentation
 
 Status: planned. Do not implement as part of a plan-only audit.
 
@@ -493,7 +574,8 @@ Required parity coverage:
 - output mode `Inherit`, if TokioRunner supports it by then; otherwise document
   the difference
 - output limit behavior after Phase 5
-- process cleanup policy after Phase 6 if implemented
+- command intent and output policy after Phase 6
+- process cleanup policy after Phase 7 if implemented
 
 Documentation scope:
 
@@ -512,12 +594,14 @@ Documentation scope:
   - clean env
   - redaction
   - output limits after Phase 5
+  - shell opt-in after Phase 6 if implemented
+  - byte stdin after Phase 6 if implemented
 - Capability tables should distinguish supported, unsupported, and intentionally
   different behavior across DuctRunner, TokioRunner, streaming Tokio, and
   FakeRunner.
 - Docs must explicitly state lossy UTF-8 behavior and any future raw-byte
   limitations.
-- Docs must state process cleanup guarantees by platform after Phase 6 is
+- Docs must state process cleanup guarantees by platform after Phase 7 is
   decided.
 
 Required verification:
@@ -558,8 +642,9 @@ Suggested tests:
 - Non-UTF-8 output behavior is explicit and tested.
 - Serde round trips new `CommandSpec` fields and defaults older JSON safely.
 
-Do not combine Phase 5 with process-tree cleanup or shell execution. Those are
-separate risk areas and should be reviewed independently.
+Do not combine Phase 5 with command-intent changes, process-tree cleanup, or
+shell execution. Those are separate risk areas and should be reviewed
+independently.
 
 ## Definition of Done
 
@@ -567,6 +652,9 @@ The Duct wrapper is full-fledged when:
 
 - `DuctRunner` has configurable execution policy.
 - `CommandSpec` can express output mode and environment policy.
+- Remaining command intent gaps such as byte stdin, shell opt-in, timeout
+  policy, and output disposition are implemented, explicitly rejected, or
+  documented as deferred with rationale.
 - errors are structured and consistent with TokioRunner.
 - sensitive args/env are redacted in diagnostics and checked errors.
 - timeout cleanup behavior is documented and tested.
