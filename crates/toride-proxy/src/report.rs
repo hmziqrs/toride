@@ -3,6 +3,7 @@
 //! [`ProxyReport`] captures the state of proxy configuration, certificate
 //! expiry information, and diagnostic findings.
 
+#[cfg(feature = "doctor")]
 use crate::doctor::DoctorFinding;
 use crate::spec::ServerBlock;
 
@@ -89,6 +90,7 @@ pub struct ProxyReport {
     /// Diagnostic findings produced by the doctor. Populated by
     /// [`Doctor::run`](crate::doctor::Doctor::run); empty when no checks
     /// emitted findings.
+    #[cfg(feature = "doctor")]
     pub findings: Vec<DoctorFinding>,
 }
 
@@ -100,6 +102,7 @@ impl ProxyReport {
             status: ProxyStatus::Unknown("not checked".into()),
             server_blocks: Vec::new(),
             certificates: Vec::new(),
+            #[cfg(feature = "doctor")]
             findings: Vec::new(),
         }
     }
@@ -111,7 +114,10 @@ impl ProxyReport {
 
     /// Returns certificates that will expire within the given number of days.
     pub fn certs_expiring_within(&self, days: i64) -> Vec<&CertInfo> {
-        self.certificates.iter().filter(|c| c.expires_within(days)).collect()
+        self.certificates
+            .iter()
+            .filter(|c| c.expires_within(days))
+            .collect()
     }
 
     /// Render the report as a human-readable summary.
@@ -126,11 +132,7 @@ impl ProxyReport {
         } else {
             lines.push(format!("Certificates: {}", self.certificates.len()));
             for cert in &self.certificates {
-                let status = if cert.is_valid {
-                    "valid"
-                } else {
-                    "EXPIRED"
-                };
+                let status = if cert.is_valid { "valid" } else { "EXPIRED" };
                 lines.push(format!(
                     "  {} - {} ({} days remaining, {})",
                     cert.domain, cert.issuer, cert.days_remaining, status
@@ -148,7 +150,13 @@ mod tests {
 
     #[test]
     fn cert_info_expires_within() {
-        let cert = CertInfo::new("example.com", "Let's Encrypt", "2024-01-01", "2024-04-01", 30);
+        let cert = CertInfo::new(
+            "example.com",
+            "Let's Encrypt",
+            "2024-01-01",
+            "2024-04-01",
+            30,
+        );
         assert!(cert.expires_within(60));
         assert!(cert.expires_within(30));
         assert!(!cert.expires_within(10));
@@ -164,6 +172,7 @@ mod tests {
                 CertInfo::new("a.com", "LE", "2024-01-01", "2024-04-01", 30),
                 CertInfo::new("b.com", "LE", "2023-01-01", "2023-04-01", -365),
             ],
+            #[cfg(feature = "doctor")]
             findings: Vec::new(),
         };
         assert!(report.has_expired_certs());

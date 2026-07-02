@@ -23,23 +23,26 @@ pub enum Action {
     ScrollUp,
     /// Cycle to the next colour theme (Ctrl+T).
     CycleTheme,
+    /// Cycle the animation preference (Auto → On → Off → Auto) and persist it
+    /// (Ctrl+Shift+A). Lets a user on a laggy VPS disable animations mid-session.
+    ToggleAnimations,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verify that all Action variants implement Copy, Clone, Debug, PartialEq, Eq
+    /// Verify that all Action variants implement Copy, Clone, Debug, `PartialEq`, Eq
     /// by exercising each trait. If the derive is removed, this will fail to compile.
     fn assert_copy_clone_debug_partial_eq_eq(a: Action, b: Action) {
         // Copy
-        let _copy: Action = a;
+        let _: Action = a;
         // Clone
-        let _cloned = a.clone();
+        let _: Action = a;
         // Debug
         let _debug = format!("{a:?}");
         // PartialEq
-        let _eq = a == b;
+        let _: bool = a == b;
         // Eq is implied by PartialEq + derive; we just verify it compiles.
         let _: bool = a == b;
     }
@@ -57,6 +60,7 @@ mod tests {
             Action::ScrollDown,
             Action::ScrollUp,
             Action::CycleTheme,
+            Action::ToggleAnimations,
         ];
 
         for v in &variants {
@@ -81,7 +85,7 @@ mod tests {
     #[test]
     fn clone_produces_equal_value() {
         let original = Action::ScrollDown;
-        let cloned = original.clone();
+        let cloned = original;
         assert_eq!(original, cloned);
     }
 
@@ -98,6 +102,7 @@ mod tests {
             Action::ScrollDown,
             Action::ScrollUp,
             Action::CycleTheme,
+            Action::ToggleAnimations,
         ];
         for v in &variants {
             let debug = format!("{v:?}");

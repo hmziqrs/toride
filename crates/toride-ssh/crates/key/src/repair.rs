@@ -8,8 +8,13 @@ use toride_ssh_core::{CliRunner, Error, Result};
 ///
 /// When the private key is encrypted and cannot be parsed directly by the
 /// `ssh_key` crate, falls back to `ssh-keygen -y -f <path>` via the
-/// [`CliRunner`]. If a `passphrase` is provided it is passed via `-P`.
-#[expect(clippy::too_many_lines, reason = "two code paths (in-process + ssh-keygen fallback)")]
+/// [`CliRunner`]. If a `passphrase` is provided it is fed through a temporary
+/// `SSH_ASKPASS` helper script (NOT as `-P` on the argv), so the passphrase is
+/// never exposed via `ps` or `/proc/<pid>/cmdline`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "two code paths (in-process + ssh-keygen fallback)"
+)]
 pub async fn repair_public_key(
     private_key_path: &Path,
     passphrase: Option<&str>,
@@ -98,19 +103,19 @@ pub async fn repair_public_key(
         .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
         .to_owned();
 
-    let mut args = vec![
-        "-y".to_owned(),
-        "-f".to_owned(),
-        path_str.clone(),
-    ];
+    // `ssh-keygen -y` prompts once for the passphrase when the key is
+    // encrypted. Feed it via SSH_ASKPASS instead of `-P <passphrase>` so the
+    // passphrase never appears in the child argv / `/proc/<pid>/cmdline`.
+    let args = vec!["-y".to_owned(), "-f".to_owned(), path_str];
 
-    if let Some(pass) = passphrase
+    let public_key_output = if let Some(pass) = passphrase
         && !pass.is_empty()
     {
-        args.extend(["-P".to_owned(), pass.to_owned()]);
-    }
-
-    let public_key_output = runner.run("ssh-keygen", args).await?;
+        let askpass = toride_ssh_agent::AskpassHandler::new(pass)?;
+        crate::run_with_askpass(runner, "ssh-keygen", args, &askpass).await?
+    } else {
+        runner.run("ssh-keygen", args).await?
+    };
 
     // Derive the public key path and write the output.
     let public_path = private_key_path.with_extension("pub");
@@ -156,10 +161,8 @@ pub async fn repair_public_key(
         {
             use std::os::unix::fs::PermissionsExt;
             if private_path.exists()
-                && let Err(e) = std::fs::set_permissions(
-                    &private_path,
-                    std::fs::Permissions::from_mode(0o600),
-                )
+                && let Err(e) =
+                    std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o600))
             {
                 tracing::warn!("failed to restore private key permissions: {e}");
             }

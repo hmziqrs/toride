@@ -19,7 +19,6 @@ pub enum Error {
     // =======================================================================
     // I/O subsystem
     // =======================================================================
-
     /// An I/O error propagated from `std::io`.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -27,7 +26,6 @@ pub enum Error {
     // =======================================================================
     // Binary / command subsystem
     // =======================================================================
-
     /// The `tailscale` binary was not found on `$PATH`.
     #[error("tailscale binary not found: {0}")]
     BinaryNotFound(String),
@@ -46,7 +44,6 @@ pub enum Error {
     // =======================================================================
     // API subsystem
     // =======================================================================
-
     /// The Tailscale local HTTP API returned an error.
     #[error("API error: {0}")]
     ApiError(String),
@@ -54,7 +51,6 @@ pub enum Error {
     // =======================================================================
     // Connection subsystem
     // =======================================================================
-
     /// Tailscale is not connected to the tailnet.
     #[error("not connected to tailnet")]
     NotConnected,
@@ -62,7 +58,6 @@ pub enum Error {
     // =======================================================================
     // ACL subsystem
     // =======================================================================
-
     /// An ACL policy error (invalid syntax, conflicting rules, etc.).
     #[error("ACL error: {0}")]
     AclError(String),
@@ -70,18 +65,31 @@ pub enum Error {
     // =======================================================================
     // DNS subsystem
     // =======================================================================
-
     /// A DNS configuration error.
     #[error("DNS error: {0}")]
     DnsError(String),
 
     // =======================================================================
+    // Service subsystem
+    // =======================================================================
+    /// An error from the shared service-management layer
+    /// ([`toride_service`]).
+    #[error("service error: {0}")]
+    Service(String),
+
+    // =======================================================================
     // Catch-all
     // =======================================================================
-
     /// A generic error that does not fit into any specific category.
     #[error("{0}")]
     Other(String),
+}
+
+#[cfg(feature = "service")]
+impl From<toride_service::Error> for Error {
+    fn from(err: toride_service::Error) -> Self {
+        Self::Service(err.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -74,10 +74,18 @@ impl AnimatedBorder {
         }
     }
 
-    /// Draw the animated border into `buf` around `rect`.
+    /// Draw the animated border into `buf` around `rect`, advancing the colour
+    /// cycle by wall-clock `elapsed` since construction.
     pub fn draw(&self, buf: &mut Buffer, rect: Rect) {
         let elapsed = self.anim_start.elapsed().as_secs_f32();
         draw_animated_border(buf, rect, &self.color_cycle, elapsed);
+    }
+
+    /// Draw the border as a static single-colour outline (the base colour at
+    /// cycle index 0). Used under reduced motion so the border stays visible
+    /// without a per-frame colour flow.
+    pub fn draw_static(&self, buf: &mut Buffer, rect: Rect) {
+        draw_animated_border(buf, rect, &self.color_cycle, 0.0);
     }
 }
 
@@ -90,7 +98,6 @@ impl AnimatedBorder {
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_lossless,
     reason = "color math: f64->u8 truncation is intentional for RGB blending"
 )]
 fn radial_gradient(
@@ -191,6 +198,7 @@ pub fn build_color_cycle(base_color: Color) -> Vec<Color> {
         reason = "wrap_steps and i are always < 50"
     )]
     let wrap_f = wrap_steps as f32;
+    #[expect(clippy::cast_precision_loss, reason = "wrap index i is always < 50")]
     for i in 1..wrap_steps {
         colors.push(prev.lerp(&base_color, i as f32 / wrap_f));
     }
@@ -286,24 +294,31 @@ pub fn render_transition_gradient(
     let (cr, cg, cb) = to_rgb(p.bg);
 
     // Apply brightness dip that peaks at mid-progress via a sin bell curve.
-    let dip_factor = 1.0 + brightness_dip * (std::f64::consts::PI * eased_progress as f64).sin();
+    let dip_factor =
+        1.0 + brightness_dip * (std::f64::consts::PI * f64::from(eased_progress)).sin();
     let base_red = f64::from(cr) * dip_factor;
     let base_green = f64::from(cg) * dip_factor;
     let base_blue = f64::from(cb) * dip_factor;
 
     // Edge color modulated at midpoint.
-    let edge_factor = 0.6 + edge_delta * (std::f64::consts::PI * eased_progress as f64).sin();
+    let edge_factor = 0.6 + edge_delta * (std::f64::consts::PI * f64::from(eased_progress)).sin();
     let er = base_red * edge_factor;
     let eg = base_green * edge_factor;
     let eb = base_blue * edge_factor;
 
     // Animated gradient center.
     let cx = f64::from(u16::midpoint(area.left(), area.right()))
-        + center_offset.0 * eased_progress as f64 * f64::from(area.width);
+        + center_offset.0 * f64::from(eased_progress) * f64::from(area.width);
     let cy = f64::from(u16::midpoint(area.top(), area.bottom()))
-        + center_offset.1 * eased_progress as f64 * f64::from(area.height);
+        + center_offset.1 * f64::from(eased_progress) * f64::from(area.height);
 
-    let colors = radial_gradient(area, (base_red, base_green, base_blue), (er, eg, eb), cx, cy);
+    let colors = radial_gradient(
+        area,
+        (base_red, base_green, base_blue),
+        (er, eg, eb),
+        cx,
+        cy,
+    );
 
     // Write directly to buffer.
     let mut i = 0usize;
@@ -340,7 +355,7 @@ mod tests {
         cache.render_or_copy(&mut buf, area, CATPPUCCIN);
 
         // Every cell should have a non-default background colour.
-        for cell in buf.content.iter() {
+        for cell in &buf.content {
             assert_ne!(
                 cell.bg,
                 Color::default(),
@@ -367,6 +382,8 @@ mod tests {
 
     #[test]
     fn gradient_cache_invalidate_clears_cached_area() {
+        use crate::ui::theme::NORD;
+
         let area = Rect::new(0, 0, 4, 1);
         let mut buf = Buffer::empty(area);
         let mut cache = GradientCache::new();
@@ -377,7 +394,6 @@ mod tests {
 
         // Mutate the palette so a re-render would produce a different result.
         // We use a different palette with a distinct bg colour.
-        use crate::ui::theme::NORD;
 
         // Without invalidation the cache should still serve the old colors.
         let mut buf2 = Buffer::empty(area);
@@ -438,7 +454,7 @@ mod tests {
         // Should not panic and should leave the buffer untouched.
         border.draw(&mut buf, area);
 
-        for cell in buf.content.iter() {
+        for cell in &buf.content {
             assert_eq!(cell.symbol(), " ", "cells should remain default space");
         }
     }
@@ -455,7 +471,7 @@ mod tests {
 
         cache.render_or_copy(&mut buf, area, CATPPUCCIN);
 
-        for cell in buf.content.iter() {
+        for cell in &buf.content {
             assert!(
                 matches!(cell.bg, Color::Rgb(_, _, _)),
                 "gradient cells should have Rgb backgrounds, got {:?}",
@@ -479,7 +495,7 @@ mod tests {
         cache.render_or_copy(&mut buf, area, non_rgb_palette);
 
         // All cells should still get an Rgb background.
-        for cell in buf.content.iter() {
+        for cell in &buf.content {
             assert!(
                 matches!(cell.bg, Color::Rgb(_, _, _)),
                 "non-Rgb palette bg should still produce Rgb gradient, got {:?}",

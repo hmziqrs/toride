@@ -36,7 +36,11 @@ Host bastion
         .filter(|d| d.id == "config_proxy_conflict")
         .collect();
 
-    assert_eq!(conflicts.len(), 1, "expected exactly one proxy conflict diagnostic");
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "expected exactly one proxy conflict diagnostic"
+    );
     assert_eq!(conflicts[0].severity, Severity::Warning);
     assert!(conflicts[0].message.contains("bastion"));
     assert!(conflicts[0].hint.is_some());
@@ -62,7 +66,11 @@ Host web
         .filter(|d| d.id == "config_duplicate_alias")
         .collect();
 
-    assert_eq!(dupes.len(), 1, "expected exactly one duplicate alias diagnostic");
+    assert_eq!(
+        dupes.len(),
+        1,
+        "expected exactly one duplicate alias diagnostic"
+    );
     assert_eq!(dupes[0].severity, Severity::Warning);
     assert!(dupes[0].message.contains("'web'"));
 
@@ -122,12 +130,23 @@ Host *
 
 #[tokio::test]
 async fn diagnose_clean_config_returns_empty() {
-    let (dir, svc) = setup_config(
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ssh_dir = dir.path();
+    std::fs::create_dir_all(ssh_dir).unwrap();
+
+    // Create a real private key file and reference it by absolute path so the
+    // diagnose IdentityFile-existence check is hermetic: it must NOT depend on
+    // the developer's real `~/.ssh/id_ed25519` existing. (`expand_path` passes
+    // absolute paths through unchanged.)
+    let key_file = ssh_dir.join("id_ed25519");
+    std::fs::write(&key_file, b"dummy private key").unwrap();
+
+    let config = format!(
         "\
 Host production
     HostName prod.example.com
     User deploy
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile {key}
 
 Host staging
     HostName staging.example.com
@@ -136,12 +155,19 @@ Host staging
 Host *
     ServerAliveInterval 60
 ",
+        key = key_file.display()
     );
+    std::fs::write(ssh_dir.join("config"), config).unwrap();
+
+    // Keep the TempDir (and the leaked SshPaths borrow into it) alive for the
+    // duration of the test.
+    let paths = Box::leak(Box::new(crate::SshPaths::with_dir(ssh_dir)));
+    let svc = ConfigService::new(paths);
 
     let diags = svc.diagnose().await.unwrap();
 
-    // No warnings or errors expected — all diagnostics should be absent.
-    // (IdentityFile existence is not checked by config diagnose, only .pub suffix.)
+    // No warnings or errors expected — the config is well-formed and the
+    // referenced IdentityFile exists on disk.
     let warnings: Vec<_> = diags
         .iter()
         .filter(|d| d.severity == Severity::Warning)
@@ -182,7 +208,10 @@ async fn diagnose_empty_config_returns_empty() {
     let (dir, svc) = setup_config("");
 
     let diags = svc.diagnose().await.unwrap();
-    assert!(diags.is_empty(), "empty config should produce no diagnostics");
+    assert!(
+        diags.is_empty(),
+        "empty config should produce no diagnostics"
+    );
 
     drop(dir);
 }

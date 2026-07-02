@@ -82,7 +82,11 @@ fn enable_should_succeed_when_already_active() {
 fn enable_should_succeed_with_allow_force() {
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["status"], "Status: inactive\n")
-        .respond_ok("ufw", &["--force", "enable"], "Firewall is active and enabled on system startup\n");
+        .respond_ok(
+            "ufw",
+            &["--force", "enable"],
+            "Firewall is active and enabled on system startup\n",
+        );
     let ufw = Ufw::with_runner(runner);
     let opts = EnableOptions {
         require_ssh_allow_rule: false,
@@ -94,11 +98,7 @@ fn enable_should_succeed_with_allow_force() {
 
 #[test]
 fn enable_should_fail_on_ssh_lockout() {
-    let runner = FakeRunner::new().respond_ok(
-        "ufw",
-        &["status"],
-        "Status: inactive\n",
-    );
+    let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: inactive\n");
     let ufw = Ufw::with_runner(runner);
     let opts = EnableOptions {
         require_ssh_allow_rule: true,
@@ -130,9 +130,19 @@ fn enable_should_pass_when_ssh_rule_exists() {
 
 #[test]
 fn force_enable_should_succeed_when_inactive() {
+    // force_enable() must STILL perform the SSH lockout safety check, so we
+    // provide an incoming SSH allow rule in the status output.
     let runner = FakeRunner::new()
-        .respond_ok("ufw", &["status"], "Status: inactive\n")
-        .respond_ok("ufw", &["--force", "enable"], "Firewall is active and enabled on system startup\n");
+        .respond_ok(
+            "ufw",
+            &["status"],
+            "Status: inactive\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n",
+        )
+        .respond_ok(
+            "ufw",
+            &["--force", "enable"],
+            "Firewall is active and enabled on system startup\n",
+        );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.force_enable().is_ok());
 }
@@ -142,6 +152,22 @@ fn force_enable_should_succeed_when_already_active() {
     let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: active\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.force_enable().is_ok());
+}
+
+#[test]
+fn force_enable_should_still_trigger_lockout_check() {
+    // Regression: force_enable() must NOT bypass the SSH lockout check.
+    // With no incoming SSH allow rule, it must fail with SshLockoutRisk even
+    // though allow_force is true (the --force flag only skips UFW's
+    // interactive prompt, not this library's lockout protection).
+    let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: inactive\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.force_enable();
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::SshLockoutRisk(_)),
+        "force_enable() must still perform the SSH lockout check"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +190,11 @@ fn disable_should_fail_without_confirmation() {
 
 #[test]
 fn disable_should_succeed_with_confirmation() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["disable"], "Firewall stopped and disabled on system startup\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["disable"],
+        "Firewall stopped and disabled on system startup\n",
+    );
     let ufw = Ufw::with_runner(runner);
     let opts = DisableOptions {
         require_explicit_confirmation: true,
@@ -198,13 +228,23 @@ fn reset_should_fail_without_force() {
 
 #[test]
 fn reset_should_succeed_with_force() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["--force", "reset"], "Resetting all rules\n");
+    let runner =
+        FakeRunner::new().respond_ok("ufw", &["--force", "reset"], "Resetting all rules\n");
     let ufw = Ufw::with_runner(runner);
+    // backup_first disabled here so the test is hermetic: reset() backs up via
+    // UfwPaths::default() (real /etc/ufw), whose root-owned files are unreadable
+    // by a non-root test process. Backup behaviour itself is covered in
+    // backup.test.rs against temp paths.
     let opts = ResetOptions {
         force: true,
-        backup_first: true,
+        backup_first: false,
     };
-    assert!(ufw.reset(&opts).is_ok());
+    let result = ufw.reset(&opts);
+    assert!(
+        result.is_ok(),
+        "reset with force failed: {:?}",
+        result.err()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -242,16 +282,22 @@ fn set_default_policy_should_reject_reject_incoming_without_ssh() {
 
 #[test]
 fn set_default_policy_should_allow_deny_outgoing_without_ssh_check() {
-    let runner = FakeRunner::new()
-        .respond_ok("ufw", &["default", "out", "deny"], "Default outgoing policy changed\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["default", "out", "deny"],
+        "Default outgoing policy changed\n",
+    );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.set_default_policy(Direction::Out, Policy::Deny).is_ok());
 }
 
 #[test]
 fn set_default_policy_should_allow_allow_incoming_without_ssh_check() {
-    let runner = FakeRunner::new()
-        .respond_ok("ufw", &["default", "in", "allow"], "Default incoming policy changed\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["default", "in", "allow"],
+        "Default incoming policy changed\n",
+    );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.set_default_policy(Direction::In, Policy::Allow).is_ok());
 }
@@ -336,7 +382,11 @@ fn reload_should_call_ufw() {
 
 #[test]
 fn show_should_return_report_output() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["show", "listening"], "tcp  0.0.0.0:22  0.0.0.0:*  sshd\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["show", "listening"],
+        "tcp  0.0.0.0:22  0.0.0.0:*  sshd\n",
+    );
     let ufw = Ufw::with_runner(runner);
     let output = ufw.show(UfwReport::Listening).unwrap();
     assert!(output.contains("sshd"));
@@ -348,7 +398,11 @@ fn show_should_return_report_output() {
 
 #[test]
 fn app_list_should_return_output() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["app", "list"], "Available applications:\n  OpenSSH\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["app", "list"],
+        "Available applications:\n  OpenSSH\n",
+    );
     let ufw = Ufw::with_runner(runner);
     let list = ufw.app_list().unwrap();
     assert!(list.contains("OpenSSH"));
@@ -356,7 +410,11 @@ fn app_list_should_return_output() {
 
 #[test]
 fn app_info_should_return_output() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["app", "info", "OpenSSH"], "Profile: OpenSSH\nPorts: 22/tcp\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["app", "info", "OpenSSH"],
+        "Profile: OpenSSH\nPorts: 22/tcp\n",
+    );
     let ufw = Ufw::with_runner(runner);
     let info = ufw.app_info("OpenSSH").unwrap();
     assert!(info.contains("OpenSSH"));
@@ -364,7 +422,11 @@ fn app_info_should_return_output() {
 
 #[test]
 fn app_update_all_should_call_ufw() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["app", "update", "all"], "Updated all application profiles\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["app", "update", "all"],
+        "Updated all application profiles\n",
+    );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_update_all().is_ok());
 }
@@ -438,7 +500,11 @@ fn delete_route_rule_should_call_ufw() {
 
 #[test]
 fn app_default_should_call_ufw() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["app", "default", "skip"], "Default application policy changed\n");
+    let runner = FakeRunner::new().respond_ok(
+        "ufw",
+        &["app", "default", "skip"],
+        "Default application policy changed\n",
+    );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_default(AppDefaultPolicy::Skip).is_ok());
 }
@@ -469,8 +535,7 @@ fn dry_run_should_fail_on_error() {
 
 #[test]
 fn apply_rule_should_dry_run_then_execute() {
-    let runner = FakeRunner::new()
-        .respond_ok("ufw", &[], "Rules updated\n");
+    let runner = FakeRunner::new().respond_ok("ufw", &[], "Rules updated\n");
     let ufw = Ufw::with_runner(runner);
     let spec = RuleSpec::builder(Action::Allow)
         .to_port(443)
@@ -703,14 +768,20 @@ fn insert_rule_should_set_position_to_insert_n() {
 
 #[test]
 fn app_update_should_call_ufw_with_app_update_name() {
-    let runner = FakeRunner::new().respond_ok("ufw", &["app", "update", "OpenSSH"], "Profile updated\n");
+    let runner =
+        FakeRunner::new().respond_ok("ufw", &["app", "update", "OpenSSH"], "Profile updated\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_update("OpenSSH").is_ok());
 }
 
 #[test]
 fn app_update_should_fail_on_error() {
-    let runner = FakeRunner::new().respond_err("ufw", &["app", "update", "NonExistent"], "ERROR: profile not found", 1);
+    let runner = FakeRunner::new().respond_err(
+        "ufw",
+        &["app", "update", "NonExistent"],
+        "ERROR: profile not found",
+        1,
+    );
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_update("NonExistent").is_err());
 }

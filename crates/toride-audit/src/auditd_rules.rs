@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use crate::paths::{secure_dir_mode, secure_file_mode, validate_name};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ pub fn list_rule_files(paths: &AuditPaths) -> Result<Vec<AuditRuleFile>> {
 ///
 /// Returns [`Error::Io`] if the file cannot be read.
 pub fn read_rule_file(paths: &AuditPaths, name: &str) -> Result<AuditRuleFile> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
     let content = fs::read_to_string(&path)?;
     Ok(AuditRuleFile {
@@ -92,6 +94,7 @@ pub fn read_rule_file(paths: &AuditPaths, name: &str) -> Result<AuditRuleFile> {
 ///
 /// Returns [`Error::ConfigWrite`] if the file cannot be written.
 pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
 
     if path.exists() {
@@ -100,9 +103,13 @@ pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        secure_dir_mode(parent)?;
     }
 
     fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    // Pin restrictive mode regardless of umask: audit rules drive security
+    // observability and must never be group/other writable.
+    secure_file_mode(&path)?;
     Ok(())
 }
 
@@ -114,6 +121,7 @@ pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<
 ///
 /// Returns [`Error::Io`] if the file cannot be removed.
 pub fn remove_rule_file(paths: &AuditPaths, name: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
 
     if path.exists() {
@@ -138,7 +146,7 @@ pub fn merge_rules(files: &[AuditRuleFile]) -> Vec<String> {
                     let trimmed = line.trim();
                     !trimmed.is_empty() && !trimmed.starts_with('#')
                 })
-                .map(|r| r.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -172,7 +180,8 @@ mod tests {
     fn audit_rule_file_rules_all_rules() {
         let file = AuditRuleFile {
             name: "all_rules".to_owned(),
-            content: "-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity".to_owned(),
+            content: "-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity"
+                .to_owned(),
         };
         let rules = file.rules();
         assert_eq!(rules.len(), 2);
@@ -193,19 +202,30 @@ mod tests {
         let files = vec![
             AuditRuleFile {
                 name: "first".to_owned(),
-                content: "-w /etc/shadow -p wa -k identity\n-w /etc/passwd -p wa -k identity".to_owned(),
+                content: "-w /etc/shadow -p wa -k identity\n-w /etc/passwd -p wa -k identity"
+                    .to_owned(),
             },
             AuditRuleFile {
                 name: "second".to_owned(),
-                content: "-w /etc/passwd -p wa -k identity\n-a always,exit -S open -k test".to_owned(),
+                content: "-w /etc/passwd -p wa -k identity\n-a always,exit -S open -k test"
+                    .to_owned(),
             },
         ];
         let merged = merge_rules(&files);
         // Should be sorted and deduplicated.
         assert_eq!(merged.len(), 3);
-        assert!(merged.windows(2).all(|w| w[0] <= w[1]), "merged rules must be sorted");
+        assert!(
+            merged.windows(2).all(|w| w[0] <= w[1]),
+            "merged rules must be sorted"
+        );
         // /etc/passwd appears only once.
-        assert_eq!(merged.iter().filter(|r| **r == "-w /etc/passwd -p wa -k identity").count(), 1);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|r| **r == "-w /etc/passwd -p wa -k identity")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -217,12 +237,10 @@ mod tests {
 
     #[test]
     fn merge_rules_skips_comments_and_empty_lines() {
-        let files = vec![
-            AuditRuleFile {
-                name: "mixed".to_owned(),
-                content: "# comment\n\n-w /etc/passwd -p wa -k identity\n".to_owned(),
-            },
-        ];
+        let files = vec![AuditRuleFile {
+            name: "mixed".to_owned(),
+            content: "# comment\n\n-w /etc/passwd -p wa -k identity\n".to_owned(),
+        }];
         let merged = merge_rules(&files);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0], "-w /etc/passwd -p wa -k identity");

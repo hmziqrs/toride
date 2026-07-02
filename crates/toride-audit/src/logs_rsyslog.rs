@@ -4,8 +4,8 @@
 //! for audit log aggregation.
 
 use std::fs;
-use std::path::Path;
 
+use crate::paths::{secure_dir_mode, secure_file_mode, validate_name};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -55,7 +55,7 @@ pub fn read_config(paths: &AuditPaths) -> Result<String> {
 ///
 /// # Arguments
 ///
-/// * `paths` - Audit paths containing the rsyslog_d directory.
+/// * `paths` - Audit paths containing the `rsyslog_d` directory.
 /// * `name` - Drop-in file name (without `.conf` extension).
 /// * `content` - Configuration content.
 ///
@@ -63,6 +63,7 @@ pub fn read_config(paths: &AuditPaths) -> Result<String> {
 ///
 /// Returns [`Error::ConfigWrite`] if the file cannot be written.
 pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rsyslog_d.join(format!("{name}.conf"));
 
     if path.exists() {
@@ -70,7 +71,9 @@ pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()>
     }
 
     fs::create_dir_all(&paths.rsyslog_d)?;
+    secure_dir_mode(&paths.rsyslog_d)?;
     fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    secure_file_mode(&path)?;
     Ok(())
 }
 
@@ -82,6 +85,7 @@ pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()>
 ///
 /// Returns [`Error::Io`] if the file cannot be removed.
 pub fn remove_dropin(paths: &AuditPaths, name: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rsyslog_d.join(format!("{name}.conf"));
 
     if path.exists() {
@@ -140,9 +144,7 @@ pub fn parse_rsyslog_config(content: &str) -> Vec<RsyslogRule> {
             let fac_pri = parts[0];
             let action = parts[1].trim();
 
-            let (facility, priority) = fac_pri
-                .split_once('.')
-                .unwrap_or((fac_pri, "*"));
+            let (facility, priority) = fac_pri.split_once('.').unwrap_or((fac_pri, "*"));
 
             Some(RsyslogRule {
                 facility: facility.to_owned(),

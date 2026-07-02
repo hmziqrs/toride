@@ -142,7 +142,11 @@ impl ProxyContent {
     /// when the backend is unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.server_blocks.len()) } else { None }
+        if self.available {
+            Some(self.server_blocks.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -247,6 +251,10 @@ impl ProxyContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
@@ -288,7 +296,7 @@ impl ProxyContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -312,8 +320,12 @@ impl ProxyContent {
             .clone()
             .unwrap_or_else(|| "proxy data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -406,10 +418,7 @@ impl ProxyContent {
                     Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  :{}  → {}",
-                        block.listen_port, block.upstream
-                    ),
+                    format!("  :{}  → {}", block.listen_port, block.upstream),
                     Style::new().fg(p.text_muted),
                 ),
             ]));
@@ -451,11 +460,23 @@ impl ProxyContent {
             let (icon, color, expiry) = if cert.not_after.is_empty() {
                 ("?", p.warn, "expiry unknown".to_string())
             } else if !cert.is_valid {
-                ("✗", p.err, format!("{} ({} days)", cert.not_after, cert.days_remaining))
+                (
+                    "✗",
+                    p.err,
+                    format!("{} ({} days)", cert.not_after, cert.days_remaining),
+                )
             } else if cert.days_remaining <= 30 {
-                ("!", p.warn, format!("{} ({} days)", cert.not_after, cert.days_remaining))
+                (
+                    "!",
+                    p.warn,
+                    format!("{} ({} days)", cert.not_after, cert.days_remaining),
+                )
             } else {
-                ("✓", p.ok, format!("{} ({} days)", cert.not_after, cert.days_remaining))
+                (
+                    "✓",
+                    p.ok,
+                    format!("{} ({} days)", cert.not_after, cert.days_remaining),
+                )
             };
             let issuer = if cert.issuer.is_empty() {
                 "(unknown issuer)".to_string()
@@ -495,64 +516,16 @@ impl ProxyContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Critical > Error > Warning > Info > Ok.
-        let order = ["critical", "error", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{icon} "),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let title = truncate_str(&f.title, 60);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(title, Style::new().fg(p.text)),
-                ]));
-                if !f.detail.is_empty() {
-                    let detail = truncate_str(&f.detail, 70);
-                    lines.push(Line::from(Span::styled(
-                        format!("      {detail}"),
-                        Style::new().fg(p.text_dim),
-                    )));
-                }
-                if let Some(ref fix) = f.fix {
-                    let fix = truncate_str(fix, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(fix, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["critical", "error", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_full,
+            crate::ui::screens::findings::FindingWidths::TITLE_60,
+        );
     }
 }
 
@@ -576,7 +549,11 @@ impl crate::ui::screens::section_overview::SectionOverview for ProxyContent {
             "{} server(s) · {} cert(s){}",
             self.server_blocks.len(),
             self.certificates.len(),
-            if self.has_expired_certs { " · expired!" } else { "" }
+            if self.has_expired_certs {
+                " · expired!"
+            } else {
+                ""
+            }
         ))
     }
 
@@ -585,15 +562,18 @@ impl crate::ui::screens::section_overview::SectionOverview for ProxyContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "critical" => ("⛔", p.err),
-        "error" => ("✗", p.err),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for FindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
+    fn fix(&self) -> Option<&str> {
+        self.fix.as_deref()
     }
 }
 
@@ -658,12 +638,10 @@ mod tests {
         ]
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut ProxyContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -723,10 +701,10 @@ mod tests {
         assert!(out.contains("expired.com"), "expired cert: {out}");
     }
 
-    /// A scan-derived cert (empty not_after — the certs-feature-off certbot-
+    /// A scan-derived cert (empty `not_after` — the certs-feature-off certbot-
     /// dir-scan case) must NOT render as a green ✓. The honest state is that
     /// expiry is UNVERIFIED, so the row shows '?' + "expiry unknown" + the
-    /// has_expired_certs header warning is absent (unknown != expired).
+    /// `has_expired_certs` header warning is absent (unknown != expired).
     /// Regression guard for the prior bug where such a cert rendered as a
     /// healthy green ✓ with no signal that expiry was unverified.
     #[test]
@@ -775,7 +753,10 @@ mod tests {
         c.set_available(true);
         c.set_waf(None);
         let out = render_to_string(&mut c, 100, 30);
-        assert!(out.contains("Web Application Firewall"), "waf header: {out}");
+        assert!(
+            out.contains("Web Application Firewall"),
+            "waf header: {out}"
+        );
         assert!(out.contains("waf feature off"), "waf status: {out}");
     }
 
@@ -786,14 +767,8 @@ mod tests {
         c.set_findings(sample_findings());
         let out = render_to_string(&mut c, 110, 44);
         assert!(out.contains("CRITICAL"), "severity group header: {out}");
-        assert!(
-            out.contains("syntax errors"),
-            "finding title: {out}"
-        );
-        assert!(
-            out.contains("Fix the syntax errors"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("syntax errors"), "finding title: {out}");
+        assert!(out.contains("Fix the syntax errors"), "fix hint: {out}");
     }
 
     #[test]
@@ -876,10 +851,7 @@ mod tests {
             out.contains("no server blocks configured"),
             "empty blocks: {out}"
         );
-        assert!(
-            out.contains("no certificates found"),
-            "empty certs: {out}"
-        );
+        assert!(out.contains("no certificates found"), "empty certs: {out}");
         assert!(out.contains("no findings"), "empty findings: {out}");
     }
 }

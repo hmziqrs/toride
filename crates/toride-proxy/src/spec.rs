@@ -5,7 +5,7 @@
 //! specifies TLS certificate settings.
 
 use crate::error::Result;
-use crate::validate::{validate_server_name, validate_port};
+use crate::validate::{validate_cert_path, validate_port, validate_server_name, validate_upstream};
 
 /// TLS configuration for a server block.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,11 @@ pub struct TlsConfig {
 
 impl TlsConfig {
     /// Create a new TLS configuration for a domain.
-    pub fn new(domain: impl Into<String>, cert_path: impl Into<String>, key_path: impl Into<String>) -> Self {
+    pub fn new(
+        domain: impl Into<String>,
+        cert_path: impl Into<String>,
+        key_path: impl Into<String>,
+    ) -> Self {
         Self {
             domain: domain.into(),
             cert_path: cert_path.into(),
@@ -93,9 +97,22 @@ impl ServerBlock {
     }
 
     /// Validate this server block.
+    ///
+    /// Checks the server name, listen port, upstream address, and (when TLS is
+    /// configured) the certificate / key / chain paths. Previously only the
+    /// server name and port were checked, so a block with a missing-port
+    /// upstream or a bogus cert path passed validation and was written to disk.
     pub fn validate(&self) -> Result<()> {
         validate_server_name(&self.server_name)?;
         validate_port(self.listen_port)?;
+        validate_upstream(&self.upstream)?;
+        if let Some(tls) = &self.tls {
+            validate_cert_path(&tls.cert_path)?;
+            validate_cert_path(&tls.key_path)?;
+            if let Some(chain) = &tls.chain_path {
+                validate_cert_path(chain)?;
+            }
+        }
         Ok(())
     }
 }
@@ -146,12 +163,18 @@ impl ProxySpec {
 
     /// Return server blocks that have TLS configured.
     pub fn tls_blocks(&self) -> Vec<&ServerBlock> {
-        self.server_blocks.iter().filter(|b| b.tls.is_some()).collect()
+        self.server_blocks
+            .iter()
+            .filter(|b| b.tls.is_some())
+            .collect()
     }
 
     /// Return server blocks without TLS.
     pub fn plaintext_blocks(&self) -> Vec<&ServerBlock> {
-        self.server_blocks.iter().filter(|b| b.tls.is_none()).collect()
+        self.server_blocks
+            .iter()
+            .filter(|b| b.tls.is_none())
+            .collect()
     }
 }
 
@@ -209,12 +232,44 @@ mod tests {
     }
 
     #[test]
+    fn server_block_validation_rejects_bad_upstream() {
+        // Missing port: validate_upstream must reject this now.
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1");
+        assert!(block.validate().is_err());
+    }
+
+    #[test]
+    fn server_block_validation_rejects_bad_cert_path() {
+        // Bogus extension on the cert path: validate_cert_path must reject.
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000").with_tls(
+            TlsConfig::new("example.com", "/etc/ssl/cert.txt", "/etc/ssl/key.pem"),
+        );
+        assert!(block.validate().is_err());
+    }
+
+    #[test]
+    fn server_block_validation_accepts_valid_tls() {
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000").with_tls(
+            TlsConfig::new(
+                "example.com",
+                "/etc/letsencrypt/live/example.com/fullchain.pem",
+                "/etc/letsencrypt/live/example.com/privkey.pem",
+            )
+            .with_chain("/etc/letsencrypt/live/example.com/chain.pem"),
+        );
+        assert!(block.validate().is_ok());
+    }
+
+    #[test]
     fn proxy_spec_tls_blocks_filter() {
-        let spec = ProxySpec::builder()
-            .block(ServerBlock::new("example.com", 443, "127.0.0.1:3000")
-                .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem")))
-            .block(ServerBlock::new("http.example.com", 80, "127.0.0.1:3000"))
-            .build();
+        let spec =
+            ProxySpec::builder()
+                .block(
+                    ServerBlock::new("example.com", 443, "127.0.0.1:3000")
+                        .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem")),
+                )
+                .block(ServerBlock::new("http.example.com", 80, "127.0.0.1:3000"))
+                .build();
 
         assert_eq!(spec.tls_blocks().len(), 1);
         assert_eq!(spec.plaintext_blocks().len(), 1);

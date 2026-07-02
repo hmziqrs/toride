@@ -10,7 +10,10 @@ fn default_paths_should_point_to_etc_ufw() {
     let paths = UfwPaths::default();
     assert_eq!(paths.default_ufw, PathBuf::from("/etc/default/ufw"));
     assert_eq!(paths.ufw_conf, PathBuf::from("/etc/ufw/ufw.conf"));
-    assert_eq!(paths.app_profiles_dir, PathBuf::from("/etc/ufw/applications.d"));
+    assert_eq!(
+        paths.app_profiles_dir,
+        PathBuf::from("/etc/ufw/applications.d")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -20,7 +23,10 @@ fn default_paths_should_point_to_etc_ufw() {
 #[test]
 fn with_root_should_prefix_all_paths() {
     let paths = UfwPaths::with_root(Path::new("/tmp/test"));
-    assert_eq!(paths.default_ufw, PathBuf::from("/tmp/test/etc/default/ufw"));
+    assert_eq!(
+        paths.default_ufw,
+        PathBuf::from("/tmp/test/etc/default/ufw")
+    );
     assert_eq!(paths.ufw_conf, PathBuf::from("/tmp/test/etc/ufw/ufw.conf"));
     assert_eq!(
         paths.app_profiles_dir,
@@ -57,6 +63,47 @@ fn app_profile_path_should_join_namespace_and_name() {
     assert_eq!(
         path,
         PathBuf::from("/tmp/test/etc/ufw/applications.d/ufw-kit-myapp")
+    );
+}
+
+#[test]
+fn app_profile_path_should_reject_traversal_namespace() {
+    let paths = UfwPaths::with_root(Path::new("/tmp/test"));
+    // A traversal-shaped namespace must not escape app_profiles_dir.
+    let path = paths.app_profile_path("../..", "evil");
+    assert!(
+        path.starts_with(&paths.app_profiles_dir),
+        "namespace traversal escaped app_profiles_dir: {}",
+        path.display()
+    );
+    assert!(
+        !path.to_string_lossy().contains("../"),
+        "namespace traversal produced a '..' path: {}",
+        path.display()
+    );
+}
+
+#[test]
+fn app_profile_path_should_reject_separator_in_namespace() {
+    let paths = UfwPaths::with_root(Path::new("/tmp/test"));
+    for bad in &["a/b", "..", ".", "evil\\other", "x\0y", ""] {
+        let path = paths.app_profile_path(bad, "app");
+        assert!(
+            path.starts_with(&paths.app_profiles_dir),
+            "namespace {bad:?} escaped app_profiles_dir: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn app_profile_path_should_reject_traversal_name() {
+    let paths = UfwPaths::with_root(Path::new("/tmp/test"));
+    let path = paths.app_profile_path("ufw-kit", "../../etc/passwd");
+    assert!(
+        path.starts_with(&paths.app_profiles_dir),
+        "name traversal escaped app_profiles_dir: {}",
+        path.display()
     );
 }
 

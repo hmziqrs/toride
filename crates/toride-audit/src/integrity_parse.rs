@@ -82,12 +82,12 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
         let trimmed = line.trim();
 
         // Look for summary line like "Changed entries: 5"
-        if trimmed.starts_with("Changed entries:") {
-            if let Some(num) = extract_number(trimmed) {
-                result.changed = num;
-                if num > 0 {
-                    result.passed = false;
-                }
+        if trimmed.starts_with("Changed entries:")
+            && let Some(num) = extract_number(trimmed)
+        {
+            result.changed = num;
+            if num > 0 {
+                result.passed = false;
             }
         } else if trimmed.starts_with("Added entries:") {
             if let Some(num) = extract_number(trimmed) {
@@ -96,12 +96,12 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
                     result.passed = false;
                 }
             }
-        } else if trimmed.starts_with("Removed entries:") {
-            if let Some(num) = extract_number(trimmed) {
-                result.removed = num;
-                if num > 0 {
-                    result.passed = false;
-                }
+        } else if trimmed.starts_with("Removed entries:")
+            && let Some(num) = extract_number(trimmed)
+        {
+            result.removed = num;
+            if num > 0 {
+                result.passed = false;
             }
         }
 
@@ -112,9 +112,9 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
                 change_type: AideChangeType::Added,
                 details: Vec::new(),
             });
-        } else if trimmed.starts_with("f--- ") {
+        } else if let Some(stripped) = trimmed.strip_prefix("f--- ") {
             result.changes.push(AideChange {
-                path: trimmed[5..].trim().to_owned(),
+                path: stripped.trim().to_owned(),
                 change_type: AideChangeType::Removed,
                 details: Vec::new(),
             });
@@ -125,6 +125,16 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
                 details: Vec::new(),
             });
         }
+    }
+
+    // Individual change markers (f+++, f---, f!!, f>p, f =) drive per-line
+    // detection independent of the 'Changed/Added/Removed entries: N' summary.
+    // If AIDE emits change markers but the summary line is absent, truncated,
+    // or formatted differently (e.g. a different AIDE version, output captured
+    // mid-run, or output captured from stderr where the summary goes to
+    // stdout), `passed` must still reflect that changes were detected.
+    if !result.changes.is_empty() {
+        result.passed = false;
     }
 
     Ok(result)
@@ -139,9 +149,7 @@ pub fn parse_aide_init(output: &str) -> crate::Result<bool> {
 
 /// Extract a trailing number from a string like "Changed entries: 5".
 fn extract_number(s: &str) -> Option<usize> {
-    s.split_whitespace()
-        .last()
-        .and_then(|v| v.parse().ok())
+    s.split_whitespace().last().and_then(|v| v.parse().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -199,11 +207,51 @@ Removed entries: 0
 
     #[test]
     fn parse_aide_check_f_equals_prefix_is_added() {
-        let output = "f = /etc/something\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
+        let output =
+            "f = /etc/something\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
         let result = parse_aide_check(output).unwrap();
-        assert!(result.passed);
+        // An `f = ` marker is an added-entry change: even though the summary
+        // line reports zero changes, the per-line marker is a real change, so
+        // `passed` must be false.
+        assert!(!result.passed);
         assert_eq!(result.changes.len(), 1);
         assert_eq!(result.changes[0].change_type, AideChangeType::Added);
+    }
+
+    #[test]
+    fn parse_aide_check_change_markers_without_summary_marks_failed() {
+        // AIDE output can carry per-line change markers without the
+        // 'Changed entries: N' summary (different AIDE version, truncated
+        // output, output captured mid-run or from stderr). The parser must
+        // still treat any detected change as a failure.
+        let output = "\
+Start timestamp: 2024-01-01 00:00:00
+AIDE found differences between database and filesystem!!
+
+Summary:
+  Total number of entries: 1234
+
+f!! /etc/passwd
+f>p /etc/shadow
+f+++ /etc/newfile
+f--- /etc/oldfile
+";
+        let result = parse_aide_check(output).unwrap();
+        assert!(!result.passed, "change markers must flip passed=false");
+        // Summary line absent -> counts stay 0, but changes are populated.
+        assert_eq!(result.changed, 0);
+        assert_eq!(result.added, 0);
+        assert_eq!(result.removed, 0);
+        assert_eq!(result.changes.len(), 4);
+    }
+
+    #[test]
+    fn parse_aide_check_zero_summary_with_no_markers_passes() {
+        // A genuinely clean report (no markers, zero summary) stays passed.
+        let output = "AIDE 0.17.4 found NO changes\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
+        let result = parse_aide_check(output).unwrap();
+        assert!(result.passed);
+        assert!(result.changes.is_empty());
     }
 
     #[test]

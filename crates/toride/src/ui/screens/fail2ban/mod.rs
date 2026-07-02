@@ -181,7 +181,11 @@ impl Fail2banContent {
         if !self.available {
             return None;
         }
-        let banned = self.bans.iter().map(|b| b.ip.len()).sum::<usize>();
+        // Count of distinct banned IPs (one per `BanEntry`), NOT the summed
+        // byte-length of the IP strings — summing `b.ip.len()` previously
+        // reported 25 for two bans ("203.0.113.42" + "198.51.100.7") and wildly
+        // inflated the sidebar badge (worse for long IPv6 addresses).
+        let banned = self.bans.len();
         if banned > 0 {
             Some(banned)
         } else {
@@ -249,6 +253,7 @@ impl Fail2banContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(clippy::unused_self, reason = "API symmetry with SSH tabs")]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with SSH tabs (which clamp on set).
@@ -291,7 +296,7 @@ impl Fail2banContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -304,7 +309,7 @@ impl Fail2banContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (JoinError) — not when the binary is missing (a missing
+    /// task PANICS (`JoinError`) — not when the binary is missing (a missing
     /// binary instead produces a Critical doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -315,7 +320,10 @@ impl Fail2banContent {
         let inner = render_titled_panel(frame, area, p, " FAIL2BAN ", p.text_dim, false);
         let msg = Line::from(vec![
             Span::styled("✦ ", Style::new().fg(p.warn)),
-            Span::styled("fail2ban unavailable", Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "fail2ban unavailable",
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
         ]);
         // Prefer the panic reason from the bundle; otherwise a generic message
         // that is accurate for both the panic case and the pre-first-poll state.
@@ -324,8 +332,12 @@ impl Fail2banContent {
             .clone()
             .unwrap_or_else(|| "fail2ban data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -334,7 +346,10 @@ impl Fail2banContent {
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
         // Wrap so a long panic reason wraps within the panel instead of clipping.
-        frame.render_widget(Paragraph::new(detail).centered().wrap(Wrap { trim: false }), centered_detail);
+        frame.render_widget(
+            Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
+            centered_detail,
+        );
     }
 
     /// Build the complete content as a flat list of lines (status, jails,
@@ -412,9 +427,15 @@ impl Fail2banContent {
             let name = truncate_str(&jail.name, 20);
             lines.push(Line::from(vec![
                 Span::styled(format!("{state_icon} "), Style::new().fg(state_color)),
-                Span::styled(format!("{name:<20}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("  banned {}  total {}  files {}", jail.banned_count, jail.total_bans, jail.file_count),
+                    format!("{name:<20}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  banned {}  total {}  files {}",
+                        jail.banned_count, jail.total_bans, jail.file_count
+                    ),
                     Style::new().fg(p.text_muted),
                 ),
             ]));
@@ -452,63 +473,16 @@ impl Fail2banContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Critical > Error > Warning > Info > Ok.
-        let order = ["critical", "error", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let title = truncate_str(&f.title, 60);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(title, Style::new().fg(p.text)),
-                ]));
-                if !f.detail.is_empty() {
-                    let detail = truncate_str(&f.detail, 70);
-                    lines.push(Line::from(Span::styled(
-                        format!("      {detail}"),
-                        Style::new().fg(p.text_dim),
-                    )));
-                }
-                if let Some(ref fix) = f.fix {
-                    let fix = truncate_str(fix, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(fix, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["critical", "error", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_full,
+            crate::ui::screens::findings::FindingWidths::TITLE_60,
+        );
     }
 
     fn push_firewall_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
@@ -516,12 +490,11 @@ impl Fail2banContent {
             "Firewall Backend",
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
-        self.push_fw_line(lines, p, "nftables", self.fw_nft_available);
-        self.push_fw_line(lines, p, "iptables ", self.fw_iptables_available);
+        Self::push_fw_line(lines, p, "nftables", self.fw_nft_available);
+        Self::push_fw_line(lines, p, "iptables ", self.fw_iptables_available);
     }
 
     fn push_fw_line(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         label: &str,
@@ -555,7 +528,11 @@ impl crate::ui::screens::section_overview::SectionOverview for Fail2banContent {
         if !self.available {
             return None;
         }
-        Some(format!("{} jail(s) · {} ban(s)", self.jails.len(), self.bans.len()))
+        Some(format!(
+            "{} jail(s) · {} ban(s)",
+            self.jails.len(),
+            self.bans.len()
+        ))
     }
 
     fn findings_count(&self) -> usize {
@@ -563,15 +540,18 @@ impl crate::ui::screens::section_overview::SectionOverview for Fail2banContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "critical" => ("⛔", p.err),
-        "error" => ("✗", p.err),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for FindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
+    fn fix(&self) -> Option<&str> {
+        self.fix.as_deref()
     }
 }
 
@@ -632,12 +612,10 @@ mod tests {
         ]
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut Fail2banContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -662,7 +640,32 @@ mod tests {
     fn render_unavailable_when_not_available() {
         let mut c = Fail2banContent::new();
         let out = render_to_string(&mut c, 100, 24);
-        assert!(out.contains("fail2ban unavailable"), "degraded panel: {out}");
+        assert!(
+            out.contains("fail2ban unavailable"),
+            "degraded panel: {out}"
+        );
+    }
+
+    #[test]
+    fn total_bans_counts_entries_not_ip_byte_length() {
+        // Two banned-IP entries ("203.0.113.42" + "198.51.100.7") must report
+        // 2 — NOT 25, which the old `bans.iter().map(|b| b.ip.len()).sum()`
+        // produced by summing the IP strings' byte lengths into the badge.
+        let mut c = Fail2banContent::new();
+        c.set_available(true);
+        c.set_bans(sample_bans());
+        assert_eq!(c.total_bans(), Some(2));
+
+        // Falls back to the jail count when there are no bans at all.
+        let mut c2 = Fail2banContent::new();
+        c2.set_available(true);
+        c2.set_jails(sample_jails());
+        assert_eq!(c2.total_bans(), Some(2)); // two jails
+
+        // Unavailable backend reports None (honestly empty badge).
+        let mut c3 = Fail2banContent::new();
+        c3.set_bans(sample_bans());
+        assert_eq!(c3.total_bans(), None);
     }
 
     #[test]
@@ -704,10 +707,7 @@ mod tests {
         let out = render_to_string(&mut c, 110, 40);
         assert!(out.contains("WARNING"), "severity group header: {out}");
         assert!(out.contains("not enabled at boot"), "finding title: {out}");
-        assert!(
-            out.contains("Enable the service"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("Enable the service"), "fix hint: {out}");
     }
 
     #[test]

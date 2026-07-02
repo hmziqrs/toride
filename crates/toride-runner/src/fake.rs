@@ -163,9 +163,8 @@ impl FakeRunner {
         let found = calls.iter().any(|c| specs_match(c, expected));
         assert!(
             found,
-            "expected call to {:?} but no matching call found.\n\
-             Actual calls: {:?}",
-            expected, calls
+            "expected call to {expected:?} but no matching call found.\n\
+             Actual calls: {calls:?}"
         );
     }
 
@@ -198,9 +197,9 @@ impl FakeRunner {
         let mut responses = self.responses.lock().expect("responses lock");
         if responses.is_empty() {
             if self.strict {
-                return Err(Error::Other(format!(
-                    "FakeRunner (strict): no response configured for call"
-                )));
+                return Err(Error::Other(
+                    "FakeRunner (strict): no response configured for call".to_owned(),
+                ));
             }
             return Ok(CommandOutput::from_stdout(String::new()));
         }
@@ -214,6 +213,24 @@ impl FakeRunner {
 impl Default for FakeRunner {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Clone a [`FakeRunner`].
+///
+/// All state (`responses`, `exact_responses`, `calls`, `strict`) is held
+/// behind [`Arc`]`<`[`Mutex`](std::sync::Mutex)`<..>>`, so cloning produces a
+/// second handle to the *same* shared state. This is the desired behavior for
+/// tests that hand the runner to an owning subsystem (which moves it) but
+/// still want to inspect the recorded calls afterward via the clone.
+impl Clone for FakeRunner {
+    fn clone(&self) -> Self {
+        Self {
+            responses: Arc::clone(&self.responses),
+            exact_responses: Arc::clone(&self.exact_responses),
+            calls: Arc::clone(&self.calls),
+            strict: self.strict,
+        }
     }
 }
 
@@ -244,9 +261,12 @@ impl AsyncRunner for FakeRunner {
 /// Check if two specs match on the fields used for exact matching.
 ///
 /// Compares `program`, `args`, `stdin`, `env`, `env_remove`, `clear_env`,
-/// `cwd`, and `output_mode`.
-/// Timeout is ignored by default — it is a runtime concern, not
-/// a command-construction concern.
+/// `cwd`, `output_mode`, and `redact`. `timeout` and `output_limit` are
+/// ignored — they are runtime/safety policy, not command-construction
+/// concerns, so two specs that differ only in those fields still match.
+/// `redact` IS compared: it is a command-construction property (whether the
+/// command carries secret-bearing args/env that must be scrubbed from errors
+/// and logs), so a spec that forgot `redact(true)` must fail an exact match.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
@@ -256,14 +276,15 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.clear_env == b.clear_env
         && a.cwd == b.cwd
         && a.output_mode == b.output_mode
+        && a.redact == b.redact
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Helper to call the sync Runner::run without ambiguity when both
-    /// Runner and AsyncRunner are in scope.
+    /// Helper to call the sync [`Runner::run`] without ambiguity when both
+    /// [`Runner`] and [`AsyncRunner`] are in scope.
     fn run_sync(runner: &FakeRunner, spec: &CommandSpec) -> Result<CommandOutput> {
         Runner::run(runner, spec)
     }
@@ -472,6 +493,20 @@ mod tests {
                 .env("KEEP", "1"),
         )
         .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    /// `output_limit` is a runtime/safety policy, so two specs that differ only
+    /// in `output_limit` must still match (same ruling as `timeout`).
+    #[test]
+    fn specs_match_ignores_output_limit() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").output_limit(64),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        // Same command, different (or absent) output_limit should still match.
+        let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");
     }
 

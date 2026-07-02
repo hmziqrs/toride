@@ -3,9 +3,9 @@
 //! Before applying proxy configuration changes, this module snapshots the
 //! current configuration so that changes can be rolled back if needed.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::paths::ProxyPaths;
-use std::path::Path;
+use std::fmt::Write as _;
 
 /// A snapshot of proxy configuration files before mutation.
 #[derive(Debug, Clone)]
@@ -45,19 +45,19 @@ pub fn create_backup(paths: &ProxyPaths) -> Result<BackupSnapshot> {
 
     // Read all nginx site configs
     let mut nginx_sites = Vec::new();
-    if paths.nginx_sites_available.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&paths.nginx_sites_available) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    let name = path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        nginx_sites.push((name, content));
-                    }
+    if paths.nginx_sites_available.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&paths.nginx_sites_available)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    nginx_sites.push((name, content));
                 }
             }
         }
@@ -90,9 +90,11 @@ pub fn create_backup(paths: &ProxyPaths) -> Result<BackupSnapshot> {
 ///
 /// Returns an error if any file cannot be written.
 pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<()> {
+    // Restored files are live, daemon-readable configs — write them 0o644 to
+    // match how they are originally written (not the 0o600 atomic_write default).
     // Restore main nginx.conf
     if let Some(content) = &snapshot.nginx_conf {
-        toride_fs::atomic_write(&paths.nginx_conf, content)?;
+        toride_fs::atomic_write_with_perms(&paths.nginx_conf, content, 0o644)?;
         tracing::info!("backup: restored {}", paths.nginx_conf.display());
     }
 
@@ -102,7 +104,7 @@ pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<(
     // Restore nginx site configs
     for (name, content) in &snapshot.nginx_sites {
         let path = paths.nginx_sites_available.join(name);
-        toride_fs::atomic_write(&path, content)?;
+        toride_fs::atomic_write_with_perms(&path, content, 0o644)?;
         tracing::info!("backup: restored {}", path.display());
     }
 
@@ -111,7 +113,7 @@ pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<(
         if let Some(parent) = paths.caddyfile.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        toride_fs::atomic_write(&paths.caddyfile, content)?;
+        toride_fs::atomic_write_with_perms(&paths.caddyfile, content, 0o644)?;
         tracing::info!("backup: restored {}", paths.caddyfile.display());
     }
 
@@ -134,7 +136,7 @@ pub fn save_backup_to_disk(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Res
     let path = paths.backup_dir.join(&filename);
 
     let mut content = String::new();
-    content.push_str(&format!("# Backup created: {}\n\n", snapshot.timestamp));
+    let _ = writeln!(content, "# Backup created: {}\n", snapshot.timestamp);
 
     if let Some(conf) = &snapshot.nginx_conf {
         content.push_str("# === nginx.conf ===\n");
@@ -143,7 +145,7 @@ pub fn save_backup_to_disk(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Res
     }
 
     for (name, file_content) in &snapshot.nginx_sites {
-        content.push_str(&format!("# === site: {name} ===\n"));
+        let _ = writeln!(content, "# === site: {name} ===");
         content.push_str(file_content);
         content.push_str("\n\n");
     }
@@ -162,7 +164,6 @@ pub fn save_backup_to_disk(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn backup_captures_nginx_sites() {
@@ -205,10 +206,7 @@ mod tests {
         let snapshot = BackupSnapshot {
             timestamp: "12345".into(),
             nginx_conf: Some("worker_processes auto;\n".into()),
-            nginx_sites: vec![(
-                "example.com".into(),
-                "server { listen 80; }\n".into(),
-            )],
+            nginx_sites: vec![("example.com".into(), "server { listen 80; }\n".into())],
             caddyfile: Some("localhost { }\n".into()),
         };
 
@@ -216,10 +214,8 @@ mod tests {
 
         let content = std::fs::read_to_string(root.join("etc/nginx/nginx.conf")).unwrap();
         assert!(content.contains("worker_processes auto"));
-        let site = std::fs::read_to_string(
-            root.join("etc/nginx/sites-available/example.com"),
-        )
-        .unwrap();
+        let site =
+            std::fs::read_to_string(root.join("etc/nginx/sites-available/example.com")).unwrap();
         assert!(site.contains("listen 80"));
     }
 }

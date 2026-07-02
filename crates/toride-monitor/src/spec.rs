@@ -6,6 +6,35 @@
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
+// serde glue
+// ---------------------------------------------------------------------------
+
+/// Serialize/deserialize a [`Duration`] as a whole number of seconds.
+///
+/// TOML has no native duration type; representing the window as an integer
+/// keeps config files human-readable and round-trips cleanly.
+#[cfg(feature = "serde")]
+mod duration_secs {
+    use super::Duration;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(dur: &Duration, ser: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        dur.as_secs().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D>(de: D) -> Result<Duration, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let secs = u64::deserialize(de)?;
+        Ok(Duration::from_secs(secs))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // LoggingRule
 // ---------------------------------------------------------------------------
 
@@ -13,12 +42,17 @@ use std::time::Duration;
 ///
 /// Describes which outbound traffic to log via the iptables `LOG` target.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct LoggingRule {
     /// Human-readable name for this rule.
     pub name: String,
     /// Destination CIDR or host to match (e.g. `"0.0.0.0/0"` for all).
     pub destination: String,
     /// Destination port to match, or `None` for any port.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub dest_port: Option<u16>,
     /// Protocol to match (e.g. `"tcp"`, `"udp"`).
     pub protocol: String,
@@ -40,6 +74,7 @@ pub struct LoggingRule {
 ///
 /// When monitored metrics exceed these values, an anomaly is flagged.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnomalyThreshold {
     /// Maximum number of concurrent outbound connections before flagging.
     pub max_connections: u64,
@@ -49,7 +84,8 @@ pub struct AnomalyThreshold {
     pub max_bytes: u64,
     /// Maximum packets per second before flagging.
     pub max_packets_per_second: u64,
-    /// Duration of the sliding sampling window.
+    /// Duration of the sliding sampling window, in seconds.
+    #[cfg_attr(feature = "serde", serde(with = "duration_secs"))]
     pub window: Duration,
 }
 
@@ -60,7 +96,7 @@ impl Default for AnomalyThreshold {
             max_unique_destinations: 200,
             max_bytes: 100 * 1024 * 1024, // 100 MB
             max_packets_per_second: 10_000,
-            window: Duration::from_secs(60),
+            window: Duration::from_mins(1),
         }
     }
 }
@@ -73,6 +109,8 @@ impl Default for AnomalyThreshold {
 ///
 /// Defines where anomaly alerts are sent when triggered.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "lowercase"))]
 pub enum AlertTarget {
     /// Send alerts to the systemd journal.
     Journald {
@@ -84,6 +122,7 @@ pub enum AlertTarget {
         /// URL to POST alert payloads to.
         url: String,
         /// Custom HTTP headers to include.
+        #[cfg_attr(feature = "serde", serde(default))]
         headers: Vec<(String, String)>,
     },
     /// Write alerts to a log file.
@@ -102,15 +141,35 @@ pub enum AlertTarget {
 /// Aggregates logging rules, anomaly thresholds, and alert targets into a
 /// single configuration object.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MonitorSpec {
     /// Logging rules to apply to the iptables OUTPUT chain.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub logging_rules: Vec<LoggingRule>,
     /// Thresholds for anomaly detection.
+    #[cfg_attr(feature = "serde", serde(default))]
     pub thresholds: AnomalyThreshold,
     /// Alert dispatch targets.
+    #[cfg_attr(feature = "serde", serde(default = "default_alert_targets"))]
     pub alert_targets: Vec<AlertTarget>,
     /// Whether monitoring is enabled.
+    #[cfg_attr(feature = "serde", serde(default = "default_enabled"))]
     pub enabled: bool,
+}
+
+#[cfg(feature = "serde")]
+fn default_enabled() -> bool {
+    true
+}
+
+/// Serde default for [`MonitorSpec::alert_targets`].
+///
+/// Mirrors [`MonitorSpec::default`] so that a config file omitting
+/// `alert_targets` deserializes to the same value as the `Default` impl (a
+/// single Journald target at `warning` priority) rather than an empty list.
+#[cfg(feature = "serde")]
+fn default_alert_targets() -> Vec<AlertTarget> {
+    MonitorSpec::default().alert_targets
 }
 
 impl Default for MonitorSpec {
@@ -123,5 +182,101 @@ impl Default for MonitorSpec {
             }],
             enabled: true,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn threshold_round_trips_duration_as_secs() {
+        let t = AnomalyThreshold {
+            window: Duration::from_secs(120),
+            ..AnomalyThreshold::default()
+        };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"window\":120"));
+        let back: AnomalyThreshold = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.window, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn alert_target_tagged_round_trip() {
+        let targets = vec![
+            AlertTarget::Journald {
+                priority: "crit".into(),
+            },
+            AlertTarget::Webhook {
+                url: "https://example.invalid/hook".into(),
+                headers: vec![("X-Token".into(), "s".into())],
+            },
+            AlertTarget::File {
+                path: "/var/log/toride.log".into(),
+            },
+        ];
+        let json = serde_json::to_string(&targets).unwrap();
+        let back: Vec<AlertTarget> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 3);
+        assert!(matches!(back[0], AlertTarget::Journald { .. }));
+        assert!(matches!(back[1], AlertTarget::Webhook { .. }));
+        assert!(matches!(back[2], AlertTarget::File { .. }));
+    }
+
+    #[test]
+    fn spec_round_trip_json() {
+        let spec = MonitorSpec {
+            enabled: false,
+            logging_rules: vec![LoggingRule {
+                name: "out".into(),
+                destination: "0.0.0.0/0".into(),
+                dest_port: Some(443),
+                protocol: "tcp".into(),
+                log_prefix: "toride-mon-out".into(),
+                log_level: "info".into(),
+                limit_burst: 5,
+                limit_rate: "5/minute".into(),
+            }],
+            thresholds: AnomalyThreshold::default(),
+            alert_targets: Vec::new(),
+        };
+        let json = serde_json::to_string(&spec).unwrap();
+        let back: MonitorSpec = serde_json::from_str(&json).unwrap();
+        assert!(!back.enabled);
+        assert_eq!(back.logging_rules.len(), 1);
+        assert_eq!(back.logging_rules[0].dest_port, Some(443));
+    }
+
+    #[test]
+    fn missing_alert_targets_uses_serde_default_matching_default_impl() {
+        // A spec payload with no `alert_targets` field must deserialize to the
+        // SAME value as `MonitorSpec::default()` (a single Journald target),
+        // not an empty list.
+        let json = r#"{
+            "logging_rules": [],
+            "thresholds": {
+                "max_connections": 1,
+                "max_unique_destinations": 1,
+                "max_bytes": 1,
+                "max_packets_per_second": 1,
+                "window": 1
+            },
+            "enabled": true
+        }"#;
+        let parsed: MonitorSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.alert_targets.len(), 1);
+        assert!(matches!(
+            parsed.alert_targets[0],
+            AlertTarget::Journald { .. }
+        ));
+        // Fully agree with the Default impl.
+        assert_eq!(
+            parsed.alert_targets.len(),
+            MonitorSpec::default().alert_targets.len()
+        );
     }
 }

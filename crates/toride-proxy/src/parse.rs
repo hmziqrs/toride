@@ -3,7 +3,9 @@
 //! Provides pure functions that convert raw text output from external tools
 //! into structured types.
 
+use crate::certs_parse::{days_until, parse_openssl_enddate_epoch};
 use crate::report::CertInfo;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Parsed nginx status information.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +54,9 @@ pub fn parse_nginx_status(output: &str) -> NginxStatus {
     let pid = output.lines().find_map(|line| {
         let trimmed = line.trim();
         let rest = trimmed.strip_prefix("Main PID: ")?;
-        rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok())
+        rest.split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
     });
 
     NginxStatus {
@@ -162,8 +166,22 @@ pub fn parse_openssl_cert(output: &str) -> Option<CertInfo> {
         return None;
     }
 
-    // Calculate approximate days remaining (rough estimation)
-    let days_remaining = 0;
+    // Compute real days remaining from the Not After date vs now. The
+    // `openssl x509 -text` "Not After" line uses the same `Mon DD HH:MM:SS YYYY
+    // GMT` format as `-enddate`, so we reuse the shared epoch parser. When the
+    // date is absent or unparseable we surface 0 (treated as invalid by
+    // CertInfo::new, since is_valid is `days_remaining > 0`) rather than
+    // fabricating a healthy expiry.
+    let days_remaining = not_after
+        .split_whitespace()
+        .next()
+        .and_then(|_| parse_openssl_enddate_epoch(&not_after))
+        .map_or(0, |expiry_epoch| {
+            let now_epoch = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            days_until(now_epoch, expiry_epoch)
+        });
 
     Some(CertInfo::new(
         subject,
@@ -177,7 +195,7 @@ pub fn parse_openssl_cert(output: &str) -> Option<CertInfo> {
 /// Extract the CN (Common Name) or first DNS name from a distinguished name.
 fn parse_dn_value(dn: &str) -> String {
     // Strip the "Subject: " or "Issuer: " prefix
-    let rest = dn.split_once(':').map(|(_, v)| v.trim()).unwrap_or(dn);
+    let rest = dn.split_once(':').map_or(dn, |(_, v)| v.trim());
 
     // Try to find CN=
     for part in rest.split(',') {
@@ -199,10 +217,10 @@ fn extract_days(s: &str) -> Option<i64> {
     // Look for a pattern like "N days"
     let parts: Vec<&str> = s.split_whitespace().collect();
     for i in 0..parts.len().saturating_sub(1) {
-        if parts[i + 1].starts_with("day") {
-            if let Ok(n) = parts[i].parse::<i64>() {
-                return Some(n);
-            }
+        if parts[i + 1].starts_with("day")
+            && let Ok(n) = parts[i].parse::<i64>()
+        {
+            return Some(n);
         }
     }
     None
@@ -244,7 +262,8 @@ mod tests {
 
     #[test]
     fn parse_nginx_status_stopped() {
-        let output = "● nginx.service - A high performance web server\n   Active: inactive (dead)\n";
+        let output =
+            "● nginx.service - A high performance web server\n   Active: inactive (dead)\n";
         let status = parse_nginx_status(output);
         assert!(!status.running);
         assert_eq!(status.pid, None);
@@ -288,5 +307,47 @@ Found the following certs:
     #[test]
     fn extract_days_no_match() {
         assert_eq!(extract_days("(EXPIRED)"), None);
+    }
+
+    #[test]
+    fn parse_openssl_cert_computes_real_days_remaining() {
+        // Far-future expiry: days_remaining must be a large positive number,
+        // not the previous hardcoded 0. Mirrors `openssl x509 -text -noout`
+        // output where the Subject and Not After lines each carry their value
+        // on the same physical line.
+        let output = "\
+Subject: C = US, O = Example, CN = example.com
+Issuer: C = US, O = Test CA
+Not Before: Jan  1 00:00:00 2024 GMT
+Not After : Jan  1 00:00:00 2099 GMT
+";
+        let cert = parse_openssl_cert(output).expect("should parse");
+        assert_eq!(cert.domain, "example.com");
+        assert!(cert.days_remaining > 10_000, "got {}", cert.days_remaining);
+        assert!(cert.is_valid);
+    }
+
+    #[test]
+    fn parse_openssl_cert_expired_reports_negative() {
+        // Past expiry: days_remaining must be negative (already expired).
+        let output = "\
+Subject: CN = expired.com
+Not After : Jan  1 00:00:00 2001 GMT
+";
+        let cert = parse_openssl_cert(output).expect("should parse");
+        assert!(cert.days_remaining < 0, "got {}", cert.days_remaining);
+        assert!(!cert.is_valid);
+    }
+
+    #[test]
+    fn parse_openssl_cert_unparseable_date_is_zero() {
+        // Bogus date string -> days_remaining 0 (treated as invalid).
+        let output = "\
+Subject: CN = weird.com
+Not After : not-a-date
+";
+        let cert = parse_openssl_cert(output).expect("should parse");
+        assert_eq!(cert.days_remaining, 0);
+        assert!(!cert.is_valid);
     }
 }

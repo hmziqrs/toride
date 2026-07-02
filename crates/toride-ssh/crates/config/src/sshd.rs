@@ -8,7 +8,7 @@
 //! Writes are privileged (the file is root-owned) and go through
 //! [`toride_ssh_core::run_privileged`], which validates the result with
 //! `sshd -t` and keeps a `.bak` backup before installing — a malformed
-//! sshd_config would lock the user out of SSH, so an invalid config is never
+//! `sshd_config` would lock the user out of SSH, so an invalid config is never
 //! written.
 //!
 //! All access here is restricted to **global** directives (those outside any
@@ -16,9 +16,9 @@
 //! — editing them blindly is dangerous, and global scope is what we expose in
 //! the UI.
 
-use toride_ssh_core::{privilege::PrivilegedOp, run_privileged, Result};
+use toride_ssh_core::{Result, privilege::PrivilegedOp, run_privileged};
 
-use super::ast::{parse, ConfigAst, ConfigNode, DirectiveData, Separator};
+use super::ast::{ConfigAst, ConfigNode, DirectiveData, Separator, parse};
 
 /// Path to the system SSH daemon configuration.
 const SSHD_CONFIG_PATH: &str = "/etc/ssh/sshd_config";
@@ -33,7 +33,7 @@ const SSHD_EDIT_LOCK_ENV: &str = "TORIDE_SSHD_EDIT_LOCK";
 /// Default cross-process lock file for `sshd_config` edits.
 ///
 /// Lives in `/tmp` (world-writable, sticky) so that **both** a root toride
-/// process and a non-root toride process contending on the same sshd_config
+/// process and a non-root toride process contending on the same `sshd_config`
 /// rendezvous on the *same* file and serialize via `flock`. A lock derived
 /// from the config path (e.g. `/etc/ssh/sshd_config.lock`) would not work: a
 /// non-root process cannot create files in `/etc/ssh`, so the two processes
@@ -133,6 +133,7 @@ pub async fn save(ast: &ConfigAst, running_as_root: bool) -> Result<()> {
 /// file is openable by every contending user. Exposed (module-private) so the
 /// serialization guarantee can be unit-tested without driving a full privileged
 /// `sshd_config` write.
+#[cfg(test)]
 fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     ensure_lock_file(path);
     // `toride_fs::with_lock` requires a closure returning `toride_fs::Result`,
@@ -169,13 +170,16 @@ fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> R
 /// the same original config, applying their edit, and the second install
 /// clobbering the first.
 ///
-/// Implementation note: the sync [`with_edit_lock`] closure must span the
-/// async load/save, so the critical section runs under
-/// [`tokio::task::block_in_place`] + [`tokio::runtime::Handle::block_on`].
-/// `block_in_place` moves the current worker into a blocking-friendly state on
-/// the *same* thread (no thread hop, so the caller's closure `f` need not be
-/// `Send`/`'static`), and `Handle::block_on` is then legal to call. The
-/// closure-based lock releases on every return path — error, panic, or success.
+/// Implementation note: the lock guard is held across the awaited load/save so
+/// the critical section stays non-blocking from the runtime's perspective at
+/// the `.await` points (the file I/O and the privileged `sshd -t`/install run
+/// on blocking threads inside `load`/`save`). This avoids
+/// [`tokio::task::block_in_place`] + a nested `Handle::block_on`, which would
+/// panic with "can call blocking only when running on the multi-threaded
+/// runtime" when `edit()` is driven from a current-thread runtime (the default
+/// for `#[tokio::test]` and many embedded runtimes). The caller's closure `f`
+/// stays `FnOnce` (no `Send`/`'static` bound) because the guard, lock, and
+/// backing file are all plain locals dropped in declaration order at scope end.
 ///
 /// # Errors
 ///
@@ -185,22 +189,40 @@ where
     F: FnOnce(&mut ConfigAst) -> Result<()>,
 {
     let lock_path = edit_lock_path();
-    // Capture the current runtime handle BEFORE entering block_in_place so the
-    // sync lock closure can drive the async load/mutate/save via block_on.
-    let handle = tokio::runtime::Handle::current();
+    ensure_lock_file(&lock_path);
 
-    // block_in_place runs the flock + the block_on that drives the async
-    // critical section on the current worker thread without a thread hop. This
-    // keeps the caller's closure `f` non-Send/non-'static.
-    tokio::task::block_in_place(|| -> Result<()> {
-        with_edit_lock(&lock_path, || {
-            handle.block_on(async {
-                let mut ast = load().await?;
-                f(&mut ast)?;
-                save(&ast, running_as_root).await
-            })
-        })
-    })
+    // Acquire the cross-process advisory lock. The lock, the backing file, and
+    // the write guard are all locals here; declaration order guarantees the
+    // guard (borrowing `lock`) is dropped before `lock` (and the file it owns)
+    // at scope end, releasing the flock on every return path — error, panic,
+    // or success. The lock-acquire itself is a `flock(2)` syscall (cheap; only
+    // contends with other toride instances editing sshd_config, a brief and
+    // rare contention), so it does not need to run on a blocking thread.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| {
+            toride_ssh_core::Error::Io(std::io::Error::other(format!(
+                "sshd_config edit lock failed: cannot open lock file {}: {e}",
+                lock_path.display()
+            )))
+        })?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.write().map_err(|e| {
+        toride_ssh_core::Error::Io(std::io::Error::other(format!(
+            "sshd_config edit lock failed: cannot acquire lock on {}: {e}",
+            lock_path.display()
+        )))
+    })?;
+    tracing::debug!(path = %lock_path.display(), "sshd_config edit lock acquired");
+
+    // Genuine async critical section: no nested runtime, no block_in_place.
+    let mut ast = load().await?;
+    f(&mut ast)?;
+    save(&ast, running_as_root).await
 }
 
 // ---------------------------------------------------------------------------
@@ -211,11 +233,13 @@ where
 ///
 /// OpenSSH treats multiple `AllowUsers` lines as additive, so values from all
 /// global occurrences are concatenated.
+#[must_use]
 pub fn get_allow_users(ast: &ConfigAst) -> Vec<String> {
     collect_global_users(ast, "AllowUsers")
 }
 
 /// The current global `DenyUsers` list (ignoring `Match`-scoped directives).
+#[must_use]
 pub fn get_deny_users(ast: &ConfigAst) -> Vec<String> {
     collect_global_users(ast, "DenyUsers")
 }
@@ -224,11 +248,13 @@ pub fn get_deny_users(ast: &ConfigAst) -> Vec<String> {
 ///
 /// OpenSSH treats multiple `AllowGroups` lines as additive, so values from all
 /// global occurrences are concatenated.
+#[must_use]
 pub fn get_allow_groups(ast: &ConfigAst) -> Vec<String> {
     collect_global_users(ast, "AllowGroups")
 }
 
 /// The current global `DenyGroups` list (ignoring `Match`-scoped directives).
+#[must_use]
 pub fn get_deny_groups(ast: &ConfigAst) -> Vec<String> {
     collect_global_users(ast, "DenyGroups")
 }
@@ -250,9 +276,9 @@ fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
         .nodes
         .iter()
         .enumerate()
-        .filter(|(_, n)| {
-            matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key))
-        })
+        .filter(
+            |(_, n)| matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key)),
+        )
         .map(|(i, _)| i)
         .collect();
 
@@ -282,9 +308,7 @@ fn collect_global_users(ast: &ConfigAst, key: &str) -> Vec<String> {
 /// catch (the leaked file is syntactically valid) and that would otherwise
 /// relocate a block-scoped directive to global scope on disk.
 fn directive_follows_match_or_host(nodes: &[ConfigNode], directive_indices: &[usize]) -> bool {
-    directive_follows_match_or_host_set(nodes, directive_indices)
-        .first()
-        .is_some()
+    !directive_follows_match_or_host_set(nodes, directive_indices).is_empty()
 }
 
 /// Like [`directive_follows_match_or_host`] but returns the full set of
@@ -303,7 +327,7 @@ fn directive_follows_match_or_host_set(
         while j > 0 {
             j -= 1;
             match &nodes[j] {
-                ConfigNode::BlankLine | ConfigNode::Comment { .. } => continue,
+                ConfigNode::BlankLine | ConfigNode::Comment { .. } => {}
                 ConfigNode::MatchBlock(_) | ConfigNode::HostBlock(_) => {
                     leaked.push(idx);
                     break;
@@ -331,6 +355,7 @@ fn directive_follows_match_or_host_set(
 /// instead (see [`directive_has_patterns`]).
 ///
 /// Each whitespace-separated token is inspected independently.
+#[must_use]
 pub fn has_pattern_tokens(value: &str) -> bool {
     value
         .split_whitespace()
@@ -344,14 +369,15 @@ pub fn has_pattern_tokens(value: &str) -> bool {
 /// `Match`/`Host` block (the `parse_block_body` leak — see `ast::parse_block_body`)
 /// are likewise excluded, so a leaked block-scoped `*` does not get reported as
 /// a global pattern.
+#[must_use]
 pub fn directive_has_patterns(ast: &ConfigAst, key: &str) -> bool {
     let indices: Vec<usize> = ast
         .nodes
         .iter()
         .enumerate()
-        .filter(|(_, n)| {
-            matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key))
-        })
+        .filter(
+            |(_, n)| matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key)),
+        )
         .map(|(i, _)| i)
         .collect();
     let leaked = directive_follows_match_or_host_set(&ast.nodes, &indices);
@@ -453,9 +479,9 @@ fn upsert_user_in_directive(
         .nodes
         .iter()
         .enumerate()
-        .filter(|(_, n)| {
-            matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key))
-        })
+        .filter(
+            |(_, n)| matches!(n, ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case(key)),
+        )
         .map(|(i, _)| i)
         .collect();
 
@@ -705,7 +731,10 @@ mod tests {
         let out = a.to_string_lossless();
         let allow_pos = out.find("AllowUsers").unwrap();
         let match_pos = out.find("Match User").unwrap();
-        assert!(allow_pos < match_pos, "AllowUsers must precede the Match block");
+        assert!(
+            allow_pos < match_pos,
+            "AllowUsers must precede the Match block"
+        );
     }
 
     // --- pattern-token detection ------------------------------------------
@@ -742,10 +771,7 @@ mod tests {
         let mut a = ast("AllowUsers *\n");
         let before = a.to_string_lossless();
         let err = add_user_to_allow(&mut a, "bob").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         // AST must be untouched.
         assert_eq!(a.to_string_lossless(), before);
     }
@@ -755,10 +781,7 @@ mod tests {
         let mut a = ast("AllowUsers alice *@host\n");
         let before = a.to_string_lossless();
         let err = remove_user_from_allow(&mut a, "alice").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -767,10 +790,7 @@ mod tests {
         let mut a = ast("DenyUsers ?uest\n");
         let before = a.to_string_lossless();
         let err = add_user_to_deny(&mut a, "bob").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -783,9 +803,7 @@ mod tests {
         // Union on a single line; second occurrence gone.
         assert_eq!(get_allow_users(&a), vec!["alice", "bob", "carol"]);
         assert_eq!(
-            a.to_string_lossless()
-                .matches("AllowUsers")
-                .count(),
+            a.to_string_lossless().matches("AllowUsers").count(),
             1,
             "exactly one AllowUsers line after merge"
         );
@@ -796,10 +814,7 @@ mod tests {
         let mut a = ast("AllowUsers alice bob\nAllowUsers bob carol\n");
         add_user_to_allow(&mut a, "alice").unwrap();
         assert_eq!(get_allow_users(&a), vec!["alice", "bob", "carol"]);
-        assert_eq!(
-            a.to_string_lossless().matches("AllowUsers").count(),
-            1
-        );
+        assert_eq!(a.to_string_lossless().matches("AllowUsers").count(), 1);
     }
 
     #[test]
@@ -808,10 +823,7 @@ mod tests {
         let mut a = ast("AllowUsers alice\nAllowUsers bob\n");
         remove_user_from_allow(&mut a, "bob").unwrap();
         assert_eq!(get_allow_users(&a), vec!["alice"]);
-        assert_eq!(
-            a.to_string_lossless().matches("AllowUsers").count(),
-            1
-        );
+        assert_eq!(a.to_string_lossless().matches("AllowUsers").count(), 1);
     }
 
     #[test]
@@ -941,10 +953,7 @@ mod tests {
         let mut a = ast(input);
         let before = a.to_string_lossless();
         let err = remove_user_from_allow(&mut a, "bob").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -955,10 +964,7 @@ mod tests {
         let mut a = ast(input);
         let before = a.to_string_lossless();
         let err = add_user_to_allow(&mut a, "carol").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -972,10 +978,7 @@ mod tests {
         let mut a = ast(input);
         let before = a.to_string_lossless();
         let err = add_user_to_allow(&mut a, "carol").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -998,10 +1001,7 @@ mod tests {
         let mut a = ast(input);
         let before = a.to_string_lossless();
         let err = add_user_to_allow(&mut a, "carol").unwrap_err();
-        assert!(matches!(
-            err,
-            toride_ssh_core::Error::SshdConfigInvalid(_)
-        ));
+        assert!(matches!(err, toride_ssh_core::Error::SshdConfigInvalid(_)));
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -1049,7 +1049,7 @@ mod tests {
 
     #[test]
     fn with_edit_lock_serializes_two_concurrent_holders() {
-        use std::sync::{mpsc, Arc, Barrier};
+        use std::sync::{Arc, Barrier, mpsc};
         use std::thread;
 
         let dir = tempfile::TempDir::new().expect("temp dir");
@@ -1096,7 +1096,11 @@ mod tests {
         // loser's enter. I.e. exactly one label's enter comes first AND its
         // exit comes before the other label's enter.
         let first_enter = events.first().expect("at least one event");
-        let winner = if first_enter.starts_with("A") { "A" } else { "B" };
+        let winner = if first_enter.starts_with('A') {
+            "A"
+        } else {
+            "B"
+        };
         let loser = if winner == "A" { "B" } else { "A" };
 
         let winner_exit = events
@@ -1137,5 +1141,90 @@ mod tests {
             result.expect("second call must succeed after error-path release"),
             42
         );
+    }
+
+    // --- async runtime safety: edit() must not nest a runtime -------------
+    //
+    // edit() used to wrap its critical section in
+    // `tokio::task::block_in_place(|| handle.block_on(...))`. block_in_place
+    // PANICS ("can call blocking only when running on the multi-threaded
+    // runtime") when edit() is awaited from a current-thread runtime — which
+    // is the default for `#[tokio::test]` and many embedded/host runtimes.
+    // The fix makes edit() a genuine async fn (no nested runtime). These tests
+    // drive edit() on both runtime flavors and assert it completes without
+    // panicking. The privileged save() step will report an error on a host
+    // without sshd or root (that is expected and fine); the invariant under
+    // test is "no panic, and the mutation closure ran".
+    //
+    // We point TORIDE_SSHD_EDIT_LOCK at a temp file so edit() acquires a
+    // real flock we clean up, exercising the actual lock path.
+
+    fn drive_edit_on_runtime(rt: &tokio::runtime::Runtime) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let lock = dir.path().join("sshd-edit-async.lock");
+        // SAFETY: tests are single-threaded by convention here; the env var is
+        // process-global but scoped to this test's lifetime and restored on
+        // exit. edition-2024 makes set_var unsafe.
+        unsafe {
+            std::env::set_var(SSHD_EDIT_LOCK_ENV, &lock);
+        }
+
+        // The closure records that it actually ran (proving edit() reached and
+        // executed the critical section, not just the lock acquire).
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_clone = ran.clone();
+        let result = rt.block_on(async {
+            edit(false, |ast| {
+                // Harmless mutation on whatever load() returned (empty AST if
+                // /etc/ssh/sshd_config is absent on the host). This exercises
+                // the synchronous closure inside the lock.
+                add_user_to_allow(ast, "toride-edit-async-test-user")?;
+                ran_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        });
+
+        // SAFETY: restore env (best-effort) on the way out.
+        unsafe {
+            std::env::remove_var(SSHD_EDIT_LOCK_ENV);
+        }
+
+        // The save() step is expected to fail on a host without sshd/root
+        // (SshdNotFound / SudoFailed / Io). That is NOT the bug. The bug was a
+        // panic; assert we did not panic by reaching here and that the closure
+        // executed (so edit() genuinely drove load → mutate before save).
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "edit()'s mutation closure must have executed"
+        );
+        // Result may be Ok (if sshd + root happen to be available and accept an
+        // AllowUsers-only config) or Err (typical CI host). Either is fine; the
+        // point is we got here at all instead of panicking.
+        drop(result);
+    }
+
+    #[test]
+    fn edit_does_not_panic_on_current_thread_runtime() {
+        // This is the exact runtime flavor that panicked under the old
+        // block_in_place implementation.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        drive_edit_on_runtime(&rt);
+    }
+
+    #[test]
+    fn edit_does_not_panic_on_multi_thread_runtime() {
+        // Sanity: the multi-thread path (used by the production app) must also
+        // remain panic-free; the old code happened to work there but relied on
+        // a nested block_on that the fix removes.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime");
+        drive_edit_on_runtime(&rt);
     }
 }

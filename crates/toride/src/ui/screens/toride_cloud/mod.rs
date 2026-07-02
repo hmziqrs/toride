@@ -3,7 +3,7 @@
 //! Renders inside the dashboard's content region when
 //! [`Section::Cloud`](crate::data::Section) is the active sidebar section.
 //! This mirrors the fail2ban TEMPLATE integration (`Fail2banContent`) but for
-//! cloud providers (AWS / GCP / DigitalOcean / Hetzner). It is strictly
+//! cloud providers (AWS / GCP / `DigitalOcean` / Hetzner). It is strictly
 //! READ-ONLY: there are no write operations, no optimistic updates, no loading
 //! spinner, no cooldown. Every line is a read.
 //!
@@ -161,7 +161,11 @@ impl CloudContent {
     /// backend is unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.security_groups.len()) } else { None }
+        if self.available {
+            Some(self.security_groups.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -262,6 +266,10 @@ impl CloudContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other read-only sections"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the other read-only sections.
@@ -304,7 +312,7 @@ impl CloudContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -317,7 +325,7 @@ impl CloudContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (JoinError) — not when the provider is `Unknown` (an unknown
+    /// task PANICS (`JoinError`) — not when the provider is `Unknown` (an unknown
     /// provider instead produces a Warning doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -338,8 +346,12 @@ impl CloudContent {
             .clone()
             .unwrap_or_else(|| "cloud data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -386,11 +398,7 @@ impl CloudContent {
         ]));
 
         // CLI tool.
-        let cli = self
-            .provider
-            .cli_tool
-            .clone()
-            .unwrap_or_else(|| "—".into());
+        let cli = self.provider.cli_tool.clone().unwrap_or_else(|| "—".into());
         lines.push(Line::from(vec![
             Span::styled("  cli      ", Style::new().fg(p.text_muted)),
             Span::styled(cli, Style::new().fg(p.text)),
@@ -472,10 +480,7 @@ impl CloudContent {
                     Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  ↑ {}  ↓ {}",
-                        group.ingress_count, group.egress_count
-                    ),
+                    format!("  ↑ {}  ↓ {}", group.ingress_count, group.egress_count),
                     Style::new().fg(p.text_muted),
                 ),
             ]));
@@ -485,11 +490,7 @@ impl CloudContent {
                 let port = truncate_str(&port, 12);
                 let cidr = truncate_str(&rule.cidr, 22);
                 let action_icon = if rule.action == "allow" { "✓" } else { "✗" };
-                let action_color = if rule.action == "allow" {
-                    p.ok
-                } else {
-                    p.err
-                };
+                let action_color = if rule.action == "allow" { p.ok } else { p.err };
                 lines.push(Line::from(vec![
                     Span::styled("    · ", Style::new().fg(p.text_dim)),
                     Span::styled(
@@ -497,7 +498,7 @@ impl CloudContent {
                         Style::new().fg(p.text_muted),
                     ),
                     Span::styled(format!("{:<5}", rule.protocol), Style::new().fg(p.text)),
-                    Span::styled(format!("{:<13}", port), Style::new().fg(p.text)),
+                    Span::styled(format!("{port:<13}"), Style::new().fg(p.text)),
                     Span::styled(cidr, Style::new().fg(p.text_dim)),
                     Span::styled(format!("  {action_icon}"), Style::new().fg(action_color)),
                 ]));
@@ -506,64 +507,16 @@ impl CloudContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Critical > Error > Warning > Info > Ok.
-        let order = ["critical", "error", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&CloudFindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{icon} "),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let title = truncate_str(&f.title, 60);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(title, Style::new().fg(p.text)),
-                ]));
-                if !f.detail.is_empty() {
-                    let detail = truncate_str(&f.detail, 70);
-                    lines.push(Line::from(Span::styled(
-                        format!("      {detail}"),
-                        Style::new().fg(p.text_dim),
-                    )));
-                }
-                if let Some(ref fix) = f.fix {
-                    let fix = truncate_str(fix, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(fix, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["critical", "error", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_full,
+            crate::ui::screens::findings::FindingWidths::TITLE_60,
+        );
     }
 }
 
@@ -585,7 +538,11 @@ impl crate::ui::screens::section_overview::SectionOverview for CloudContent {
         }
         Some(format!(
             "{} · {} sg(s)",
-            if self.agent_running { "agent running" } else { "agent off" },
+            if self.agent_running {
+                "agent running"
+            } else {
+                "agent off"
+            },
             self.security_groups.len()
         ))
     }
@@ -595,15 +552,18 @@ impl crate::ui::screens::section_overview::SectionOverview for CloudContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "critical" => ("⛔", p.err),
-        "error" => ("✗", p.err),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for CloudFindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
+    fn fix(&self) -> Option<&str> {
+        self.fix.as_deref()
     }
 }
 
@@ -660,9 +620,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban).
     fn render_to_string(content: &mut CloudContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -688,7 +646,10 @@ mod tests {
     fn render_unavailable_when_not_available() {
         let mut c = CloudContent::new();
         let out = render_to_string(&mut c, 100, 24);
-        assert!(out.contains("cloud data unavailable"), "degraded panel: {out}");
+        assert!(
+            out.contains("cloud data unavailable"),
+            "degraded panel: {out}"
+        );
     }
 
     #[test]
@@ -730,7 +691,10 @@ mod tests {
         c.set_findings(sample_findings());
         let out = render_to_string(&mut c, 110, 40);
         assert!(out.contains("WARNING"), "severity group header: {out}");
-        assert!(out.contains("aws CLI is not installed"), "finding title: {out}");
+        assert!(
+            out.contains("aws CLI is not installed"),
+            "finding title: {out}"
+        );
         assert!(out.contains("Install the aws CLI"), "fix hint: {out}");
     }
 
@@ -784,10 +748,7 @@ mod tests {
         let mut c = CloudContent::new();
         c.set_available(true);
         let out = render_to_string(&mut c, 100, 30);
-        assert!(
-            out.contains("no security groups"),
-            "empty groups: {out}"
-        );
+        assert!(out.contains("no security groups"), "empty groups: {out}");
         assert!(out.contains("no findings"), "empty findings: {out}");
     }
 

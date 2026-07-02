@@ -27,15 +27,33 @@ pub struct Palette {
     pub accent2: Color,
     /// Tertiary accent
     pub accent3: Color,
+    /// Success / healthy status colour.
     pub ok: Color,
+    /// Warning / caution colour (e.g. 70-89% usage).
     pub warn: Color,
+    /// Error / critical colour (e.g. ≥90% usage).
     pub err: Color,
+    /// Informational accent colour.
     pub info: Color,
     /// Selection / hover background
     pub sel_bg: Color,
+    /// Render hint: when `true`, neutralize cosmetic animations (shimmer,
+    /// animated borders, spinner frame-cycling, transitions) to keep redraws
+    /// rare — essential over high-latency SSH links to a VPS where a 30fps
+    /// redraw loop multiplies network round-trips.
+    ///
+    /// This is a *behaviour* flag carried on the palette (rather than a
+    /// separate threaded parameter) because the palette already flows into
+    /// every render path (screens, shell components, modals). The app
+    /// orchestrator ([`crate::app::App`]) owns the source of truth and bakes the
+    /// resolved value into the palette each frame before rendering. It is
+    /// deliberately excluded from theme identity: built-in palettes always
+    /// carry `false`.
+    pub reduced_motion: bool,
 }
 
 // ── Catppuccin Mocha ─────────────────────────────────────────────────────────
+/// Catppuccin Mocha palette.
 pub const CATPPUCCIN: Palette = Palette {
     bg: Color::Rgb(30, 30, 46),
     bg_alt: Color::Rgb(24, 24, 37),
@@ -54,9 +72,11 @@ pub const CATPPUCCIN: Palette = Palette {
     err: Color::Rgb(243, 139, 168),
     info: Color::Rgb(137, 180, 250),
     sel_bg: Color::Rgb(49, 50, 68),
+    reduced_motion: false,
 };
 
 // ── Tokyo Night ───────────────────────────────────────────────────────────────
+/// Tokyo Night palette.
 pub const TOKYO_NIGHT: Palette = Palette {
     bg: Color::Rgb(26, 27, 38),
     bg_alt: Color::Rgb(22, 22, 30),
@@ -75,9 +95,11 @@ pub const TOKYO_NIGHT: Palette = Palette {
     err: Color::Rgb(247, 118, 142),
     info: Color::Rgb(125, 207, 255),
     sel_bg: Color::Rgb(40, 52, 87),
+    reduced_motion: false,
 };
 
 // ── Rosé Pine ─────────────────────────────────────────────────────────────────
+/// Rosé Pine palette.
 pub const ROSE_PINE: Palette = Palette {
     bg: Color::Rgb(25, 23, 36),
     bg_alt: Color::Rgb(31, 29, 46),
@@ -96,9 +118,11 @@ pub const ROSE_PINE: Palette = Palette {
     err: Color::Rgb(235, 111, 146),
     info: Color::Rgb(156, 207, 216),
     sel_bg: Color::Rgb(42, 39, 63),
+    reduced_motion: false,
 };
 
 // ── Charm ─────────────────────────────────────────────────────────────────────
+/// Charm palette (the default theme).
 pub const CHARM: Palette = Palette {
     bg: Color::Rgb(23, 19, 32),
     bg_alt: Color::Rgb(16, 16, 26),
@@ -117,9 +141,11 @@ pub const CHARM: Palette = Palette {
     err: Color::Rgb(255, 95, 135),
     info: Color::Rgb(98, 225, 255),
     sel_bg: Color::Rgb(42, 31, 68),
+    reduced_motion: false,
 };
 
 // ── Nord ──────────────────────────────────────────────────────────────────────
+/// Nord palette.
 pub const NORD: Palette = Palette {
     bg: Color::Rgb(46, 52, 64),
     bg_alt: Color::Rgb(39, 44, 54),
@@ -138,9 +164,11 @@ pub const NORD: Palette = Palette {
     err: Color::Rgb(191, 97, 106),
     info: Color::Rgb(129, 161, 193),
     sel_bg: Color::Rgb(67, 76, 94),
+    reduced_motion: false,
 };
 
 // ── Gruvbox Dark ──────────────────────────────────────────────────────────────
+/// Gruvbox Dark palette.
 pub const GRUVBOX: Palette = Palette {
     bg: Color::Rgb(40, 40, 40),
     bg_alt: Color::Rgb(29, 32, 33),
@@ -159,6 +187,7 @@ pub const GRUVBOX: Palette = Palette {
     err: Color::Rgb(251, 73, 52),
     info: Color::Rgb(131, 165, 152),
     sel_bg: Color::Rgb(60, 56, 54),
+    reduced_motion: false,
 };
 
 // ── Theme enum ────────────────────────────────────────────────────────────────
@@ -169,18 +198,26 @@ impl Default for Palette {
     }
 }
 
+/// Identifies one of the built-in themes and maps to its [`Palette`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
+    /// Catppuccin Mocha.
     Catppuccin,
+    /// Tokyo Night.
     TokyoNight,
+    /// Rosé Pine.
     RosePine,
+    /// Charm (the default theme).
     #[default]
     Charm,
+    /// Nord.
     Nord,
+    /// Gruvbox Dark.
     Gruvbox,
 }
 
 impl Theme {
+    /// Resolve this theme to its [`Palette`].
     #[must_use]
     pub fn palette(self) -> &'static Palette {
         match self {
@@ -193,6 +230,7 @@ impl Theme {
         }
     }
 
+    /// Human-readable display label for this theme.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -205,6 +243,7 @@ impl Theme {
         }
     }
 
+    /// All built-in themes in display order.
     #[must_use]
     pub fn all() -> &'static [Theme] {
         &[
@@ -215,6 +254,20 @@ impl Theme {
             Theme::Nord,
             Theme::Gruvbox,
         ]
+    }
+
+    /// Resolve a theme from its [`label`](Self::label), case-insensitively.
+    ///
+    /// Used by the persistence layer to map the `theme = "<label>"` value stored
+    /// in `config.toml` back to a [`Theme`] variant. Returns `None` for an
+    /// unknown / unrecognized label so the caller can fall back to the default
+    /// rather than silently coercing a corrupt entry.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Theme> {
+        Theme::all()
+            .iter()
+            .copied()
+            .find(|t| t.label().eq_ignore_ascii_case(label))
     }
 }
 
@@ -234,6 +287,18 @@ impl Palette {
     #[must_use]
     pub fn label_style(self) -> Style {
         Style::new().fg(self.text_muted)
+    }
+
+    /// Return a copy of this palette with the [`reduced_motion`](Self::reduced_motion)
+    /// render hint set to `reduced`.
+    ///
+    /// Used by [`App`](crate::app::App) to bake the resolved motion decision
+    /// into the palette each frame, and by tests to render the reduced-motion
+    /// variant of a screen without constructing a full theme.
+    #[must_use]
+    pub fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self
     }
 }
 
@@ -291,5 +356,24 @@ mod tests {
                 "{theme:?}: key_style and label_style should be different"
             );
         }
+    }
+
+    #[test]
+    fn from_label_round_trips_every_theme() {
+        for &theme in Theme::all() {
+            assert_eq!(Theme::from_label(theme.label()), Some(theme));
+        }
+    }
+
+    #[test]
+    fn from_label_is_case_insensitive() {
+        assert_eq!(Theme::from_label("charm"), Some(Theme::Charm));
+        assert_eq!(Theme::from_label("TOKYO NIGHT"), Some(Theme::TokyoNight));
+    }
+
+    #[test]
+    fn from_label_returns_none_for_unknown() {
+        assert!(Theme::from_label("nonexistent").is_none());
+        assert!(Theme::from_label("").is_none());
     }
 }

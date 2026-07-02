@@ -24,7 +24,6 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_titled_panel;
 
@@ -240,6 +239,10 @@ impl UpdatesContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the other read-only sections.
@@ -260,7 +263,9 @@ impl UpdatesContent {
             p,
             &format!(
                 " UPDATES · {} pending · {} security · {} finding(s) ",
-                self.pending_total, self.pending_security, self.findings.len(),
+                self.pending_total,
+                self.pending_security,
+                self.findings.len(),
             ),
             p.accent,
             true,
@@ -280,7 +285,7 @@ impl UpdatesContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -294,28 +299,31 @@ impl UpdatesContent {
     ///
     /// `available == false` is set when construction failed (e.g.
     /// `PackageDetection` on macOS where neither `apt-get` nor `dnf` is on
-    /// `$PATH`) OR when the `spawn_blocking` task panicked (JoinError). The
+    /// `$PATH`) OR when the `spawn_blocking` task panicked (`JoinError`). The
     /// reason string is surfaced here so the operator can see what actually
     /// went wrong.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " UPDATES ", p.text_dim, false);
         let msg = Line::from(vec![
             Span::styled("✦ ", Style::new().fg(p.warn)),
-            Span::styled("updates unavailable", Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "updates unavailable",
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
         ]);
         // Prefer the construction / panic reason from the bundle; otherwise a
         // generic message accurate for both the macOS no-package-manager case
         // and the pre-first-poll state.
-        let detail_text = self
-            .unavailable_reason
-            .clone()
-            .unwrap_or_else(|| {
-                "no supported package manager (apt-get or dnf) detected on this host"
-                    .to_string()
-            });
+        let detail_text = self.unavailable_reason.clone().unwrap_or_else(|| {
+            "no supported package manager (apt-get or dnf) detected on this host".to_string()
+        });
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -324,7 +332,10 @@ impl UpdatesContent {
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
         // Wrap so a long reason wraps within the panel instead of clipping.
-        frame.render_widget(Paragraph::new(detail).centered().wrap(Wrap { trim: false }), centered_detail);
+        frame.render_widget(
+            Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
+            centered_detail,
+        );
     }
 
     /// Build the complete content as a flat list of lines (status, pending,
@@ -398,7 +409,11 @@ impl UpdatesContent {
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
-        let security_color = if self.pending_security > 0 { p.err } else { p.ok };
+        let security_color = if self.pending_security > 0 {
+            p.err
+        } else {
+            p.ok
+        };
         let total_color = if self.pending_total > 0 { p.warn } else { p.ok };
 
         lines.push(Line::from(vec![
@@ -430,8 +445,15 @@ impl UpdatesContent {
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
-        let schedule = self.schedule.clone().unwrap_or_else(|| "(not configured)".into());
-        let sched_color = if self.schedule.is_some() { p.ok } else { p.text_dim };
+        let schedule = self
+            .schedule
+            .clone()
+            .unwrap_or_else(|| "(not configured)".into());
+        let sched_color = if self.schedule.is_some() {
+            p.ok
+        } else {
+            p.text_dim
+        };
         lines.push(Line::from(vec![
             Span::styled("  cadence  ", Style::new().fg(p.text_muted)),
             Span::styled(schedule, Style::new().fg(sched_color)),
@@ -455,61 +477,16 @@ impl UpdatesContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Critical > Important > Warning > Info > Ok.
-        let order = ["critical", "important", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let title = truncate_str(&f.title, 60);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(title, Style::new().fg(p.text)),
-                ]));
-                if !f.detail.is_empty() {
-                    let detail = truncate_str(&f.detail, 70);
-                    lines.push(Line::from(Span::styled(
-                        format!("      {detail}"),
-                        Style::new().fg(p.text_dim),
-                    )));
-                }
-                if let Some(ref fix) = f.fix {
-                    let fix = truncate_str(fix, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(fix, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["critical", "important", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_with_important_warn,
+            crate::ui::screens::findings::FindingWidths::TITLE_60,
+        );
     }
 }
 
@@ -549,15 +526,18 @@ impl crate::ui::screens::section_overview::SectionOverview for UpdatesContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "critical" => ("⛔", p.err),
-        "important" => ("!", p.warn),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for FindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
+    fn fix(&self) -> Option<&str> {
+        self.fix.as_deref()
     }
 }
 
@@ -593,12 +573,10 @@ mod tests {
         ]
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut UpdatesContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -694,7 +672,10 @@ mod tests {
         c.set_status("apt".into(), true, true, 0, 0, None);
         c.set_schedule(None);
         let out = render_to_string(&mut c, 100, 36);
-        assert!(out.contains("not configured"), "unconfigured schedule: {out}");
+        assert!(
+            out.contains("not configured"),
+            "unconfigured schedule: {out}"
+        );
     }
 
     #[test]
@@ -716,11 +697,11 @@ mod tests {
         let out = render_to_string(&mut c, 120, 50);
         assert!(out.contains("CRITICAL"), "severity group header: {out}");
         assert!(out.contains("WARNING"), "warning group: {out}");
-        assert!(out.contains("dnf-automatic not found"), "finding title: {out}");
         assert!(
-            out.contains("Install dnf-automatic"),
-            "fix hint: {out}"
+            out.contains("dnf-automatic not found"),
+            "finding title: {out}"
         );
+        assert!(out.contains("Install dnf-automatic"), "fix hint: {out}");
     }
 
     #[test]
@@ -847,6 +828,9 @@ mod tests {
         assert_eq!(c.unavailable_reason.as_deref(), Some("boom"));
         c.set_available(true);
         c.set_unavailable_reason(Some("boom".into()));
-        assert!(c.unavailable_reason.is_none(), "reason must clear when available");
+        assert!(
+            c.unavailable_reason.is_none(),
+            "reason must clear when available"
+        );
     }
 }

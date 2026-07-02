@@ -100,9 +100,13 @@ pub struct UserFindingEntry {
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
 /// spinner, no cooldown. Data arrives via [`UsersContent::set_*`] setters
 /// driven by [`UsersCollector`](crate::toride_users_data::UsersCollector).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-file read-success flags"
+)]
 pub struct UsersContent {
     /// Whether the users backend produced any data at all. `false` only when a
-    /// collection task panicked (JoinError) — partial reads (some files
+    /// collection task panicked (`JoinError`) — partial reads (some files
     /// missing, e.g. on macOS) keep `available == true` with empty fields.
     available: bool,
     /// Whether `/etc/passwd` was read successfully. Used to render the
@@ -165,7 +169,11 @@ impl UsersContent {
     /// unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.users.len()) } else { None }
+        if self.available {
+            Some(self.users.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -195,6 +203,10 @@ impl UsersContent {
     }
 
     /// Replace the per-file read-success flags (drives the completeness caveat).
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "one flag per source file, set 1:1"
+    )]
     pub fn set_read_flags(
         &mut self,
         passwd_read: bool,
@@ -218,12 +230,6 @@ impl UsersContent {
     /// message can't linger after recovery.
     pub fn set_unavailable_reason(&mut self, reason: Option<String>) {
         self.unavailable_reason = if self.available { None } else { reason };
-    }
-
-    /// Current vertical scroll offset (crate-visible for dispatch tests).
-    #[cfg(test)]
-    pub(crate) fn scroll(&self) -> usize {
-        self.scroll
     }
 
     // ── Input ────────────────────────────────────────────────────────────────
@@ -279,6 +285,10 @@ impl UsersContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
@@ -321,7 +331,7 @@ impl UsersContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -334,7 +344,7 @@ impl UsersContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (JoinError) — not when individual files are missing (a
+    /// task PANICS (`JoinError`) — not when individual files are missing (a
     /// missing file degrades that field to empty but keeps `available == true`
     /// so the operator sees the partial table). The reason string is surfaced
     /// here so the operator can see what actually panicked.
@@ -342,15 +352,22 @@ impl UsersContent {
         let inner = render_titled_panel(frame, area, p, " USERS ", p.text_dim, false);
         let msg = Line::from(vec![
             Span::styled("✦ ", Style::new().fg(p.warn)),
-            Span::styled("users unavailable", Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "users unavailable",
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
         ]);
         let detail_text = self
             .unavailable_reason
             .clone()
             .unwrap_or_else(|| "user data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -358,7 +375,10 @@ impl UsersContent {
             1,
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
-        frame.render_widget(Paragraph::new(detail).centered().wrap(Wrap { trim: false }), centered_detail);
+        frame.render_widget(
+            Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
+            centered_detail,
+        );
     }
 
     /// Build the complete content as a flat list of lines (overview, users,
@@ -448,7 +468,10 @@ impl UsersContent {
             let totp = bool_span(u.totp, "totp", p);
             let shell = truncate_str(&u.shell, 16);
             lines.push(Line::from(vec![
-                Span::styled(format!("{name:<16} "), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{name:<16} "),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("uid {}  ", u.uid), Style::new().fg(p.text_muted)),
                 Span::styled(format!("{shell:<16} "), Style::new().fg(p.text_muted)),
                 sudo,
@@ -478,9 +501,15 @@ impl UsersContent {
         for g in &self.groups {
             let name = truncate_str(&g.name, 16);
             lines.push(Line::from(vec![
-                Span::styled(format!("{name:<16} "), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{name:<16} "),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("gid {}  ", g.gid), Style::new().fg(p.text_muted)),
-                Span::styled(format!("{} member(s)", g.members.len()), Style::new().fg(p.text_dim)),
+                Span::styled(
+                    format!("{} member(s)", g.members.len()),
+                    Style::new().fg(p.text_dim),
+                ),
             ]));
         }
     }
@@ -503,7 +532,10 @@ impl UsersContent {
         for s in &self.sudoers {
             let who = truncate_str(&s.who, 16);
             let nopasswd = if s.nopasswd {
-                Span::styled(" NOPASSWD", Style::new().fg(p.err).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    " NOPASSWD",
+                    Style::new().fg(p.err).add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::raw("")
             };
@@ -513,69 +545,30 @@ impl UsersContent {
             };
             let commands = truncate_str(&s.commands, 24);
             lines.push(Line::from(vec![
-                Span::styled(format!("{who:<16} "), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("={runas} {commands}"), Style::new().fg(p.text_muted)),
+                Span::styled(
+                    format!("{who:<16} "),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("={runas} {commands}"),
+                    Style::new().fg(p.text_muted),
+                ),
                 nopasswd,
             ]));
         }
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Critical > Error > Warning > Info > Ok.
-        let order = ["critical", "error", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&UserFindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let title = truncate_str(&f.title, 60);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(title, Style::new().fg(p.text)),
-                ]));
-                if !f.detail.is_empty() {
-                    let detail = truncate_str(&f.detail, 70);
-                    lines.push(Line::from(Span::styled(
-                        format!("      {detail}"),
-                        Style::new().fg(p.text_dim),
-                    )));
-                }
-                if let Some(ref fix) = f.fix {
-                    let fix = truncate_str(fix, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(fix, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["critical", "error", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_full,
+            crate::ui::screens::findings::FindingWidths::TITLE_60,
+        );
     }
 }
 
@@ -626,15 +619,18 @@ impl crate::ui::screens::section_overview::SectionOverview for UsersContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "critical" => ("⛔", p.err),
-        "error" => ("✗", p.err),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for UserFindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.title
+    }
+    fn detail(&self) -> Option<&str> {
+        Some(&self.detail)
+    }
+    fn fix(&self) -> Option<&str> {
+        self.fix.as_deref()
     }
 }
 
@@ -711,9 +707,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban).
     fn render_to_string(content: &mut UsersContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -753,15 +747,15 @@ mod tests {
         // The "NOT the real account DB" caveat is macOS-only: on Linux,
         // /etc/passwd IS the authoritative account DB and the warning would be
         // misleading. Tests run on Linux, so it must NOT appear here.
-        if !cfg!(target_os = "macos") {
-            assert!(
-                !out.contains("NOT the real account DB"),
-                "non-macOS should not show the macOS-only caveat: {out}"
-            );
-        } else {
+        if cfg!(target_os = "macos") {
             assert!(
                 out.contains("NOT the real account DB"),
                 "macOS caveat: {out}"
+            );
+        } else {
+            assert!(
+                !out.contains("NOT the real account DB"),
+                "non-macOS should not show the macOS-only caveat: {out}"
             );
         }
     }
@@ -804,10 +798,7 @@ mod tests {
         let out = render_to_string(&mut c, 110, 50);
         assert!(out.contains("CRITICAL"), "severity group header: {out}");
         assert!(out.contains("empty password"), "finding title: {out}");
-        assert!(
-            out.contains("google-authenticator"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("google-authenticator"), "fix hint: {out}");
     }
 
     #[test]

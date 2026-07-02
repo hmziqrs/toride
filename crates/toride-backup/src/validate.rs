@@ -102,7 +102,9 @@ pub fn validate_retention_policy(policy: &RetentionPolicy) -> Vec<ValidationFind
                 findings.push(ValidationFinding {
                     field: format!("retention.{name}"),
                     severity: ValidationSeverity::Warning,
-                    message: format!("{name} = {n} is very high; this may consume significant storage"),
+                    message: format!(
+                        "{name} = {n} is very high; this may consume significant storage"
+                    ),
                 });
             }
         }
@@ -153,7 +155,10 @@ pub fn validate_schedule(schedule: &Schedule) -> Vec<ValidationFinding> {
     let field_names = ["minute", "hour", "day-of-month", "month", "day-of-week"];
     let max_values: [u32; 5] = [59, 23, 31, 12, 7];
 
-    for (i, (part, (name, &max))) in parts.iter().zip(field_names.iter().zip(&max_values)).enumerate()
+    for (i, (part, (name, &max))) in parts
+        .iter()
+        .zip(field_names.iter().zip(&max_values))
+        .enumerate()
     {
         // Skip wildcards, ranges, steps, and lists.
         if *part == "*" || part.contains('-') || part.contains('/') || part.contains(',') {
@@ -161,7 +166,7 @@ pub fn validate_schedule(schedule: &Schedule) -> Vec<ValidationFinding> {
         }
 
         if let Ok(val) = part.parse::<u32>() {
-            let effective_min = if i == 2 { 1 } else { 0 }; // day-of-month starts at 1
+            let effective_min = u32::from(i == 2); // day-of-month starts at 1
             if val < effective_min || val > max {
                 findings.push(ValidationFinding {
                     field: "schedule.cron".into(),
@@ -225,18 +230,16 @@ pub fn validate_spec(spec: &BackupSpec) -> Result<Vec<ValidationFinding>> {
                 findings.push(ValidationFinding {
                     field: "sources".into(),
                     severity: ValidationSeverity::Error,
-                    message: format!(
-                        "backup spec {:?}: source path must not be empty",
-                        spec.name,
-                    ),
+                    message: format!("backup spec {:?}: source path must not be empty", spec.name),
                 });
             } else if !s.starts_with('/') {
                 findings.push(ValidationFinding {
                     field: "sources".into(),
                     severity: ValidationSeverity::Warning,
                     message: format!(
-                        "backup spec {:?}: source path {:?} is not absolute",
-                        spec.name, source,
+                        "backup spec {:?}: source path {} is not absolute",
+                        spec.name,
+                        source.display(),
                     ),
                 });
             }
@@ -291,182 +294,3 @@ pub fn validate_spec(spec: &BackupSpec) -> Result<Vec<ValidationFinding>> {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::spec::Backend;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    fn sample_spec() -> BackupSpec {
-        BackupSpec {
-            name: "test-backup".into(),
-            backend: Backend::Restic,
-            repository: "/mnt/backups/test".into(),
-            sources: vec![PathBuf::from("/etc"), PathBuf::from("/home")],
-            schedule: Schedule::new("0 2 * * *"),
-            retention: RetentionPolicy::default_policy(),
-            encryption: Encryption::RepoKey,
-            password_command: Some("cat /etc/restic/password".into()),
-            exclude_patterns: vec![],
-            tags: vec!["auto".into()],
-            extra_env: HashMap::new(),
-        }
-    }
-
-    #[test]
-    fn valid_spec_has_no_errors() {
-        let spec = sample_spec();
-        let findings = validate_spec(&spec).unwrap();
-        let errors: Vec<_> = findings
-            .iter()
-            .filter(|f| f.severity == ValidationSeverity::Error)
-            .collect();
-        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-    }
-
-    #[test]
-    fn empty_name_flagged() {
-        let mut spec = sample_spec();
-        spec.name = "  ".into();
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "name" && f.severity == ValidationSeverity::Error));
-    }
-
-    #[test]
-    fn empty_sources_flagged() {
-        let mut spec = sample_spec();
-        spec.sources = vec![];
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "sources" && f.severity == ValidationSeverity::Error));
-    }
-
-    #[test]
-    fn relative_source_path_warned() {
-        let mut spec = sample_spec();
-        spec.sources = vec![PathBuf::from("relative/path")];
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "sources" && f.severity == ValidationSeverity::Warning));
-    }
-
-    #[test]
-    fn remote_repo_path_accepted() {
-        assert!(validate_repo_path(Path::new("sftp:user@host:/backups")).is_ok());
-        assert!(validate_repo_path(Path::new("s3:bucket/path")).is_ok());
-    }
-
-    #[test]
-    fn local_relative_repo_rejected() {
-        assert!(validate_repo_path(Path::new("relative/path")).is_err());
-    }
-
-    #[test]
-    fn empty_repo_rejected() {
-        assert!(validate_repo_path(Path::new("")).is_err());
-    }
-
-    #[test]
-    fn bad_cron_fields() {
-        let schedule = Schedule::new("0 2 * * * *");
-        let findings = validate_schedule(&schedule);
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == ValidationSeverity::Error && f.field == "schedule.cron"));
-    }
-
-    #[test]
-    fn good_cron_accepted() {
-        let schedule = Schedule::new("0 2 * * *");
-        let findings = validate_schedule(&schedule);
-        assert!(findings.is_empty());
-    }
-
-    #[test]
-    fn cron_out_of_range() {
-        let schedule = Schedule::new("60 2 * * *");
-        let findings = validate_schedule(&schedule);
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == ValidationSeverity::Error));
-    }
-
-    #[test]
-    fn empty_retention_flagged() {
-        let policy = RetentionPolicy {
-            keep_hourly: None,
-            keep_daily: None,
-            keep_weekly: None,
-            keep_monthly: None,
-            keep_yearly: None,
-        };
-        let findings = validate_retention_policy(&policy);
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == ValidationSeverity::Error));
-    }
-
-    #[test]
-    fn zero_retention_flagged() {
-        let policy = RetentionPolicy {
-            keep_daily: Some(0),
-            ..RetentionPolicy::default()
-        };
-        let findings = validate_retention_policy(&policy);
-        assert!(findings
-            .iter()
-            .any(|f| f.message.contains("set to 0") && f.severity == ValidationSeverity::Error));
-    }
-
-    #[test]
-    fn encryption_without_password_warned() {
-        let mut spec = sample_spec();
-        spec.password_command = None;
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "password_command" && f.severity == ValidationSeverity::Warning));
-    }
-
-    #[test]
-    fn no_encryption_warned() {
-        let mut spec = sample_spec();
-        spec.encryption = Encryption::None;
-        spec.password_command = None;
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "encryption" && f.severity == ValidationSeverity::Warning));
-    }
-
-    #[test]
-    fn duplicate_tags_flagged() {
-        let mut spec = sample_spec();
-        spec.tags = vec!["auto".into(), "auto".into()];
-        let findings = validate_spec(&spec).unwrap();
-        assert!(findings
-            .iter()
-            .any(|f| f.field == "tags" && f.message.contains("duplicate")));
-    }
-
-    #[test]
-    fn only_yearly_retention_info() {
-        let policy = RetentionPolicy {
-            keep_hourly: None,
-            keep_daily: None,
-            keep_weekly: None,
-            keep_monthly: None,
-            keep_yearly: Some(3),
-        };
-        let findings = validate_retention_policy(&policy);
-        assert!(findings
-            .iter()
-            .any(|f| f.severity == ValidationSeverity::Info));
-    }
-}

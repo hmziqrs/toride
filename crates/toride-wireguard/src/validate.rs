@@ -21,7 +21,9 @@ use crate::error::{Error, Result};
 /// Returns [`Error::InvalidAddress`] if the name does not match the pattern.
 pub fn validate_interface_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(Error::InvalidAddress("interface name must not be empty".to_owned()));
+        return Err(Error::InvalidAddress(
+            "interface name must not be empty".to_owned(),
+        ));
     }
     if name.len() > 15 {
         return Err(Error::InvalidAddress(format!(
@@ -64,9 +66,9 @@ pub fn validate_address(addr: &str) -> Result<()> {
 
     // If there's a prefix, validate it.
     if let Some(prefix_str) = addr.split('/').nth(1) {
-        let prefix: u8 = prefix_str.parse().map_err(|_| {
-            Error::InvalidAddress(format!("invalid CIDR prefix: {addr}"))
-        })?;
+        let prefix: u8 = prefix_str
+            .parse()
+            .map_err(|_| Error::InvalidAddress(format!("invalid CIDR prefix: {addr}")))?;
         let max_prefix = if addr.contains(':') { 128 } else { 32 };
         if prefix > max_prefix {
             return Err(Error::InvalidAddress(format!(
@@ -108,19 +110,49 @@ pub fn validate_allowed_ips_str(ips: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// validate_endpoint
+// ---------------------------------------------------------------------------
+
+/// Validate a peer endpoint as a `host:port` socket address.
+///
+/// Accepts both IPv4 (e.g. `1.2.3.4:51820`) and IPv6 (e.g. `[fd00::1]:51820`)
+/// socket addresses, matching what the `wg` tool expects for the `endpoint`
+/// argument. Hostnames are not accepted here because `wg set` itself only
+/// resolves them at apply time and a syntactic check cannot prove validity.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidAddress`] if the value is not a parseable socket
+/// address.
+pub fn validate_endpoint(endpoint: &str) -> Result<()> {
+    if endpoint.parse::<std::net::SocketAddr>().is_err() {
+        return Err(Error::InvalidAddress(format!(
+            "invalid endpoint (expected host:port): {endpoint}"
+        )));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // validate_port
 // ---------------------------------------------------------------------------
 
 /// Validate a UDP port number for WireGuard.
 ///
 /// Valid ports are in the range `1..=65535` (port 0 means "auto-assign" and
-/// is accepted).
+/// is accepted). Because `u16` already bounds the value to `0..=65535`, this
+/// function always succeeds; it is retained for API symmetry with the other
+/// validators and so callers can rely on a consistent validation surface.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidAddress`] if the port is out of range.
+/// Never returns an error -- the `u16` type enforces the documented range at
+/// the type level. (Kept as a `Result` for forward compatibility.)
 pub fn validate_port(port: u16) -> Result<()> {
-    // Port 0 is allowed (kernel auto-assign).
+    // Port 0 is allowed (kernel auto-assign). The u16 type already bounds
+    // the value to 0..=65535, matching the documented contract, so there is
+    // nothing to reject here.
+    let _ = port;
     Ok(())
 }
 
@@ -174,5 +206,20 @@ mod tests {
         assert!(validate_port(0).is_ok());
         assert!(validate_port(51820).is_ok());
         assert!(validate_port(65535).is_ok());
+    }
+
+    #[test]
+    fn valid_endpoints() {
+        assert!(validate_endpoint("1.2.3.4:51820").is_ok());
+        assert!(validate_endpoint("[fd00::1]:51820").is_ok());
+        assert!(validate_endpoint("0.0.0.0:0").is_ok());
+    }
+
+    #[test]
+    fn invalid_endpoints() {
+        assert!(validate_endpoint("1.2.3.4").is_err()); // no port
+        assert!(validate_endpoint(":51820").is_err()); // no host
+        assert!(validate_endpoint("not-an-endpoint").is_err());
+        assert!(validate_endpoint("1.2.3.4:99999").is_err()); // port out of range
     }
 }

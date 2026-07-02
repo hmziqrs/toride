@@ -211,8 +211,7 @@ mod tests {
 
         let resolved = std::path::Path::new("/tmp")
             .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/tmp".to_owned());
+            .map_or_else(|_| "/tmp".to_owned(), |p| p.to_string_lossy().into_owned());
         assert_eq!(output.stdout_trimmed(), resolved);
     }
 
@@ -394,5 +393,252 @@ mod tests {
             }
             other => panic!("expected Started event, got {other:?}"),
         }
+    }
+
+    /// A redact(true) spec must never deliver secret flag values in the
+    /// Started event — the streaming path redacts args at emission.
+    #[tokio::test]
+    async fn streaming_started_event_redacts_secret_args() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("curl")
+            .args(["--token", "secret-value", "https://example.com"])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let _ = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        match &sink.events[0] {
+            CommandEvent::Started { args, .. } => {
+                assert!(args.contains(&"***".to_owned()));
+                assert!(!args.contains(&"secret-value".to_owned()));
+            }
+            other => panic!("expected Started event, got {other:?}"),
+        }
+    }
+
+    /// A redact(true) spec must scrub secret values from streamed stdout
+    /// chunks and lines, and from the returned captured output. The secret is
+    /// carried as a `--token` flag value (so the scrubber collects it) and the
+    /// command echoes it back; none of the chunk bytes, line text, or the
+    /// returned `CommandOutput.stdout` may contain it.
+    #[tokio::test]
+    async fn streaming_redacts_secret_in_stdout_chunks_and_lines() {
+        let runner = TokioRunner;
+        let secret = "stream-secret-value-12345";
+        let spec = CommandSpec::new("bash")
+            .args(["-c", &format!("echo auth={secret}")])
+            .args(["--token", secret])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        // Returned output must be scrubbed.
+        assert!(
+            !output.stdout.contains(secret),
+            "secret leaked into returned stdout: {}",
+            output.stdout
+        );
+
+        // No chunk or line event may carry the secret.
+        for event in &sink.events {
+            match event {
+                CommandEvent::StdoutChunk(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    assert!(!text.contains(secret), "secret in StdoutChunk: {text}");
+                }
+                CommandEvent::StderrChunk(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    assert!(!text.contains(secret), "secret in StderrChunk: {text}");
+                }
+                CommandEvent::StdoutLine(line) => {
+                    assert!(!line.contains(secret), "secret in StdoutLine: {line}");
+                }
+                CommandEvent::StderrLine(line) => {
+                    assert!(!line.contains(secret), "secret in StderrLine: {line}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A secret split across an 8 KB chunk boundary must still be scrubbed:
+    /// the per-stream line buffer reassembles the partial secret before
+    /// redaction, so neither the chunk nor the line event leaks it. The secret
+    /// is carried as a `--token` value (so the scrubber collects it).
+    #[tokio::test]
+    async fn streaming_redacts_secret_split_across_chunk_boundary() {
+        let runner = TokioRunner;
+        let secret = "SPLIT-SECRET-ACROSS-BOUNDARY-0123456789";
+        // Pad before the secret so it straddles the 8 KB read boundary. The
+        // exact split point depends on the reader, but the line buffer must
+        // catch it regardless.
+        let padding = "x".repeat(8 * 1024 - 10);
+        let script = format!("printf '%s\\n' '{padding}{secret}'");
+        let spec = CommandSpec::new("bash")
+            .args(["-c", script.as_str()])
+            .args(["--token", secret])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+        assert!(
+            !output.stdout.contains(secret),
+            "split secret leaked into returned stdout"
+        );
+        for event in &sink.events {
+            match event {
+                CommandEvent::StdoutChunk(bytes) | CommandEvent::StderrChunk(bytes) => {
+                    assert!(
+                        !String::from_utf8_lossy(bytes).contains(secret),
+                        "split secret leaked in a chunk event"
+                    );
+                }
+                CommandEvent::StdoutLine(line) | CommandEvent::StderrLine(line) => {
+                    assert!(
+                        !line.contains(secret),
+                        "split secret leaked in a line event"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A sink that counts total bytes emitted across stdout/stderr chunk events,
+    /// to prove the cap bounds memory rather than wall-clock time.
+    #[derive(Default)]
+    struct CountingSink {
+        events: Vec<CommandEvent>,
+        total_bytes: usize,
+    }
+
+    #[async_trait]
+    impl CommandEventSink for CountingSink {
+        async fn on_event(&mut self, event: CommandEvent) -> Result<()> {
+            if let CommandEvent::StdoutChunk(b) | CommandEvent::StderrChunk(b) = &event {
+                self.total_bytes = self.total_bytes.saturating_add(b.len());
+            }
+            self.events.push(event);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_preserves_under_cap() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("echo").arg("hello").output_limit(1024);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout_trimmed(), "hello");
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_exceeded_on_stdout() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_limit(64);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { limit, .. }) if limit == 64
+        ));
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_exceeded_on_stderr() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line >&2; done"])
+            .output_limit(64);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+    }
+
+    /// A single newline-free stream that writes far more than the cap. Bounded
+    /// reads must trip the cap and fail fast rather than buffering the whole
+    /// line — this proves the streaming path uses bounded reads, not `read_line`.
+    #[tokio::test]
+    async fn streaming_output_limit_bounds_memory_on_newline_free_stream() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "yes | tr -d '\\n' | head -c 100000"])
+            .output_limit(256)
+            .timeout(Duration::from_secs(10));
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        match result {
+            Err(crate::error::Error::OutputLimitExceeded { .. }) => {}
+            other => panic!(
+                "expected OutputLimitExceeded, got {other:?} (cap should fire before timeout)"
+            ),
+        }
+    }
+
+    /// Streaming output-limit breach kills the child; no leftover process.
+    #[tokio::test]
+    async fn streaming_output_limit_kills_child() {
+        let runner = TokioRunner;
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("marker");
+        let script = format!(
+            "for i in $(seq 1 100000); do echo x; done; echo SURVIVED > {}",
+            marker.display()
+        );
+        let spec = CommandSpec::new("bash")
+            .args(["-c", script.as_str()])
+            .output_limit(128);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !marker.exists(),
+            "output-limited streaming child was not killed (reached SURVIVED)"
+        );
+    }
+
+    /// The total bytes emitted in chunk events stays bounded near the cap, not
+    /// near the full stream size. (Proves bounded memory by behavior.)
+    #[tokio::test]
+    async fn streaming_output_limit_bounds_emitted_bytes() {
+        let runner = TokioRunner;
+        let cap = 256usize;
+        let spec = CommandSpec::new("bash")
+            .args([
+                "-c",
+                "for i in $(seq 1 20000); do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done",
+            ])
+            .output_limit(cap)
+            .timeout(Duration::from_secs(10));
+        let mut sink = CountingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+        // Worst case the cap is exceeded by one bounded read (STREAM_READ_BUF).
+        assert!(
+            sink.total_bytes <= cap + 8 * 1024,
+            "emitted {} bytes, expected <= cap + one read buffer",
+            sink.total_bytes
+        );
     }
 }
